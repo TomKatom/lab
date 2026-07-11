@@ -1,0 +1,28 @@
+# Normalize line endings for everyone regardless of OS/editor.
+* text=auto eol=lf
+
+# Explicit text types
+*.yml text
+*.yaml text
+*.md text
+*.json text
+*.sh text eol=lf
+*.tf text
+*.tfvars text
+*.hcl text
+*.cfg text
+*.conf text
+*.ini text
+
+# SOPS-encrypted files are ciphertext — never diff/merge them as text.
+*.sops.yaml -diff -merge
+*.sops.yml -diff -merge
+*.sops.tfvars -diff -merge
+
+# Binary/opaque assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.tgz binary
+*.age binary

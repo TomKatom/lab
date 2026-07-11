@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install yamllint
+      - run: yamllint .
+
+  tofu:
+    name: opentofu fmt/validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v4
+      - id: has-tf
+        run: |
+          if find . -name '*.tf' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: opentofu/setup-opentofu@v1
+        if: steps.has-tf.outputs.present == 'true'
+      - name: tofu fmt -check
+        if: steps.has-tf.outputs.present == 'true'
+        run: tofu fmt -check -recursive
+      - name: tofu init (no backend)
+        if: steps.has-tf.outputs.present == 'true'
+        run: tofu init -backend=false
+      - name: tofu validate
+        if: steps.has-tf.outputs.present == 'true'
+        run: tofu validate
+      - name: no .tf files yet
+        if: steps.has-tf.outputs.present == 'false'
+        run: echo "infra/tofu has no .tf files yet, skipping"
+
+  ansible-lint:
+    name: ansible-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: has-ansible
+        run: |
+          if find ansible -name '*.yml' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: ansible/ansible-lint@v26.6.0
+        if: steps.has-ansible.outputs.present == 'true'
+        with:
+          path: "ansible/playbooks"
+      - name: no ansible files yet
+        if: steps.has-ansible.outputs.present == 'false'
+        run: echo "ansible/ has no playbooks yet, skipping"
+
+  render-manifests:
+    name: helm/kustomize render -> kubeconform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: install kustomize + kubeconform
+        env:
+          KUSTOMIZE_VERSION: "5.8.1"
+          KUBECONFORM_VERSION: "0.8.0"
+        run: |
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar xz
+          curl -sL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
+          sudo mv kustomize kubeconform /usr/local/bin/
+      - name: helm template charts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          charts=(clusters/lab/apps/*/ clusters/lab/platform/*/)
+          found=false
+          for c in "${charts[@]}"; do
+            [ -f "${c}Chart.yaml" ] || continue
+            found=true
+            echo "== helm template ${c} =="
+            helm template "$c" | kubeconform -strict -ignore-missing-schemas -summary
+          done
+          $found || echo "no Helm charts yet, skipping"
+      - name: kustomize build secret overlays
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=false
+          while IFS= read -r -d '' k; do
+            found=true
+            dir=$(dirname "$k")
+            echo "== kustomize build ${dir} =="
+            kustomize build "$dir" | kubeconform -strict -ignore-missing-schemas -summary
+          done < <(find clusters -name kustomization.yaml -print0)
+          $found || echo "no Kustomize overlays yet, skipping"
