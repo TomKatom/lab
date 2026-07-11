@@ -1,0 +1,182 @@
+name: OpenTofu Apply
+
+# Two-job split so a bad diff can never apply unattended:
+#   plan  - runs automatically on every push to master (read-only).
+#   apply - needs: plan, and runs in the `production` GitHub Environment.
+#           That environment's required-reviewer rule is what pauses this
+#           job until a human clicks Approve in the Actions UI, having
+#           reviewed the exact plan output posted by the `plan` job. There
+#           is no other gate in this file, and there must never be one:
+#           no repo variable, no workflow_dispatch bypass, no auto-approve
+#           of the environment. Until the `production` environment exists
+#           (with its secrets and a reviewer configured - a one-time manual
+#           setup step, see docs/runbooks/tofu-apply.md) the `apply` job
+#           simply has nowhere to run: inert by construction.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: tofu plan
+    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - uses: opentofu/setup-opentofu@v1
+
+      # CI uses GitHub Actions secrets, not SOPS/age - the master age key
+      # never enters CI (see docs/secrets.md: "CI holds no age key").
+      # TF_ENCRYPTION is assembled here from the STATE_PASSPHRASE secret,
+      # mirroring what tofu.sh does locally from state.sops.env.
+      - name: Build TF_ENCRYPTION
+        env:
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+        run: |
+          {
+            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
+            cat <<EOF
+          key_provider "pbkdf2" "state_passphrase" {
+            passphrase    = "${STATE_PASSPHRASE}"
+            iterations    = 600000
+            hash_function = "sha512"
+          }
+
+          method "aes_gcm" "state_method" {
+            keys = key_provider.pbkdf2.state_passphrase
+          }
+
+          state {
+            method   = method.aes_gcm.state_method
+            enforced = true
+          }
+
+          plan {
+            method   = method.aes_gcm.state_method
+            enforced = true
+          }
+          EOF
+            echo "___TF_ENCRYPTION_EOF___"
+          } >> "$GITHUB_ENV"
+
+      - name: tofu init
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu init -input=false
+
+      - name: tofu plan
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          tofu plan -input=false -no-color | tee /tmp/tofu-plan.out
+
+      - name: Post plan to job summary
+        if: always()
+        run: |
+          {
+            echo "## tofu plan"
+            echo
+            echo '```'
+            cat /tmp/tofu-plan.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: tofu apply
+    needs: plan
+    environment: production
+    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    concurrency:
+      group: tofu-apply
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - uses: opentofu/setup-opentofu@v1
+
+      - name: Build TF_ENCRYPTION
+        env:
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+        run: |
+          {
+            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
+            cat <<EOF
+          key_provider "pbkdf2" "state_passphrase" {
+            passphrase    = "${STATE_PASSPHRASE}"
+            iterations    = 600000
+            hash_function = "sha512"
+          }
+
+          method "aes_gcm" "state_method" {
+            keys = key_provider.pbkdf2.state_passphrase
+          }
+
+          state {
+            method   = method.aes_gcm.state_method
+            enforced = true
+          }
+
+          plan {
+            method   = method.aes_gcm.state_method
+            enforced = true
+          }
+          EOF
+            echo "___TF_ENCRYPTION_EOF___"
+          } >> "$GITHUB_ENV"
+
+      - name: tofu init
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu init -input=false
+
+      # -auto-approve is safe here ONLY because this job runs behind the
+      # `production` environment's required-reviewer gate above: a human
+      # already approved this specific plan (from the `plan` job) before
+      # this step ever runs.
+      - name: tofu apply
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu apply -input=false -auto-approve
+
+      # State changed -> commit it back. Rebase guards against a race with
+      # any other push to master in between; [skip ci] avoids re-triggering
+      # this workflow (and thus another plan/apply cycle) on our own commit.
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add terraform.tfstate
+          if git diff --cached --quiet; then
+            echo "terraform.tfstate unchanged, nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(tofu): update terraform.tfstate [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

@@ -16,8 +16,21 @@ creation_rules:
       - age:
           - *admin_tom
 
-  # OpenTofu variable files (Proxmox/Cloudflare API tokens, etc).
-  - path_regex: infra/tofu/.*\.sops\.tfvars$
+  # OpenTofu variable files (Proxmox/Cloudflare API tokens, etc). Encrypted
+  # as opaque binary (whole file), named `*.sops.tfvars.json` rather than
+  # `*.sops.tfvars`: `tofu fmt -recursive` treats any `*.tfvars` file as HCL
+  # source and errors trying to format ciphertext, but it explicitly skips
+  # `*.tfvars.json` (a first-class, non-HCL tfvars format) — so this
+  # extension is what keeps `tofu fmt`/CI green without touching the
+  # ciphertext. `sops -d` doesn't care about the extension either way.
+  - path_regex: infra/tofu/.*\.sops\.tfvars\.json$
+    key_groups:
+      - age:
+          - *admin_tom
+
+  # OpenTofu state-encryption passphrase, injected at runtime via
+  # TF_ENCRYPTION (see infra/tofu/tofu.sh) — never in code.
+  - path_regex: infra/tofu/state\.sops\.env$
     key_groups:
       - age:
           - *admin_tom

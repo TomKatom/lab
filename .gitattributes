@@ -17,7 +17,11 @@
 # SOPS-encrypted files are ciphertext — never diff/merge them as text.
 *.sops.yaml -diff -merge
 *.sops.yml -diff -merge
-*.sops.tfvars -diff -merge
+*.sops.tfvars.json -diff -merge
+infra/tofu/state.sops.env -diff -merge
+
+# OpenTofu state — natively encrypted ciphertext, never diff/merge as text.
+infra/tofu/terraform.tfstate -diff -merge
 
 # Binary/opaque assets
 *.png binary
