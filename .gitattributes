@@ -15,8 +15,13 @@
 *.ini text
 
 # SOPS-encrypted files are ciphertext — never diff/merge them as text.
-*.sops.yaml -diff -merge
-*.sops.yml -diff -merge
+# Scoped to clusters/** (where k8s Secret payloads live, per docs/secrets.md)
+# so this never matches the top-level .sops.yaml rules file itself, which is
+# plaintext and must stay diffable — a bare `*.sops.yaml` glob would also
+# match that file, since git's gitattributes matching allows `*` to match a
+# leading dot.
+clusters/**/*.sops.yaml -diff -merge
+clusters/**/*.sops.yml -diff -merge
 *.sops.tfvars.json -diff -merge
 infra/tofu/state.sops.env -diff -merge
 

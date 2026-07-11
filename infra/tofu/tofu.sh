@@ -35,34 +35,12 @@ if ! command -v tofu > /dev/null 2>&1; then
   exit 1
 fi
 
-# Decrypts to a single `STATE_PASSPHRASE=...` line; eval sets it as a shell var.
-eval "$(sops -d state.sops.env)"
+# Decrypts to a single `STATE_PASSPHRASE=...` line.
+STATE_PASSPHRASE=$(sops -d state.sops.env | sed -n 's/^STATE_PASSPHRASE=//p')
 : "${STATE_PASSPHRASE:?state.sops.env did not decrypt a STATE_PASSPHRASE value}"
 
 export TF_ENCRYPTION
-TF_ENCRYPTION=$(
-  cat << EOF
-key_provider "pbkdf2" "state_passphrase" {
-  passphrase    = "${STATE_PASSPHRASE}"
-  iterations    = 600000
-  hash_function = "sha512"
-}
-
-method "aes_gcm" "state_method" {
-  keys = key_provider.pbkdf2.state_passphrase
-}
-
-state {
-  method   = method.aes_gcm.state_method
-  enforced = true
-}
-
-plan {
-  method   = method.aes_gcm.state_method
-  enforced = true
-}
-EOF
-)
+TF_ENCRYPTION=$(STATE_PASSPHRASE="$STATE_PASSPHRASE" ./build-tf-encryption.sh)
 unset STATE_PASSPHRASE
 
 # Only the subcommands that actually accept -var-file get the decrypted

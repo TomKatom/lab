@@ -1,6 +1,6 @@
 # Provider configuration. Endpoints/usernames are non-secret vars (see
 # variables.tf, values in terraform.tfvars); API tokens are sensitive vars
-# sourced from secrets.sops.tfvars (local) or repo secrets (CI).
+# sourced from secrets.sops.tfvars.json (local) or repo secrets (CI).
 
 provider "proxmox" {
   endpoint  = var.proxmox_endpoint

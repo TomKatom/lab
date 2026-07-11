@@ -1,7 +1,7 @@
 # Full variable surface for infra/tofu. DRY: every shared value (domain,
 # subnet, ports, VM sizing) is declared once here and referenced everywhere
 # else. Non-secret concrete values live in the committed terraform.tfvars;
-# secrets live in secrets.sops.tfvars (encrypted).
+# secrets live in secrets.sops.tfvars.json (encrypted).
 #
 # Variables with no `default` below are operator-verified environment facts
 # (Proxmox endpoint/node, storage pool names, the OVH IP, the Cloudflare
@@ -246,7 +246,7 @@ variable "restrict_management" {
   default     = false
 }
 
-# --- Secrets (sensitive; values in secrets.sops.tfvars) --------------------------
+# --- Secrets (sensitive; values in secrets.sops.tfvars.json) --------------------------
 
 variable "proxmox_api_token" {
   description = "Proxmox API token, format `user@realm!tokenid=uuid`."

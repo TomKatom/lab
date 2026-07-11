@@ -106,7 +106,7 @@ lab/
 │   ├─ vm-k3s.tf storage.tf network.tf firewall.tf cloudflare.tf
 │   ├─ variables.tf outputs.tf
 │   ├─ terraform.tfstate         # committed, natively ENCRYPTED
-│   └─ secrets.sops.tfvars       # Proxmox + Cloudflare tokens (encrypted)
+│   └─ secrets.sops.tfvars.json  # Proxmox + Cloudflare tokens (encrypted)
 ├─ ansible/                      # Layer 2: configuration
 │   ├─ inventory/hosts.yml
 │   ├─ group_vars/all.sops.yml   # shared vars/secrets (DRY, encrypted)
