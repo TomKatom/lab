@@ -5,7 +5,7 @@
 # commit. The matching private key is held out-of-band — see
 # docs/secrets.md — and is never written to this repo.
 keys:
-  - &admin_tomas age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+  - &admin_tom age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
 
 creation_rules:
   # Kubernetes Secrets rendered through ksops. Only encrypt the payload
@@ -14,16 +14,16 @@ creation_rules:
     encrypted_regex: ^(data|stringData)$
     key_groups:
       - age:
-          - *admin_tomas
+          - *admin_tom
 
   # OpenTofu variable files (Proxmox/Cloudflare API tokens, etc).
   - path_regex: infra/tofu/.*\.sops\.tfvars$
     key_groups:
       - age:
-          - *admin_tomas
+          - *admin_tom
 
   # Ansible group_vars / host_vars.
   - path_regex: ansible/.*\.sops\.ya?ml$
     key_groups:
       - age:
-          - *admin_tomas
+          - *admin_tom
