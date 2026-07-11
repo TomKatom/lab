@@ -22,7 +22,7 @@ These steps were already done in a non-IaC way.
 - Never commit secrets, use some sort of secret management.
 - Don't repeat/duplicate configuration details, define variables in a single place.
 - Use GitOps, I want my repo to be the single source of truth.
-- Trunk based development
+- Trunk based development: trunk is `master`, protected, squash-merge only. Short-lived feature branches, rebase onto `master` to pick up its latest changes while a feature branch is in progress (not merge), then squash-merge the branch into `master` when done via PR.
 - Document the workflow in a form of documentation also tracked by git
 
 ## Cloud Dependencies
