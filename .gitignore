@@ -1,0 +1,29 @@
+# OpenTofu — the state file IS committed (natively encrypted); everything
+# else here is local scratch that must never be.
+infra/tofu/.terraform/
+infra/tofu/.terraform.lock.hcl
+infra/tofu/*.tfstate.backup
+infra/tofu/crash.log
+infra/tofu/override.tf
+infra/tofu/override.tf.json
+infra/tofu/*_override.tf
+infra/tofu/*_override.tf.json
+
+# Ansible
+ansible/*.retry
+ansible/.vault_pass
+
+# SOPS / age — private keys must never live in the repo.
+*.age
+!*.pub.age
+keys.txt
+
+# kubeconfig / talos-style local secrets some tools drop in-tree
+kubeconfig
+*.kubeconfig
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

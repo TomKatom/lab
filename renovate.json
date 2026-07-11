@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "helm-values": {
+    "enabled": true
+  },
+  "kubernetes": {
+    "enabled": true,
+    "fileMatch": ["clusters/lab/.*\\.ya?ml$"]
+  },
+  "terraform": {
+    "enabled": true
+  },
+  "ansible": {
+    "enabled": true
+  },
+  "github-actions": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchDatasources": ["helm"],
+      "groupName": "helm charts"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "groupName": "container images"
+    }
+  ]
+}
