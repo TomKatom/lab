@@ -40,6 +40,21 @@ Every PR runs `tofu fmt/validate`, `ansible-lint` + `yamllint`,
 ksops-encrypted overlays), and `gitleaks`. See
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
+## Development
+
+Formatting is enforced locally via [pre-commit](https://pre-commit.com):
+
+```sh
+uv tool install pre-commit   # one-time
+pre-commit install           # wires the git hook, once per clone
+pre-commit run --all-files   # optional: check everything now
+```
+
+Hooks: trailing whitespace / EOF / line-ending fixups, YAML syntax +
+`yamllint` (same config as CI), `shfmt`, and `tofu fmt` for
+[`infra/tofu/`](infra/tofu/). Renovate keeps hook versions up to date
+(`.pre-commit-config.yaml` is a supported manager).
+
 ## Domain
 
 `tomkatom.com`, DNS on Cloudflare, wildcard cert `*.tomkatom.com` via
