@@ -51,9 +51,10 @@ pre-commit run --all-files   # optional: check everything now
 ```
 
 Hooks: trailing whitespace / EOF / line-ending fixups, YAML syntax +
-`yamllint` (same config as CI), `shfmt`, and `tofu fmt` for
-[`infra/tofu/`](infra/tofu/). Renovate keeps hook versions up to date
-(`.pre-commit-config.yaml` is a supported manager).
+`yamllint` (same config as CI), `shfmt`, `tofu fmt` for
+[`infra/tofu/`](infra/tofu/), and `gitleaks` (same secret-scan CI blocks
+on). Renovate keeps hook versions up to date (`.pre-commit-config.yaml`
+is a supported manager).
 
 ## Domain
 
