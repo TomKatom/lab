@@ -2,7 +2,7 @@
 
 output "vm_ip" {
   description = "Static internal IP address of the k3s-node VM (on vmbr1)."
-  value       = var.vm_ip_address
+  value       = local.lab.network.vm_ip_address
 }
 
 output "vm_id" {
@@ -22,7 +22,7 @@ output "node_name" {
 
 output "vmbr1_cidr" {
   description = "CIDR of the internal bridge vmbr1 (also the VM's gateway)."
-  value       = var.vmbr1_host_address
+  value       = local.lab.network.vmbr1_host_address
 }
 
 output "restrict_management" {

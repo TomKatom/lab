@@ -9,7 +9,7 @@
 resource "proxmox_network_linux_bridge" "vmbr1" {
   node_name = var.node_name
   name      = "vmbr1"
-  address   = var.vmbr1_host_address
+  address   = local.lab.network.vmbr1_host_address
   autostart = true
   comment   = "Managed by OpenTofu - internal bridge for k3s-node"
 }

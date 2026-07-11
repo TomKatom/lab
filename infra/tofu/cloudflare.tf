@@ -13,32 +13,31 @@
 # v5 provider schema churn on zone lookups — it's not secret, just an
 # operator-verified fact filled into terraform.tfvars.
 
-resource "cloudflare_dns_record" "apex" {
+resource "cloudflare_dns_record" "records" {
+  for_each = local.dns_a_records
+
   zone_id = var.cloudflare_zone_id
-  name    = var.domain
+  name    = each.value.name
   type    = "A"
   content = var.ovh_public_ip
   ttl     = 1
   proxied = false
-  comment = "Managed by OpenTofu"
+  comment = each.value.comment
 }
 
-resource "cloudflare_dns_record" "wildcard" {
-  zone_id = var.cloudflare_zone_id
-  name    = "*.${var.domain}"
-  type    = "A"
-  content = var.ovh_public_ip
-  ttl     = 1
-  proxied = false
-  comment = "Managed by OpenTofu"
+# Renamed from the pre-for_each apex/wildcard/vpn resources — same records,
+# just addressed as records["..."] now. No destroy/recreate.
+moved {
+  from = cloudflare_dns_record.apex
+  to   = cloudflare_dns_record.records["apex"]
 }
 
-resource "cloudflare_dns_record" "vpn" {
-  zone_id = var.cloudflare_zone_id
-  name    = "vpn.${var.domain}"
-  type    = "A"
-  content = var.ovh_public_ip
-  ttl     = 1
-  proxied = false
-  comment = "Managed by OpenTofu - WireGuard endpoint"
+moved {
+  from = cloudflare_dns_record.wildcard
+  to   = cloudflare_dns_record.records["wildcard"]
+}
+
+moved {
+  from = cloudflare_dns_record.vpn
+  to   = cloudflare_dns_record.records["vpn"]
 }

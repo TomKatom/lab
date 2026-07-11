@@ -25,6 +25,22 @@ Domain: `tomkatom.com` (Cloudflare DNS). Access is WireGuard-only; there is
 no public SSH and no IPMI/console, so the management plane must never be
 self-strandable — see [Management plane](#management-plane).
 
+## Configuration single source of truth
+
+[`config/lab.yml`](../config/lab.yml) holds the non-secret facts shared
+across two or more layers — domain, the internal/WireGuard subnets, the VM's
+static IP, and the service ports. Each layer reads the same file instead of
+re-declaring these values:
+- **OpenTofu** (`infra/tofu/locals.tf`) — `yamldecode(file(...))` into
+  `local.lab`, feeding the bridge/VM/firewall/DNS resources.
+- **Ansible** (Phase 3) — loaded via `vars_files` in `group_vars`, feeding
+  WireGuard, NAT/DNAT, and the inventory.
+- **Helm/Argo** (Phase 5) — referenced via Argo `Application` `valueFiles`,
+  feeding ingress hostnames, cert-manager, and service ports.
+
+Facts used by only one layer (Proxmox endpoint, storage pools, VM sizing,
+image checksum) stay declared in that layer, alongside its secrets.
+
 ## Three IaC layers, one repo
 
 1. **Provision** — [`infra/tofu/`](../infra/tofu/), OpenTofu (`bpg/proxmox`

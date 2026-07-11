@@ -43,7 +43,7 @@ resource "proxmox_virtual_environment_firewall_ipset" "mgmt" {
   comment = "Managed by OpenTofu - management source CIDRs"
 
   dynamic "cidr" {
-    for_each = var.management_sources
+    for_each = local.management_sources
     content {
       name = cidr.value
     }
@@ -72,65 +72,35 @@ resource "proxmox_virtual_environment_firewall_rules" "node" {
     type    = "in"
     action  = "ACCEPT"
     comment = "WireGuard"
-    dport   = var.wireguard_port
+    dport   = local.lab.ports.wireguard
     proto   = "udp"
   }
 
-  # Always-public: HTTPS ingress (DNAT'd to the VM's Traefik in Phase 3+).
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "HTTPS (DNAT to VM)"
-    dport   = var.https_port
-    proto   = "tcp"
+  # Always-public: HTTPS/Plex/torrent, DNAT'd to the VM in Phase 3+.
+  # BitTorrent needs both transports on the same port.
+  dynamic "rule" {
+    for_each = local.public_service_rules
+    content {
+      type    = "in"
+      action  = "ACCEPT"
+      comment = rule.value.comment
+      dport   = rule.value.dport
+      proto   = rule.value.proto
+    }
   }
 
-  # Always-public: Plex direct-play (DNAT'd to the VM).
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Plex (DNAT to VM)"
-    dport   = var.plex_port
-    proto   = "tcp"
-  }
-
-  # Always-public: torrent (DNAT'd to the VM). BitTorrent needs both
-  # transports on the same port.
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Torrent TCP (DNAT to VM)"
-    dport   = var.torrent_port
-    proto   = "tcp"
-  }
-
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Torrent UDP (DNAT to VM)"
-    dport   = var.torrent_port
-    proto   = "udp"
-  }
-
-  # Management: SSH to the host. Anti-lockout — source is unrestricted
+  # Management: SSH + Proxmox API/UI. Anti-lockout — source is unrestricted
   # until restrict_management=true (Phase 3, post-WireGuard-verification).
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "SSH (host)"
-    dport   = var.ssh_port
-    proto   = "tcp"
-    source  = var.restrict_management ? "+mgmt" : null
-  }
-
-  # Management: Proxmox API/UI. Same anti-lockout toggle as SSH above.
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Proxmox API/UI"
-    dport   = var.pve_api_port
-    proto   = "tcp"
-    source  = var.restrict_management ? "+mgmt" : null
+  dynamic "rule" {
+    for_each = local.node_mgmt_rules
+    content {
+      type    = "in"
+      action  = "ACCEPT"
+      comment = rule.value.comment
+      dport   = rule.value.dport
+      proto   = rule.value.proto
+      source  = var.restrict_management ? "+mgmt" : null
+    }
   }
 }
 
@@ -156,54 +126,28 @@ resource "proxmox_virtual_environment_firewall_rules" "vm" {
   node_name = var.node_name
   vm_id     = proxmox_virtual_environment_vm.k3s.vm_id
 
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "HTTPS"
-    dport   = var.https_port
-    proto   = "tcp"
-  }
-
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Plex direct-play"
-    dport   = var.plex_port
-    proto   = "tcp"
-  }
-
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Torrent TCP"
-    dport   = var.torrent_port
-    proto   = "tcp"
-  }
-
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "Torrent UDP"
-    dport   = var.torrent_port
-    proto   = "udp"
+  # Always-public: HTTPS/Plex/torrent — same service rules as the node scope.
+  dynamic "rule" {
+    for_each = local.public_service_rules
+    content {
+      type    = "in"
+      action  = "ACCEPT"
+      comment = rule.value.comment
+      dport   = rule.value.dport
+      proto   = rule.value.proto
+    }
   }
 
   # Management: k8s API + SSH into the VM. Same anti-lockout toggle.
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "k8s API"
-    dport   = var.k8s_api_port
-    proto   = "tcp"
-    source  = var.restrict_management ? "+mgmt" : null
-  }
-
-  rule {
-    type    = "in"
-    action  = "ACCEPT"
-    comment = "SSH (VM)"
-    dport   = var.ssh_port
-    proto   = "tcp"
-    source  = var.restrict_management ? "+mgmt" : null
+  dynamic "rule" {
+    for_each = local.vm_mgmt_rules
+    content {
+      type    = "in"
+      action  = "ACCEPT"
+      comment = rule.value.comment
+      dport   = rule.value.dport
+      proto   = rule.value.proto
+      source  = var.restrict_management ? "+mgmt" : null
+    }
   }
 }

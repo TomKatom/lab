@@ -9,12 +9,16 @@ State is local and natively encrypted (OpenTofu ≥1.7 state encryption) —
 and Cloudflare API tokens) live in `secrets.sops.tfvars.json`, encrypted with
 SOPS + age; see [`docs/secrets.md`](../../docs/secrets.md).
 
+Facts shared with the other IaC layers (domain, subnet, ports) live in
+[`../../config/lab.yml`](../../config/lab.yml), not here — see `locals.tf`.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `versions.tf` | OpenTofu + provider pins. No `encryption` block — see below. |
 | `providers.tf` | `proxmox` (API token + SSH) and `cloudflare` provider config. |
+| `locals.tf` | Reads `config/lab.yml`; derives Tofu-internal values (rule lists, DNS record map). |
 | `network.tf` | `vmbr1`, the internal bridge the VM lives on (Tofu-owned). |
 | `storage.tf` | Downloads the Debian 13 cloud image into the `import` datastore. |
 | `vm-k3s.tf` | The `k3s-node` VM: sizing, OS + data disks, cloud-init. |

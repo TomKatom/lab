@@ -1,7 +1,7 @@
-# Full variable surface for infra/tofu. DRY: every shared value (domain,
-# subnet, ports, VM sizing) is declared once here and referenced everywhere
-# else. Non-secret concrete values live in the committed terraform.tfvars;
-# secrets live in secrets.sops.tfvars.json (encrypted).
+# Full variable surface for infra/tofu. Facts shared across IaC layers
+# (domain, subnet, ports — see config/lab.yml) live in locals.tf instead of
+# here. Non-secret concrete values below live in the committed
+# terraform.tfvars; secrets live in secrets.sops.tfvars.json (encrypted).
 #
 # Variables with no `default` below are operator-verified environment facts
 # (Proxmox endpoint/node, storage pool names, the OVH IP, the Cloudflare
@@ -10,12 +10,6 @@
 # CHANGE_ME placeholders in terraform.tfvars for the operator to replace.
 
 # --- Cloudflare / domain ---------------------------------------------------
-
-variable "domain" {
-  description = "Root domain managed in Cloudflare."
-  type        = string
-  default     = "tomkatom.com"
-}
 
 variable "cloudflare_zone_id" {
   description = "Cloudflare zone ID for `domain`. Not secret, but environment-specific."
@@ -52,30 +46,8 @@ variable "node_name" {
 }
 
 # --- Networking --------------------------------------------------------------
-
-variable "internal_subnet" {
-  description = "Internal subnet behind vmbr1."
-  type        = string
-  default     = "10.10.10.0/24"
-}
-
-variable "vmbr1_host_address" {
-  description = "vmbr1 address on the Proxmox host (CIDR) — also the VM's gateway."
-  type        = string
-  default     = "10.10.10.1/24"
-}
-
-variable "wireguard_subnet" {
-  description = "WireGuard peer subnet (Phase 3), included in management_sources ahead of time."
-  type        = string
-  default     = "10.10.20.0/24"
-}
-
-variable "management_sources" {
-  description = "CIDRs allowed to reach management ports when restrict_management=true."
-  type        = list(string)
-  default     = ["10.10.10.0/24", "10.10.20.0/24"]
-}
+# internal_subnet, vmbr1_host_address, wireguard_subnet, management_sources:
+# see local.lab.network / local.management_sources in locals.tf.
 
 # --- VM identity + sizing -----------------------------------------------------
 
@@ -164,24 +136,6 @@ variable "ssh_public_keys" {
   default     = []
 }
 
-variable "vm_ip_address" {
-  description = "Static internal IP address of k3s-node (no CIDR suffix)."
-  type        = string
-  default     = "10.10.10.10"
-}
-
-variable "vm_ip_cidr" {
-  description = "Static internal IP address of k3s-node, in CIDR notation."
-  type        = string
-  default     = "10.10.10.10/24"
-}
-
-variable "vm_gateway" {
-  description = "Gateway address for k3s-node (vmbr1's host address)."
-  type        = string
-  default     = "10.10.10.1"
-}
-
 variable "vm_dns_servers" {
   description = "DNS servers configured on k3s-node via cloud-init."
   type        = list(string)
@@ -189,48 +143,8 @@ variable "vm_dns_servers" {
 }
 
 # --- Ports ---------------------------------------------------------------------
-
-variable "wireguard_port" {
-  description = "WireGuard UDP port (host, public)."
-  type        = number
-  default     = 51820
-}
-
-variable "https_port" {
-  description = "HTTPS port (Traefik ingress, DNAT'd to the VM)."
-  type        = number
-  default     = 443
-}
-
-variable "plex_port" {
-  description = "Plex direct-play port (DNAT'd to the VM)."
-  type        = number
-  default     = 32400
-}
-
-variable "torrent_port" {
-  description = "Torrent (Deluge) port, TCP+UDP (DNAT'd to the VM)."
-  type        = number
-  default     = 51413
-}
-
-variable "ssh_port" {
-  description = "SSH port, host and VM."
-  type        = number
-  default     = 22
-}
-
-variable "pve_api_port" {
-  description = "Proxmox API/UI port."
-  type        = number
-  default     = 8006
-}
-
-variable "k8s_api_port" {
-  description = "k3s API server port."
-  type        = number
-  default     = 6443
-}
+# wireguard_port, https_port, plex_port, torrent_port, ssh_port, pve_api_port,
+# k8s_api_port: see local.lab.ports in locals.tf.
 
 # --- Firewall toggles ------------------------------------------------------------
 

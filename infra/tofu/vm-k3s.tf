@@ -50,8 +50,8 @@ resource "proxmox_virtual_environment_vm" "k3s" {
   initialization {
     ip_config {
       ipv4 {
-        address = var.vm_ip_cidr
-        gateway = var.vm_gateway
+        address = local.vm_ip_cidr
+        gateway = local.vm_gateway
       }
     }
 
