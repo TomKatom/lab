@@ -13,10 +13,10 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -24,7 +24,7 @@ jobs:
     name: yamllint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
@@ -38,7 +38,7 @@ jobs:
       run:
         working-directory: infra/tofu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: has-tf
         run: |
           if find . -name '*.tf' -print -quit | grep -q .; then
@@ -65,7 +65,7 @@ jobs:
     name: ansible-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: has-ansible
         run: |
           if find ansible -name '*.yml' -print -quit | grep -q .; then
@@ -85,7 +85,7 @@ jobs:
     name: helm/kustomize render -> kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
       - name: install kustomize + kubeconform
         env:
