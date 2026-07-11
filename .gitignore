@@ -8,6 +8,7 @@ infra/tofu/override.tf
 infra/tofu/override.tf.json
 infra/tofu/*_override.tf
 infra/tofu/*_override.tf.json
+infra/tofu/*.tfplan
 
 # Ansible
 ansible/*.retry
@@ -17,13 +18,30 @@ ansible/.vault_pass
 *.age
 !*.pub.age
 keys.txt
+*.agekey
 
 # kubeconfig / talos-style local secrets some tools drop in-tree
 kubeconfig
 *.kubeconfig
+talosconfig
+
+# Helm
+**/charts/*.tgz
+
+# Local scratch / overrides that should never be committed
+*.local.yaml
+*.local.yml
+.env
+.envrc.local
 
 # Editor / OS cruft
 .DS_Store
+.DS_Store?
+._*
+Thumbs.db
 *.swp
+*.swo
+*~
 .idea/
 .vscode/
+*.iml

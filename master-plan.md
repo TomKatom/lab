@@ -153,7 +153,7 @@ Reseller-mediated console is the slow last-resort fallback.
 
 ## CI/CD & GitOps flow
 
-- **Pull-based delivery:** merge to `main` → **Argo CD auto-syncs** the cluster. No push into the server for app changes.
+- **Pull-based delivery:** merge to `master` → **Argo CD auto-syncs** the cluster. No push into the server for app changes.
 - **GitHub Actions (PR gate):** `tofu fmt/validate`, `ansible-lint` + `yamllint`, `helm template | kubeconform` (+ `kustomize build | kubeconform` for secrets/overlays), and **gitleaks** (fails on any unencrypted secret). Trunk-based: short-lived branches → PR → squash to `main`.
 - **Infra changes (Tofu/Ansible)** reach the private Proxmox API over **WireGuard** from a self-hosted runner (or your workstation), applied on merge.
 - **Renovate** opens dependency-bump PRs; CI validates; you merge; Argo rolls out.
