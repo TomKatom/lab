@@ -142,10 +142,6 @@ variable "vm_dns_servers" {
   default     = ["1.1.1.1", "8.8.8.8"]
 }
 
-# --- Ports ---------------------------------------------------------------------
-# wireguard_port, https_port, plex_port, torrent_port, ssh_port, pve_api_port,
-# k8s_api_port: see local.lab.ports in locals.tf.
-
 # --- Firewall toggles ------------------------------------------------------------
 
 variable "enable_firewall" {
