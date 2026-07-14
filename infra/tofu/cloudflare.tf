@@ -12,9 +12,15 @@
 # `cloudflare_zone_id` is a plain var (not a data source) to avoid Cloudflare
 # v5 provider schema churn on zone lookups — it's not secret, just an
 # operator-verified fact filled into terraform.tfvars.
+#
+# Gated by `var.manage_dns` (default false): the zone's apex/wildcard/vpn
+# records currently point at the old server and are still in production use.
+# Until cutover, `for_each` resolves to `{}` so `tofu apply` never touches
+# Cloudflare — flip `manage_dns` to true once the new server is ready to take
+# over these records.
 
 resource "cloudflare_dns_record" "records" {
-  for_each = local.dns_a_records
+  for_each = var.manage_dns ? local.dns_a_records : {}
 
   zone_id = var.cloudflare_zone_id
   name    = each.value.name

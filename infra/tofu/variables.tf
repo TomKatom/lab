@@ -11,6 +11,12 @@
 
 # --- Cloudflare / domain ---------------------------------------------------
 
+variable "manage_dns" {
+  description = "Whether Tofu manages the apex/wildcard/vpn DNS records. Kept false while the old server is still live on this zone; flip to true at cutover to the new server."
+  type        = bool
+  default     = false
+}
+
 variable "cloudflare_zone_id" {
   description = "Cloudflare zone ID for `domain`. Not secret, but environment-specific."
   type        = string
