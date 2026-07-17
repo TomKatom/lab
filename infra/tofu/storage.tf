@@ -3,7 +3,17 @@
 #
 # The `tank` HDD mirror is deliberately not referenced anywhere in
 # infra/tofu — it's created, mirrored, and mounted by Ansible (Phase 3).
+#
+# depends_on vmbr1: the download's URL-metadata fetch runs on the node
+# itself (host resolver, host network stack), and proxmox_network_linux_bridge
+# ends its own create with a network reload (ifreload -a), which briefly
+# disrupts the node's networking/DNS. With no explicit ordering, OpenTofu
+# fires both in parallel — on the first apply against this host that raced
+# and the download failed DNS resolution mid-reload. Running the download
+# after the bridge (and its reload) has settled removes that race.
 resource "proxmox_download_file" "debian13" {
+  depends_on = [proxmox_network_linux_bridge.vmbr1]
+
   content_type       = "import"
   datastore_id       = var.image_datastore
   node_name          = var.node_name

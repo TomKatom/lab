@@ -48,6 +48,8 @@ resource "proxmox_virtual_environment_vm" "k3s" {
   }
 
   initialization {
+    datastore_id = var.system_storage_pool
+
     ip_config {
       ipv4 {
         address = local.vm_ip_cidr
