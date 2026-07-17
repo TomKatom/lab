@@ -133,15 +133,34 @@ and only then does OpenTofu drop public SSH from the Proxmox firewall.
 Reseller-mediated console is the slow last-resort fallback if this ever
 goes wrong — see `docs/runbooks/lockout-recovery.md` (Phase 3).
 
-**The anti-lockout mechanism, concretely:** `infra/tofu/firewall.tf` gates
-the SSH/Proxmox-API/k8s-API accept rules' `source` on a single
-`restrict_management` variable. Phase 2 ships it `false` — the Proxmox
-filter firewall is enabled (default-drop) but those specific rules accept
-from *any* source, so public SSH survives even though the firewall itself
-is live. Phase 3 flips it to `true` only after WireGuard is verified
-end-to-end; at that point only the `source` on those rules narrows to the
-`mgmt` ipset (`management_sources`) — 443/32400/torrent/51820-udp stay
-public throughout. `enable_firewall` is a separate master kill-switch.
+**The anti-lockout mechanism, concretely:** it has two independent halves,
+and the first version of `infra/tofu/firewall.tf` shipped only one of them
+and locked the host out. Both are now enforced in code.
+
+*Half one — who the rules accept from.* The SSH/Proxmox-API/k8s-API accept
+rules gate their `source` on a single `restrict_management` variable. Phase
+2 ships it `false` — the filter firewall is enabled (default-drop) but
+those rules accept from *any* source, so public SSH survives even though
+the firewall is live. Phase 3 flips it to `true` only after WireGuard is
+verified end-to-end; at that point only the `source` on those rules narrows
+to the `mgmt` ipset (`management_sources`). 443/32400/torrent/51820-udp
+stay public throughout. `enable_firewall` is a separate master kill-switch.
+
+*Half two — when the DROP policy is allowed to exist.* The default-DROP
+policy and the accept rules are **separate API objects**, so having correct
+rules in the config guarantees nothing about ordering: OpenTofu will create
+the wall before the holes unless the dependency graph forbids it. It did
+exactly that once — the rules resource had a `depends_on` upstream that
+failed, the rules never ran, and the cluster DROP policy (which depended on
+nothing) applied cleanly, leaving default-drop with zero accept rules on a
+box with no console. The graph is therefore inverted: **the policy depends
+on the rules** (`cluster_firewall` → `firewall_rules.node`, and
+`firewall_options.vm` → `firewall_rules.vm`). A failed rule resource now
+aborts the apply *before* the DROP lands, so a broken apply leaves the host
+open rather than bricked, and destroy tears the policy down first.
+`precondition` blocks on both policy resources refuse a DROP policy with an
+empty management-rule set, or `restrict_management = true` with an empty
+`management_sources`.
 
 **Exposed public ports:** `443` (Traefik/DNAT) · `32400` (Plex direct/DNAT)
 · torrent port (Deluge/DNAT) · `51820/udp` (WireGuard/host). Everything
