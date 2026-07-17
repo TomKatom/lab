@@ -54,11 +54,20 @@ DNS records (apex/wildcard/vpn), and the cluster/node/VM firewall enable +
 ## 3. Arm a dead-man switch, then apply
 
 The first apply enables the Proxmox firewall and changes host networking
-for the first time on a server with no recovery console. Even though
-`restrict_management=false` means the SSH/API accept rules stay open to any
-source (see the anti-lockout note in `infra/tofu/firewall.tf`), a mistake
-elsewhere in the diff is still a real risk on the first run — so run it
-manually, with a safety net.
+for the first time on a server with no recovery console. Two mechanisms in
+`infra/tofu/firewall.tf` protect you — `restrict_management=false` keeps the
+SSH/API accept rules open to any source, and the dependency graph forbids
+the default-DROP policy from being created before those accept rules exist
+— but a mistake elsewhere in the diff is still a real risk on the first
+run, so run it manually, with a safety net.
+
+> **Do not let CI perform a firewall-affecting apply.** The one lockout this
+> repo has suffered happened through CI — and the `production` approval gate
+> did not stop it, because `tofu plan` shows *which* resources it will create,
+> never the *order*. The DROP policy landed without its accept rules and
+> recovery needed rescue mode. The graph now enforces the ordering, but CI
+> still has no dead-man switch, so firewall diffs stay a manual, supervised
+> apply. See `docs/runbooks/lockout-recovery.md`.
 
 In a **separate** SSH session to the Proxmox host (keep this session open
 throughout the apply):

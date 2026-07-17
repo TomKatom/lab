@@ -18,9 +18,7 @@ name: OpenTofu Apply
 
 on:
   push:
-    # TEMPORARY: phase-2-tofu-provisioning added to test this workflow
-    # end-to-end before merge. Remove before squash-merging to master.
-    branches: [master, phase-2-tofu-provisioning]
+    branches: [master]
 
 permissions:
   contents: read
