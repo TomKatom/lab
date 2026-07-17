@@ -1,8 +1,8 @@
 name: OpenTofu Apply
 
 # Two-job split so a bad diff can never apply unattended:
-#   plan  - runs automatically on every push to master (read-only), saves the
-#           exact plan as an artifact.
+#   plan  - runs automatically on every pull request targeting master
+#           (read-only), saves the exact plan as an artifact.
 #   apply - needs: plan, and runs in the `production` GitHub Environment.
 #           That environment's required-reviewer rule is what pauses this
 #           job until a human clicks Approve in the Actions UI, having
@@ -15,9 +15,15 @@ name: OpenTofu Apply
 #           environment exists (with its secrets and a reviewer configured -
 #           a one-time manual setup step, see docs/runbooks/tofu-apply.md)
 #           the `apply` job simply has nowhere to run: inert by construction.
+#
+# Applying pre-merge (against the PR's own branch) rather than post-merge
+# means the updated state can be pushed as an extra commit onto that same
+# branch, so it rides along in the PR's own squash-merge instead of landing
+# as a separate bot commit/PR afterwards. Master itself is never pushed to
+# by this workflow, so none of this needs a branch-protection exception.
 
 on:
-  push:
+  pull_request:
     branches: [master]
 
 permissions:
@@ -32,6 +38,8 @@ jobs:
         working-directory: infra/tofu
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
 
       - uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -96,13 +104,13 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
-      pull-requests: write
     defaults:
       run:
         working-directory: infra/tofu
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.head_ref }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@v4
@@ -143,18 +151,14 @@ jobs:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: tofu apply -input=false tofu.tfplan
 
-      # State changed -> land it via a PR instead of pushing to master
-      # directly, since master is a protected, PR-only branch (see
-      # CLAUDE.md: "trunk based development... via PR"). The PR is opened
-      # and squash-merged by this same job - required reviews are 0 on this
-      # repo, so nothing waits on a human - but the change still goes
-      # through the same path every other commit does, no branch-protection
-      # bypass involved. [skip ci] on the squash-commit subject avoids
-      # re-triggering this workflow (and thus another plan/apply cycle) on
-      # our own commit.
-      - name: Commit updated state via PR
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # State changed -> push it as an extra commit onto this PR's own
+      # branch (never onto master - master is never touched by this
+      # workflow, so branch protection there is irrelevant here). When the
+      # PR is squash-merged, this commit and the human's commits land on
+      # master as one commit: no separate bot commit or bot PR ever shows
+      # up in master's history. [skip ci] avoids re-triggering this
+      # workflow (and ci.yml) on our own commit, which would otherwise loop.
+      - name: Push updated state to PR branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -163,15 +167,5 @@ jobs:
             echo "terraform.tfstate unchanged, nothing to commit"
             exit 0
           fi
-          branch="chore/tfstate-update-${GITHUB_RUN_ID}"
-          git checkout -b "$branch"
           git commit -m "chore(tofu): update terraform.tfstate [skip ci]"
-          git push origin "$branch"
-          gh pr create \
-            --base "${GITHUB_REF_NAME}" \
-            --head "$branch" \
-            --title "chore(tofu): update terraform.tfstate [skip ci]" \
-            --body "Automated state update from tofu apply in run ${GITHUB_RUN_ID}."
-          gh pr merge "$branch" --squash --delete-branch \
-            --subject "chore(tofu): update terraform.tfstate [skip ci]" \
-            --body ""
+          git push origin "HEAD:${GITHUB_HEAD_REF}"

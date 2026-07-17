@@ -116,31 +116,32 @@ instead of running by hand. This is a one-time setup step:
    nowhere to run and is inert by construction.
 3. Add these as **repository** secrets (Settings → Secrets and variables →
    Actions → Repository secrets) — not environment-scoped. The `plan` job
-   runs on every push with no `environment:` key, so environment-scoped
-   secrets would be invisible to it; the required-reviewer rule on
-   `production` is what gates the pipeline, not secret visibility:
+   runs on every pull request with no `environment:` key, so
+   environment-scoped secrets would be invisible to it; the
+   required-reviewer rule on `production` is what gates the pipeline, not
+   secret visibility:
    - `PROXMOX_API_TOKEN`
    - `CLOUDFLARE_API_TOKEN`
    - `STATE_PASSPHRASE` (the same value you put in `state.sops.env`)
    - `PROXMOX_SSH_PRIVATE_KEY` (a private key authorized on the Proxmox
      host for the SSH-based image download/import operations; CI loads it
      into an `ssh-agent`, matching the local `ssh { agent = true }` setup)
-4. In **Settings → Actions → General → Workflow permissions**, enable
-   "Allow GitHub Actions to create and approve pull requests". `master` is
-   a protected, PR-only branch, so the `apply` job's state-commit step
-   opens a PR (from a short-lived `chore/tfstate-update-*` branch) and
-   squash-merges it itself instead of pushing directly — this setting is
-   what lets the workflow's token open that PR. Required reviews on this
-   repo are already 0, so nothing blocks the auto-merge; no branch
-   protection rule needs to change.
-5. Optionally set a `TOFU_RUNNER` repository variable once the runner needs
+4. Optionally set a `TOFU_RUNNER` repository variable once the runner needs
    to change — see the note on runner placement below.
 
-From then on: every push to `master` runs the `plan` job automatically and
-posts the plan output to the job summary; the `apply` job then pauses in
-the `production` environment until you click **Approve** in the Actions
-UI, having reviewed that exact plan. Only after approval does
-`tofu apply -auto-approve` run, and only for a plan a human already saw.
+From then on: every pull request targeting `master` runs the `plan` job
+automatically and posts the plan output to the job summary; the `apply`
+job then pauses in the `production` environment until you click
+**Approve** in the Actions UI, having reviewed that exact plan. Only after
+approval does `tofu apply -auto-approve` run, and only for a plan a human
+already saw — against the PR branch, before it's merged.
+
+If the state changed, `apply` pushes an extra commit onto the PR's own
+branch (`[skip ci]`, so it doesn't retrigger this workflow) rather than
+onto `master` — `master` is protected and this workflow never pushes to it
+directly. Squash-merge the PR as usual once `apply` finishes: the state
+update lands in the same commit as the change that produced it, so
+`master`'s history never gets a separate bot commit or bot-opened PR.
 
 **Runner placement:** the workflow runs on
 `${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}`. GitHub-hosted runners reach
