@@ -125,7 +125,15 @@ instead of running by hand. This is a one-time setup step:
    - `PROXMOX_SSH_PRIVATE_KEY` (a private key authorized on the Proxmox
      host for the SSH-based image download/import operations; CI loads it
      into an `ssh-agent`, matching the local `ssh { agent = true }` setup)
-4. Optionally set a `TOFU_RUNNER` repository variable once the runner needs
+4. In **Settings → Actions → General → Workflow permissions**, enable
+   "Allow GitHub Actions to create and approve pull requests". `master` is
+   a protected, PR-only branch, so the `apply` job's state-commit step
+   opens a PR (from a short-lived `chore/tfstate-update-*` branch) and
+   squash-merges it itself instead of pushing directly — this setting is
+   what lets the workflow's token open that PR. Required reviews on this
+   repo are already 0, so nothing blocks the auto-merge; no branch
+   protection rule needs to change.
+5. Optionally set a `TOFU_RUNNER` repository variable once the runner needs
    to change — see the note on runner placement below.
 
 From then on: every push to `master` runs the `plan` job automatically and
