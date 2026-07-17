@@ -8,9 +8,11 @@
 # TF_ENCRYPTION env var (OpenTofu merges env config over code) — see
 # infra/tofu/tofu.sh and docs/runbooks/tofu-apply.md.
 #
-# This also keeps CI `validate` green with zero secrets: with no encryption
-# block to evaluate and no state file read by `init -backend=false` /
-# `validate`, there is nothing that needs TF_ENCRYPTION at that stage.
+# This also keeps CI `validate` green with zero secrets: no encryption block
+# to evaluate, and the CI fmt/validate job deletes its checkout's committed
+# terraform.tfstate before `init -backend=false` (see ci.yml) so the default
+# local backend has no encrypted state file to read. Nothing at that stage
+# needs TF_ENCRYPTION.
 
 terraform {
   required_version = ">= 1.8.0"

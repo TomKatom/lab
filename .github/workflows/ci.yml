@@ -51,6 +51,14 @@ jobs:
       - name: tofu fmt -check
         if: steps.has-tf.outputs.present == 'true'
         run: tofu fmt -check -recursive
+      # terraform.tfstate is committed (encrypted) for the local/CI-apply
+      # workflow, but fmt/validate is pure static analysis and has no
+      # TF_ENCRYPTION passphrase (this job intentionally holds no secrets).
+      # Strip the state out of this ephemeral checkout so the default local
+      # backend has nothing encrypted to fail on reading.
+      - name: remove committed state (fmt/validate needs none)
+        if: steps.has-tf.outputs.present == 'true'
+        run: rm -f terraform.tfstate terraform.tfstate.backup
       - name: tofu init (no backend)
         if: steps.has-tf.outputs.present == 'true'
         run: tofu init -backend=false
