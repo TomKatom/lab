@@ -30,6 +30,12 @@ recoverable (just slow). Management is via **WireGuard**, not public SSH.
 - **Observability:** deferred (placeholder namespace now).
 - **Backups:** deferred — later, `vzdump` → NFS share on a separate box.
 - Upstream givens: GitHub repo + CI/CD, Cloudflare DNS, trunk-based dev, DRY config.
+- **Cross-tool DRY:** facts shared by ≥2 layers (domain, internal/WireGuard
+  subnets, VM IP, service ports) live once in `config/lab.yml`; OpenTofu,
+  Ansible, and Helm/Argo all read that file rather than redeclaring values.
+  `tofu output` still hands Ansible *realized* identifiers (VM id/name) —
+  it can't reach the pull-based Argo/Helm layer, which is why the shared
+  facts live in a plain file instead.
 
 ---
 
@@ -98,6 +104,7 @@ lab/
 ├─ .sops.yaml                    # age recipients + path_regex encryption rules
 ├─ .github/workflows/ci.yml      # fmt/validate/lint/helm-template|kubeconform/gitleaks
 ├─ renovate.json
+├─ config/lab.yml                # cross-tool shared facts (domain, subnet, ports)
 ├─ docs/                         # git-tracked workflow + runbooks
 │   ├─ architecture.md  bootstrap.md  secrets.md  networking.md
 │   └─ runbooks/ (dr, restore, disk-replace, lockout-recovery)
@@ -106,7 +113,7 @@ lab/
 │   ├─ vm-k3s.tf storage.tf network.tf firewall.tf cloudflare.tf
 │   ├─ variables.tf outputs.tf
 │   ├─ terraform.tfstate         # committed, natively ENCRYPTED
-│   └─ secrets.sops.tfvars       # Proxmox + Cloudflare tokens (encrypted)
+│   └─ secrets.sops.tfvars.json  # Proxmox + Cloudflare tokens (encrypted)
 ├─ ansible/                      # Layer 2: configuration
 │   ├─ inventory/hosts.yml
 │   ├─ group_vars/all.sops.yml   # shared vars/secrets (DRY, encrypted)
@@ -119,9 +126,11 @@ lab/
     └─ apps/                     # plex, prowlarr, sonarr, radarr, bazarr, deluge, overseerr (app-template values)
 ```
 
-DRY: shared values (domain `tomkatom.com`, timezone, storage paths, resource classes,
-internal subnet) defined once — in Ansible `group_vars` and cluster-wide Helm/Kustomize
-values — and referenced, not duplicated.
+DRY: values shared across ≥2 layers (domain `tomkatom.com`, internal subnet,
+service ports) are defined once in `config/lab.yml` and referenced by Tofu
+locals, Ansible `group_vars`, and cluster-wide Helm/Kustomize values — never
+duplicated. Layer-specific values (timezone, storage paths, resource
+classes) stay declared in that layer.
 
 ---
 

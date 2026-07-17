@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -13,10 +13,10 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -24,8 +24,8 @@ jobs:
     name: yamllint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - run: pip install yamllint
@@ -38,7 +38,7 @@ jobs:
       run:
         working-directory: infra/tofu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: has-tf
         run: |
           if find . -name '*.tf' -print -quit | grep -q .; then
@@ -46,11 +46,19 @@ jobs:
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: opentofu/setup-opentofu@v1
+      - uses: opentofu/setup-opentofu@v2
         if: steps.has-tf.outputs.present == 'true'
       - name: tofu fmt -check
         if: steps.has-tf.outputs.present == 'true'
         run: tofu fmt -check -recursive
+      # terraform.tfstate is committed (encrypted) for the local/CI-apply
+      # workflow, but fmt/validate is pure static analysis and has no
+      # TF_ENCRYPTION passphrase (this job intentionally holds no secrets).
+      # Strip the state out of this ephemeral checkout so the default local
+      # backend has nothing encrypted to fail on reading.
+      - name: remove committed state (fmt/validate needs none)
+        if: steps.has-tf.outputs.present == 'true'
+        run: rm -f terraform.tfstate terraform.tfstate.backup
       - name: tofu init (no backend)
         if: steps.has-tf.outputs.present == 'true'
         run: tofu init -backend=false
@@ -65,7 +73,7 @@ jobs:
     name: ansible-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: has-ansible
         run: |
           if find ansible -name '*.yml' -print -quit | grep -q .; then
@@ -85,8 +93,8 @@ jobs:
     name: helm/kustomize render -> kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
       - name: install kustomize + kubeconform
         env:
           KUSTOMIZE_VERSION: "5.8.1"

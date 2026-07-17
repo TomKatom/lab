@@ -1,0 +1,18 @@
+# Single source of truth for facts shared across all IaC layers:
+#   OpenTofu (infra/tofu)  ·  Ansible (ansible/)  ·  Helm/Argo (clusters/lab/)
+# Non-secret. Secrets live in SOPS; tool-specific/operator facts (Proxmox
+# endpoint, storage pools, VM sizing, ...) stay declared in each tool.
+domain: tomkatom.com
+network:
+  internal_subnet: 10.10.10.0/24  # vmbr1 subnet (Tofu bridge/VM, Ansible NAT + WG route)
+  vmbr1_host_address: 10.10.10.1/24  # host side of vmbr1 = the VM's gateway
+  wireguard_subnet: 10.10.20.0/24  # WG peer subnet (Tofu fw mgmt, Ansible wireguard)
+  vm_ip_address: 10.10.10.10  # k3s-node static internal IP (Tofu cloud-init, Ansible DNAT)
+ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
+  https: 443
+  plex: 32400
+  torrent: 51413
+  ssh: 22
+  wireguard: 51820
+  pve_api: 8006
+  k8s_api: 6443

@@ -6,11 +6,17 @@ were made. This document is meant to stay in sync with what's actually
 implemented as each phase lands; where the two disagree, trust this file
 and the code, and update `master-plan.md`'s decision log if a call changed.
 
-**Status:** Phase 1 (repo scaffold) — nothing below is provisioned yet.
+**Status:** Phase 2 (provision) — `infra/tofu/` is authored and
+`tofu validate`s green in CI, but nothing has been applied yet: the server
+isn't reachable from CI or from wherever this was authored. The first apply
+is a manual, operator-run step (dead-man switch, see
+[`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)); every apply after
+that goes through the gated CI pipeline described in
+[CI/CD](#cicd--gitops-flow) below.
 
 ## Overview
 
-Single OVH dedicated server (Proxmox 8, E5-1650v4, 128 GB RAM, 2×500 GB
+Single OVH dedicated server (Proxmox 9.2, E5-1650v4, 128 GB RAM, 2×500 GB
 NVMe + 2×2 TB HDD), single public IP. Proxmox host is already installed;
 `rpool` (NVMe ZFS mirror) serves as its root. Everything else — VM,
 networking, cluster, apps — is built as code from this repo.
@@ -19,12 +25,31 @@ Domain: `tomkatom.com` (Cloudflare DNS). Access is WireGuard-only; there is
 no public SSH and no IPMI/console, so the management plane must never be
 self-strandable — see [Management plane](#management-plane).
 
+## Configuration single source of truth
+
+[`config/lab.yml`](../config/lab.yml) holds the non-secret facts shared
+across two or more layers — domain, the internal/WireGuard subnets, the VM's
+static IP, and the service ports. Each layer reads the same file instead of
+re-declaring these values:
+- **OpenTofu** (`infra/tofu/locals.tf`) — `yamldecode(file(...))` into
+  `local.lab`, feeding the bridge/VM/firewall/DNS resources.
+- **Ansible** (Phase 3) — loaded via `vars_files` in `group_vars`, feeding
+  WireGuard, NAT/DNAT, and the inventory.
+- **Helm/Argo** (Phase 5) — referenced via Argo `Application` `valueFiles`,
+  feeding ingress hostnames, cert-manager, and service ports.
+
+Facts used by only one layer (Proxmox endpoint, storage pools, VM sizing,
+image checksum) stay declared in that layer, alongside its secrets.
+
 ## Three IaC layers, one repo
 
 1. **Provision** — [`infra/tofu/`](../infra/tofu/), OpenTofu (`bpg/proxmox`
-   + `cloudflare`). The `k3s-node` VM on `vmbr1`, disks, the Proxmox
-   *filtering* firewall, foundational Cloudflare records. State is local
-   and natively encrypted (OpenTofu ≥1.7), committed to git.
+   + `cloudflare`). `vmbr1` (Tofu-owned internal bridge), the `k3s-node` VM
+   and its disks, the Proxmox *filtering* firewall (with an anti-lockout
+   `restrict_management` toggle — see [Management plane](#management-plane)),
+   foundational Cloudflare records. State is local and natively encrypted
+   (OpenTofu ≥1.7, passphrase injected via `TF_ENCRYPTION`, never in code —
+   see [`infra/tofu/README.md`](../infra/tofu/README.md)), committed to git.
 2. **Configure** — [`ansible/`](../ansible/). WireGuard management plane,
    single-IP NAT/DNAT, host + VM OS hardening, the `tank` ZFS mirror, the
    virtiofs share, k3s install (bundled Traefik disabled).
@@ -34,7 +59,7 @@ self-strandable — see [Management plane](#management-plane).
 ## Target topology
 
 ```
-OVH dedicated (Proxmox 8) — SINGLE public IP
+OVH dedicated (Proxmox 9.2) — SINGLE public IP
 │  Public inbound: 443 · 32400 · torrent-port  (DNAT → VM)  ·  51820/udp (WireGuard, host)
 │  Management (SSH/8006/6443): WireGuard-only, never public
 │  Egress: VM → internet via host masquerade (appears as the OVH IP)
@@ -74,7 +99,7 @@ OVH dedicated (Proxmox 8) — SINGLE public IP
 | Packaging | **Helm** (`bjw-s/app-template`) + **Kustomize** (secrets only) | DRY across near-identical apps; ksops needs Kustomize |
 | Secrets | **SOPS + age** + **ksops** | One key for k8s + Tofu + Ansible |
 | Ingress/TLS | **Traefik** + **cert-manager** (LE DNS-01 Cloudflare, `*.tomkatom.com`) | Wildcard cert, no open :80 |
-| DNS | **external-dns** (Cloudflare) | Records follow Ingresses |
+| DNS | **external-dns** (Cloudflare), `upsert-only` | Records follow Ingresses; never touches the Tofu-owned apex/wildcard/vpn records |
 | AuthN/Z | **Authelia** (forward-auth, file users + TOTP, SQLite) | Protects *arr/deluge UIs |
 | Dep updates | **Renovate** | Automated chart/image bump PRs |
 | CI guards | **GitHub Actions** + **gitleaks** | Validate + block plaintext secrets |
@@ -108,6 +133,35 @@ and only then does OpenTofu drop public SSH from the Proxmox firewall.
 Reseller-mediated console is the slow last-resort fallback if this ever
 goes wrong — see `docs/runbooks/lockout-recovery.md` (Phase 3).
 
+**The anti-lockout mechanism, concretely:** it has two independent halves,
+and the first version of `infra/tofu/firewall.tf` shipped only one of them
+and locked the host out. Both are now enforced in code.
+
+*Half one — who the rules accept from.* The SSH/Proxmox-API/k8s-API accept
+rules gate their `source` on a single `restrict_management` variable. Phase
+2 ships it `false` — the filter firewall is enabled (default-drop) but
+those rules accept from *any* source, so public SSH survives even though
+the firewall is live. Phase 3 flips it to `true` only after WireGuard is
+verified end-to-end; at that point only the `source` on those rules narrows
+to the `mgmt` ipset (`management_sources`). 443/32400/torrent/51820-udp
+stay public throughout. `enable_firewall` is a separate master kill-switch.
+
+*Half two — when the DROP policy is allowed to exist.* The default-DROP
+policy and the accept rules are **separate API objects**, so having correct
+rules in the config guarantees nothing about ordering: OpenTofu will create
+the wall before the holes unless the dependency graph forbids it. It did
+exactly that once — the rules resource had a `depends_on` upstream that
+failed, the rules never ran, and the cluster DROP policy (which depended on
+nothing) applied cleanly, leaving default-drop with zero accept rules on a
+box with no console. The graph is therefore inverted: **the policy depends
+on the rules** (`cluster_firewall` → `firewall_rules.node`, and
+`firewall_options.vm` → `firewall_rules.vm`). A failed rule resource now
+aborts the apply *before* the DROP lands, so a broken apply leaves the host
+open rather than bricked, and destroy tears the policy down first.
+`precondition` blocks on both policy resources refuse a DROP policy with an
+empty management-rule set, or `restrict_management = true` with an empty
+`management_sources`.
+
 **Exposed public ports:** `443` (Traefik/DNAT) · `32400` (Plex direct/DNAT)
 · torrent port (Deluge/DNAT) · `51820/udp` (WireGuard/host). Everything
 else default-drop.
@@ -124,6 +178,41 @@ else default-drop.
   so Sonarr/Radarr do **atomic hardlink moves** — instant imports, no
   copies, same inode.
 
+## CI/CD & GitOps flow
+
+- **Pull-based delivery** (Phase 4+): merge to `master` → Argo CD auto-syncs
+  the cluster. No push into the server for app changes.
+- **PR gate** ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) —
+  `gitleaks`, `yamllint`, `tofu fmt`/`tofu init -backend=false`/
+  `tofu validate`, `ansible-lint`, `helm template | kubeconform` +
+  `kustomize build | kubeconform`. This is a **validate-only** gate: it has
+  no Proxmox credentials and never runs `tofu plan`, by design — reconciling
+  `master-plan.md`'s "`tofu plan` green in CI" wording, `plan` actually runs
+  in the workflow below (with real credentials) and in the local
+  `./tofu.sh plan` wrapper, not in the PR gate.
+- **Gated apply pipeline**
+  ([`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml))
+  — two jobs, split so a bad diff can never apply unattended:
+  - `plan` runs automatically on every push to `master`, using GitHub
+    Actions secrets (not SOPS/age — the master age key never enters CI),
+    and posts the plan output to the job summary.
+  - `apply` (`needs: plan`) runs in the `production` GitHub Environment.
+    That environment's required-reviewer rule is the *only* gate: a human
+    must click **Approve** in the Actions UI, having reviewed the exact
+    plan from the job above, before `tofu apply -auto-approve` runs. There
+    is no repo variable or workflow input that can bypass this. Until the
+    environment is created and configured (a one-time manual step, see
+    [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)), the `apply`
+    job simply has nowhere to run.
+  - Runs on `${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}` — GitHub-hosted
+    reaches the Proxmox API over its still-public IP:8006 for Phase 2/early
+    Phase 3; once `restrict_management=true` lands, `TOFU_RUNNER` switches
+    to a self-hosted runner reachable over WireGuard.
+  - On a state change, the job commits `terraform.tfstate` back to `master`
+    with `[skip ci]` (rebase-then-push, to avoid racing a concurrent push).
+- **Renovate** opens dependency-bump PRs (chart versions, provider pins via
+  the committed `.terraform.lock.hcl`); the same PR gate validates them.
+
 ## Security / hardening
 
 - **No public management surface** — SSH/PVE/k8s APIs are WireGuard-only;
@@ -131,8 +220,9 @@ else default-drop.
 - OS: SSH key-only + non-root, `fail2ban`, `unattended-upgrades`, sysctl +
   `auditd`, minimal packages (Ansible `hardening` role, host + VM).
 - **Firewall in code** — Proxmox filter firewall via Tofu/bpg (default-drop
-  posture); NAT via Ansible. WireGuard is verified before SSH is
-  restricted (anti-lockout); reseller console is the fallback.
+  posture, `enable_firewall` kill-switch); NAT via Ansible. The
+  `restrict_management` toggle keeps SSH/API rules open-to-any until
+  WireGuard is verified (anti-lockout); reseller console is the fallback.
 - Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
   plex.tv auth on its own port, outside Traefik/Authelia.
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
@@ -148,10 +238,13 @@ else default-drop.
 Each phase is its own PR. Full detail and current status in
 [`master-plan.md`](../master-plan.md#phased-implementation-each-phase--its-own-pr).
 
-1. **Repo scaffold** *(current)* — structure, `.sops.yaml`, age key, CI
-   skeleton, README + this doc.
-2. **Provision (Tofu)** — VM, disks, Proxmox filter firewall, Cloudflare
-   records.
+1. **Repo scaffold** — structure, `.sops.yaml`, age key, CI skeleton,
+   README + this doc.
+2. **Provision (Tofu)** *(current)* — `vmbr1`, VM + disks, Proxmox filter
+   firewall (anti-lockout toggle), Cloudflare records, native state
+   encryption, gated CI apply pipeline. Authored + `tofu validate` green;
+   first apply is a manual operator step (see
+   [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)).
 3. **Configure (Ansible)** — WireGuard first, then NAT/DNAT, hardening,
    `tank`, virtiofs, k3s install.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.

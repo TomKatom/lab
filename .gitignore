@@ -1,7 +1,7 @@
-# OpenTofu — the state file IS committed (natively encrypted); everything
-# else here is local scratch that must never be.
+# OpenTofu — the state file IS committed (natively encrypted); the provider
+# lock file IS committed too (reproducible provider pins, Renovate-friendly);
+# everything else here is local scratch that must never be.
 infra/tofu/.terraform/
-infra/tofu/.terraform.lock.hcl
 infra/tofu/*.tfstate.backup
 infra/tofu/crash.log
 infra/tofu/override.tf

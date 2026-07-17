@@ -24,6 +24,7 @@ These steps were already done in a non-IaC way.
 - Use GitOps, I want my repo to be the single source of truth.
 - Trunk based development: trunk is `master`, protected, squash-merge only. Short-lived feature branches, rebase onto `master` to pick up its latest changes while a feature branch is in progress (not merge), then squash-merge the branch into `master` when done via PR.
 - Document the workflow in a form of documentation also tracked by git
+- Don't bombard code with comments, the code should be self documenting - only unclear parts should be documented in code.
 
 ## Cloud Dependencies
 

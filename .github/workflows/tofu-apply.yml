@@ -1,0 +1,159 @@
+name: OpenTofu Apply
+
+# Two-job split so a bad diff can never apply unattended:
+#   plan  - runs automatically on every push to master (read-only), saves the
+#           exact plan as an artifact.
+#   apply - needs: plan, and runs in the `production` GitHub Environment.
+#           That environment's required-reviewer rule is what pauses this
+#           job until a human clicks Approve in the Actions UI, having
+#           reviewed the exact plan output posted by the `plan` job. `apply`
+#           downloads and applies that same saved plan file (not a freshly
+#           recomputed one), so the plan a human approved is the plan that
+#           runs. There is no other gate in this file, and there must never
+#           be one: no repo variable, no workflow_dispatch bypass, no
+#           auto-approve of the environment. Until the `production`
+#           environment exists (with its secrets and a reviewer configured -
+#           a one-time manual setup step, see docs/runbooks/tofu-apply.md)
+#           the `apply` job simply has nowhere to run: inert by construction.
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: tofu plan
+    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - uses: opentofu/setup-opentofu@v2
+
+      # CI uses GitHub Actions secrets, not SOPS/age - the master age key
+      # never enters CI (see docs/secrets.md: "CI holds no age key").
+      - name: Build TF_ENCRYPTION
+        env:
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+        run: |
+          {
+            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
+            ./build-tf-encryption.sh
+            echo "___TF_ENCRYPTION_EOF___"
+          } >> "$GITHUB_ENV"
+
+      - name: tofu init
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu init -input=false
+
+      - name: tofu plan
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          tofu plan -input=false -no-color -out=tofu.tfplan | tee /tmp/tofu-plan.out
+
+      - name: Post plan to job summary
+        if: always()
+        run: |
+          {
+            echo "## tofu plan"
+            echo
+            echo '```'
+            if [ -f /tmp/tofu-plan.out ]; then
+              cat /tmp/tofu-plan.out
+            else
+              echo "(plan did not run - an earlier step failed)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tofu-plan
+          path: infra/tofu/tofu.tfplan
+          retention-days: 1
+
+  apply:
+    name: tofu apply
+    needs: plan
+    environment: production
+    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    concurrency:
+      group: tofu-apply
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: infra/tofu
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tofu-plan
+          path: infra/tofu
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - uses: opentofu/setup-opentofu@v2
+
+      - name: Build TF_ENCRYPTION
+        env:
+          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+        run: |
+          {
+            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
+            ./build-tf-encryption.sh
+            echo "___TF_ENCRYPTION_EOF___"
+          } >> "$GITHUB_ENV"
+
+      - name: tofu init
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu init -input=false
+
+      # Applies the exact plan file the `plan` job produced and a human
+      # approved above - not a freshly recomputed plan. This step is safe
+      # unattended ONLY because this job runs behind the `production`
+      # environment's required-reviewer gate: a human already approved this
+      # specific plan file before this step ever runs.
+      - name: tofu apply
+        env:
+          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: tofu apply -input=false tofu.tfplan
+
+      # State changed -> commit it back. Rebase guards against a race with
+      # any other push to master in between; [skip ci] avoids re-triggering
+      # this workflow (and thus another plan/apply cycle) on our own commit.
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add terraform.tfstate
+          if git diff --cached --quiet; then
+            echo "terraform.tfstate unchanged, nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(tofu): update terraform.tfstate [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
