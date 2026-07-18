@@ -26,6 +26,24 @@ on:
   pull_request:
     branches: [master]
 
+# Supersede, don't stack. Every push to a PR fires a fresh run of this
+# workflow. Without this block the previous run's `apply` job sits in the
+# `production` environment's `waiting` (pending-approval) state while still
+# holding the global `tofu-apply` concurrency group below; the new push's
+# `apply` then queues behind it forever (that group is cancel-in-progress:
+# false), and since nobody should ever approve the stale run's plan, the two
+# deadlock until a human cancels one by hand. Keying this group per-PR with
+# cancel-in-progress: true means a new push cancels the whole prior run for
+# that PR - including its waiting apply - so only the latest commit's plan is
+# ever live to approve. Trade-off: a push landing during an already-approved,
+# actively-running apply cancels it mid-flight; that is safe here because the
+# updated state is only committed/pushed on a fully successful apply (see the
+# final job step), so the source-of-truth state in git is never left partial -
+# the next run re-plans from the last good state and reconciles any drift.
+concurrency:
+  group: tofu-apply-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

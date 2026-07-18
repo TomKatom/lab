@@ -164,3 +164,14 @@ like any other change.
   It is **not** safe for concurrent appliers — there's no locking beyond
   that concurrency group. This was a deliberate trade for "no external
   vendor, git stays the source of truth" (see `master-plan.md`).
+- Pushing more than once to a PR supersedes the earlier run: the
+  workflow-level `concurrency` group (keyed per-PR, `cancel-in-progress:
+  true`) cancels the prior run — including an `apply` still sitting in the
+  `production` `waiting` (pending-approval) state — so only the latest
+  commit's plan is ever live to approve. Without this the stale apply would
+  hold the global `tofu-apply` group and the new push's apply would queue
+  behind it forever, deadlocking until cancelled by hand. The edge case: a
+  push that lands while an already-approved apply is actively running
+  cancels it mid-flight. That's safe because the updated `terraform.tfstate`
+  is only committed on a fully successful apply, so git's copy is never left
+  partial — the next run re-plans from the last good state and reconciles.
