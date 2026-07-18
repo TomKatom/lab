@@ -178,6 +178,32 @@ else default-drop.
   so Sonarr/Radarr do **atomic hardlink moves** — instant imports, no
   copies, same inode.
 
+### Guest agent
+
+`vm-k3s.tf` sets `agent.enabled = true`, which only tells Proxmox to expose
+the virtio-serial channel — it does nothing until `qemu-guest-agent` is
+actually installed and running inside the guest, which is Ansible's job
+(Phase 3), not Tofu's.
+
+Until that package is installed, the Proxmox API's guest-agent endpoints
+(e.g. `agent/network-get-interfaces`, used internally by the `bpg` provider
+to read the VM's reported IPs) have nothing to talk to. The Terraform API
+token's role (`Terraform`, a custom least-privilege role — see
+[`docs/secrets.md`](secrets.md)) deliberately excludes `VM.GuestAgent.Audit`
+/ `VM.GuestAgent.Unrestricted` for this reason: granting them before the
+agent exists doesn't fail fast (a quick, harmless 403) — the Proxmox API
+call instead blocks for minutes waiting on a socket nothing is listening on,
+which hangs `tofu plan`/`apply` on every run.
+
+**Phase 3 must, in order:**
+1. Install and enable `qemu-guest-agent` in the VM (Ansible `hardening` or
+   `k3s` role).
+2. Only then grant `VM.GuestAgent.Audit` (read-only: network/OS info) to the
+   `Terraform` role — `VM.GuestAgent.Unrestricted` allows arbitrary
+   guest-exec and should stay unused unless something concrete needs it.
+3. Re-verify `tofu plan` stays fast afterward, since the guest agent should
+   now actually answer.
+
 ## CI/CD & GitOps flow
 
 - **Pull-based delivery** (Phase 4+): merge to `master` → Argo CD auto-syncs
@@ -249,7 +275,9 @@ Each phase is its own PR. Full detail and current status in
    first apply is a manual operator step (see
    [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)).
 3. **Configure (Ansible)** — WireGuard first, then NAT/DNAT, hardening,
-   `tank`, virtiofs, k3s install.
+   `tank`, virtiofs, k3s install. Also install/enable `qemu-guest-agent` in
+   the VM (see [Guest agent](#guest-agent) below) — Phase 2 deliberately
+   leaves this out, since the VM has no OS config yet.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.
 5. **Platform apps** — cert-manager, external-dns, Traefik, Authelia.
 6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge → Plex →

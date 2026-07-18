@@ -20,4 +20,11 @@ resource "proxmox_download_file" "debian13" {
   url                = var.debian_image_url
   checksum           = var.debian_image_checksum
   checksum_algorithm = "sha512"
+
+  # The "latest" Trixie URL doesn't expose file metadata (size/mtime) over
+  # HTTP HEAD, which OpenTofu needs to decide whether to re-download an
+  # already-present file. `overwrite = false` skips that remote metadata
+  # check entirely; checksum verification above still guards content
+  # correctness on the initial download.
+  overwrite = false
 }
