@@ -26,6 +26,11 @@ kubeconfig
 *.kubeconfig
 talosconfig
 
+# WireGuard peer keys generated locally per the PR2 runbook (wg genkey/wg
+# pubkey) — must never land in the repo, even transiently.
+privatekey
+publickey
+
 # Helm
 **/charts/*.tgz
 

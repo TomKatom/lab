@@ -33,4 +33,9 @@ wireguard_interface: wg0
 #       allowed_ips:
 #         - "{{ network.wireguard_subnet }}"
 #         - "{{ network.internal_subnet }}"
-wireguard_peers: []
+wireguard_peers:
+  - name: toms-macbook
+    public_key: "nLi+BSIB6VIf99D1cLlIsbqZ3AU8jp+z2rp/n0LB/TQ="
+    allowed_ips:
+      - "{{ network.wireguard_subnet }}"
+      - "{{ network.internal_subnet }}"
