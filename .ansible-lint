@@ -1,0 +1,19 @@
+---
+# ansible-lint config. Lives at repo root (not ansible/) because both CI
+# (.github/workflows/ci.yml, `ansible/ansible-lint@v26.6.0`) and pre-commit
+# invoke ansible-lint from the repo root.
+# "safety" catches real correctness/security issues without demanding the
+# Galaxy-publishing scaffolding the stricter "production" profile wants
+# (meta/runtime.yml, changelog, molecule tests) — overkill for a private ops
+# repo.
+profile: safety
+
+exclude_paths:
+  - .cache/
+  - infra/
+  - clusters/
+  # SOPS ciphertext, not hand-written YAML — its `#ENC[...]` comment lines
+  # will never satisfy yaml[comments] formatting rules, and there's nothing
+  # meaningful to lint in an ansible-role sense once encrypted anyway.
+  - "**/*.sops.yml"
+  - "**/*.sops.yaml"

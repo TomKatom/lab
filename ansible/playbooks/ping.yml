@@ -1,0 +1,11 @@
+---
+# Connectivity smoke test — confirms the inventory, SSH transport (incl. the
+# k3s-node ProxyJump), and collection setup all work before any role that
+# actually changes state runs. Read-only.
+- name: Ping every inventory host
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Ping
+      ansible.builtin.ping:
