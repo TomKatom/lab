@@ -8,12 +8,12 @@ blurs "the pipeline did this" from "I did this" in any audit trail.
 
 | | Automation key (`ci-tofu-apply`) | Personal admin key(s) |
 |---|---|---|
-| Purpose | `bpg`'s SSH-based image download/import (`ssh { agent = true }` in `providers.tf`) — nothing else | Interactive login for you, to troubleshoot/administer |
-| Used by | GitHub Actions (`tofu-apply.yml`) and, for host-sensitive local applies, you | You, from whichever machine you're on |
+| Purpose | `bpg`'s SSH-based image download/import (`ssh { agent = true }` in `providers.tf`), and Ansible's SSH transport for CI-driven applies (`ansible-apply.yml`) — no other use | Interactive login for you, to troubleshoot/administer |
+| Used by | GitHub Actions (`tofu-apply.yml`, `ansible-apply.yml`) and, for host-sensitive local applies, you | You, from whichever machine you're on |
 | Lives in git? | No — never in `~/.ssh` used for anything else, never committed | Public half only, via `admin_ssh_public_keys` in [`config/lab.yml`](../config/lab.yml) |
 | Durable custody | GitHub Actions secret `PROXMOX_SSH_PRIVATE_KEY` + a password-manager backup entry | Password-manager or hardware-token-backed SSH agent — not a bare file on one laptop |
 | Host (`root@proxmox`) trust | `authorized_keys`, bootstrapped by hand (see [Current gap](#current-gap-the-host)) | Same, same gap |
-| VM (`debian@k3s-node`) trust | Not used — the automation key never touches the VM | `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`) — fully GitOps'd already |
+| VM (`debian@k3s-node`) trust | Yes — CI-driven Ansible applies (`ansible-apply.yml`) need to reach the VM, not just the host. Declared the same way personal keys are, via `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`), but see [Known gap: the VM](#known-gap-the-vm) — that declaration doesn't retroactively reach the already-running VM | `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`) — fully GitOps'd already |
 
 ## Why the split
 
@@ -106,13 +106,42 @@ public SSH to the host goes away entirely and this file's "adding a new
 machine" story for the host becomes: add the key to `config/lab.yml`, get
 on WireGuard, `ssh`.
 
+## Known gap: the VM
+
+Unlike the host, the VM's key trust *is* already fully declarative —
+`admin_ssh_public_keys` in `config/lab.yml` flows into cloud-init
+(`infra/tofu/vm-k3s.tf`) — but declarative doesn't mean retroactive.
+`k3s-node` already exists (Phase 2's Tofu apply already ran), and cloud-init
+only reads `user_account.keys` on **first boot**. Adding the automation
+key's public half to `admin_ssh_public_keys` changes what a *future* VM
+build would trust; it does nothing to the *running* VM's
+`/home/debian/.ssh/authorized_keys` today.
+
+Until one of the following happens, the automation key is not actually
+authorized on `k3s-node`, regardless of what `config/lab.yml` says:
+
+- An operator with existing VM access (a personal key) appends the
+  automation key's public half to `authorized_keys` by hand, or
+- The VM is rebuilt (Tofu destroy/recreate), which re-runs cloud-init from
+  scratch and picks up the current `admin_ssh_public_keys` list.
+
+Until then, `ansible-apply.yml`'s `apply` job only reliably works for
+playbooks targeting `proxmox_host` — the Proxmox host itself already trusts
+this key today (a separate, pre-existing situation: see
+[Current gap: the host](#current-gap-the-host) above, which is about *how*
+that host trust is maintained, not *whether* it exists). Playbooks or plays
+touching `k3s_node` — `verify-wireguard.yml`'s VM-reachability checks today,
+and any future role (hardening, k3s, etc.) that targets the VM — will fail
+to connect from CI until an operator closes this gap by hand.
+
 ## Rotation / compromise
 
 - **Automation key compromised or rotating:** generate a new keypair,
   update `PROXMOX_SSH_PRIVATE_KEY` in GitHub Actions secrets and the
   password-manager backup, re-authorize the new public key on the host,
-  remove the old one from `authorized_keys`. Doesn't touch your personal
-  access.
+  remove the old one from `authorized_keys` — and, once the VM gap above is
+  closed, do the same in the VM's `authorized_keys` too. Doesn't touch your
+  personal access.
 - **Personal key compromised or rotating:** remove it from
   `admin_ssh_public_keys` in `config/lab.yml`, add the replacement, PR +
   apply (VM); remove/append the host's `authorized_keys` by hand until the

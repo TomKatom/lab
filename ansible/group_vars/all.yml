@@ -1,7 +1,8 @@
 ---
-# Shared, non-secret Ansible vars for every host. Secrets live in
-# all.sops.yml (SOPS + age, decrypted in-memory by the community.sops vars
-# plugin enabled in ../ansible.cfg — never written to disk).
+# Shared, non-secret Ansible vars for every host. No role currently needs a
+# secret; if one ever does, it would live in a sibling all.sops.yml (SOPS +
+# age, decrypted in-memory by the community.sops vars plugin enabled in
+# ../ansible.cfg — never written to disk). See ansible/README.md.
 #
 # Facts shared with OpenTofu/Helm live in ../../config/lab.yml instead of
 # here, and are loaded per-playbook via `vars_files` (see docs/architecture.md

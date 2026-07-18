@@ -1,0 +1,237 @@
+name: Ansible Apply
+
+# Ansible has no single converging "plan" the way OpenTofu does, so this
+# workflow's two jobs are NOT a plan/apply pair in the same sense
+# tofu-apply.yml's are:
+#   check - runs automatically on every pull request touching ansible/ or
+#           config/lab.yml. Syntax-checks every playbook (blocking) and
+#           best-effort previews a `--check --diff` run (non-blocking).
+#           This is lint + partial preview, not a guarantee - see the
+#           caveat in the job below for exactly why.
+#   apply - workflow_dispatch only, gated by the `production` environment's
+#           required-reviewer rule (the same gate tofu-apply.yml uses). A
+#           human picks exactly which playbook to run and clicks Approve.
+#
+# Unlike tofu-apply.yml, `apply` does NOT `need:` `check`, and does not
+# download any artifact `check` produced. Tofu's `apply` applies the
+# *exact* plan file a human reviewed; Ansible has no equivalent "compiled
+# plan" to carry forward - `ansible-playbook` always recomputes what to do
+# from the live target's actual state at run time, every run. So `apply`
+# here re-runs the real thing fresh, and the only thing gating it is the
+# environment approval, not a saved artifact. Don't assume the two jobs are
+# linked the way Tofu's are.
+#
+# Both triggers live in one `on:` block (pull_request + workflow_dispatch)
+# so this stays one workflow file, but that means each job below gates
+# itself with `if: github.event_name == ...` - unlike tofu-apply.yml, where
+# both jobs always run together off the same `pull_request` trigger. One
+# consequence: because `check` and `apply` never run for the same trigger,
+# they can never contend for the same concurrency group, so the
+# supersede-a-waiting-approval deadlock tofu-apply.yml's workflow-level
+# concurrency block exists to prevent structurally cannot happen here -
+# each job below gets its own, simpler, job-scoped concurrency group
+# instead (see each job).
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "ansible/**"
+      - "config/lab.yml"
+      - ".github/workflows/ansible-apply.yml"
+  workflow_dispatch:
+    inputs:
+      playbook:
+        description: >-
+          Playbook to run (basename under ansible/playbooks/, no .yml
+          extension). Maintained by hand - add an option here whenever a
+          new playbook lands; deliberately not auto-discovered (the
+          playbook list grows one PR at a time by design, see
+          ansible/README.md).
+        type: choice
+        required: true
+        options:
+          - ping
+          - proxmox-host
+          - verify-wireguard
+
+permissions:
+  contents: read
+
+# ansible.cfg lives in ansible/, but every step below runs from the repo
+# root (actions/checkout's default cwd) - ansible-core's config discovery
+# is cwd-only, no parent-dir walk, so it never finds ansible/ansible.cfg on
+# its own. Silently falls back to the wrong roles_path and disables the
+# community.sops vars plugin. Same gotcha ci.yml's ansible-lint job and
+# .pre-commit-config.yaml's ansible-lint entry already work around; set
+# once here at the workflow level so every ansible-* command in either job
+# below picks it up identically, instead of repeating it per step.
+env:
+  ANSIBLE_CONFIG: ansible/ansible.cfg
+
+jobs:
+  check:
+    name: ansible check
+    if: github.event_name == 'pull_request'
+    # Shared with tofu-apply.yml's runners once a self-hosted runner exists
+    # for the WireGuard-only-management phase (see that workflow's
+    # runs-on comment) - LAB_RUNNER, not TOFU_RUNNER, since Ansible needs
+    # the same runner tofu-apply.yml does.
+    runs-on: ${{ vars.LAB_RUNNER || 'ubuntu-latest' }}
+    # A new push should supersede a stale check on the same PR rather than
+    # queue behind it - there's no approval gate here to deadlock against
+    # (unlike tofu-apply.yml's apply job), so this is purely about not
+    # wasting runner time on outdated commits.
+    concurrency:
+      group: ansible-apply-check-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        # Pinned, and matched to the ansible-core version ansible-lint
+        # v26.6.0 (pinned in ci.yml and .pre-commit-config.yaml) resolves
+        # on its own - keeps lint and this workflow's syntax-check/preview
+        # behaving identically.
+        run: pip install ansible-core==2.21.2
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - name: Install Galaxy collections
+        # -p is explicit for the same reason ansible/README.md documents:
+        # some install methods don't default ansible-galaxy's install path
+        # to ~/.ansible/collections, which is also the one path
+        # ansible-core (and this workflow's own ansible-playbook
+        # invocations below) actually searches.
+        run: ansible-galaxy collection install -r ansible/requirements.yml -p ~/.ansible/collections
+
+      - name: Syntax-check every playbook
+        run: |
+          set -euo pipefail
+          for playbook in ansible/playbooks/*.yml; do
+            echo "== ansible-playbook --syntax-check ${playbook} =="
+            ansible-playbook "$playbook" --syntax-check
+          done
+
+      # Ansible has no true `plan`. `--check --diff` still opens a real SSH
+      # connection to gather facts (it is not purely offline like the
+      # syntax-check above), yet it is still only a best-effort preview:
+      # `command`/`shell` tasks are skipped entirely in check mode -
+      # Ansible has no way to know what they would do without running them
+      # for real - and even modules that do run under --check can misreport
+      # when their check-mode support is incomplete. Concretely, in this
+      # repo today: the wireguard role's key generation
+      # (`ansible.builtin.shell: wg genkey`) and its `wg pubkey`/`wg show`
+      # steps, plus verify-wireguard.yml's own `wg show`/`ping` command
+      # tasks, all fall in this category and will not meaningfully preview
+      # here. Treat this job's output as lint + partial preview, never a
+      # guarantee - unlike `tofu plan`.
+      #
+      # `--limit proxmox_host`: the automation key isn't trusted on the VM
+      # yet (see docs/ssh-keys.md's "Known gap: the VM"), so a --check run
+      # against k3s_node would just fail to connect, not meaningfully
+      # preview anything. playbooks/proxmox-host.yml only targets
+      # proxmox_host anyway, so the limit is a no-op for it.
+      # playbooks/verify-wireguard.yml also has plays against
+      # proxmox_host_wg/k3s_node_wg; --limit causes those plays to cleanly
+      # report "no hosts matched" and skip rather than fail, which is
+      # called out in the summary below.
+      - name: Best-effort --check --diff preview
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          {
+            echo "## ansible --check --diff (best-effort preview)"
+            echo
+            echo "Ansible has no true \`plan\`. \`command\`/\`shell\` tasks (e.g."
+            echo "the wireguard role's \`wg genkey\`, and \`wg-quick@wg0\`"
+            echo "bring-up) are skipped entirely in check mode, and modules"
+            echo "without full check-mode support may misreport even when they"
+            echo "do run. Treat this as lint + partial preview, not a"
+            echo "guarantee, unlike \`tofu plan\`."
+            echo
+            echo "Limited to \`--limit proxmox_host\`: the automation key isn't"
+            echo "trusted on \`k3s_node\` yet (docs/ssh-keys.md, \"Known gap: the"
+            echo "VM\"), so plays targeting \`proxmox_host_wg\`/\`k3s_node_wg\`"
+            echo "below report \"no hosts matched\" and skip rather than preview."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for playbook in ansible/playbooks/*.yml; do
+            {
+              echo "### ${playbook}"
+              echo
+              echo '```diff'
+            } >> "$GITHUB_STEP_SUMMARY"
+            ansible-playbook "$playbook" --check --diff --limit proxmox_host \
+              >> "$GITHUB_STEP_SUMMARY" 2>&1 \
+              || echo "(preview failed or was partially skipped - see output above; this step is non-blocking)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  apply:
+    name: ansible apply
+    if: github.event_name == 'workflow_dispatch'
+    environment: production
+    # Shared with tofu-apply.yml's runners once a self-hosted runner exists
+    # (see that workflow's runs-on comment) - LAB_RUNNER, not TOFU_RUNNER.
+    runs-on: ${{ vars.LAB_RUNNER || 'ubuntu-latest' }}
+    # Serialize applies against the live server, and never cancel one
+    # mid-flight - mirrors tofu-apply.yml's apply job. Unlike that job,
+    # there's no "updated state" to leave partial on a cancelled run, but a
+    # half-applied playbook is still not something to interrupt casually.
+    concurrency:
+      group: ansible-apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: pip install ansible-core==2.21.2
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
+
+      - name: Install Galaxy collections
+        run: ansible-galaxy collection install -r ansible/requirements.yml -p ~/.ansible/collections
+
+      # No `needs: check` and no downloaded plan artifact - see the header
+      # comment above for why. The `production` environment's
+      # required-reviewer rule (same gate tofu-apply.yml uses) is what a
+      # human approves before this step ever runs; there is no other gate
+      # in this file, and there must never be one.
+      - name: Run playbook
+        run: |
+          set -o pipefail
+          ansible-playbook "ansible/playbooks/${{ inputs.playbook }}.yml" --diff | tee /tmp/ansible-apply.out
+
+      - name: Post output to job summary
+        if: always()
+        run: |
+          {
+            echo "## ansible-playbook ${{ inputs.playbook }}.yml --diff"
+            echo
+            echo '```'
+            if [ -f /tmp/ansible-apply.out ]; then
+              cat /tmp/ansible-apply.out
+            else
+              echo "(playbook did not run - an earlier step failed)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # No state/artifact to push back afterward - unlike tofu-apply.yml's
+      # final "push updated tfstate" step, Ansible has no state file, so
+      # there is nothing analogous to commit here.

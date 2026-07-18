@@ -38,13 +38,19 @@ committed — `gitleaks` in CI is the backstop, not the primary control.
 
 ```sh
 # edit an existing encrypted file (decrypts to $EDITOR, re-encrypts on save)
-sops ansible/group_vars/all.sops.yml
 sops infra/tofu/state.sops.env
 sops --input-type binary --output-type binary infra/tofu/secrets.sops.tfvars.json
 
-# decrypt to stdout, e.g. to feed `ansible-playbook`
-sops -d ansible/group_vars/all.sops.yml
+# decrypt to stdout, e.g. to feed a consumer directly
+sops -d infra/tofu/state.sops.env
 ```
+
+No `ansible/**/*.sops.yml` file exists today — no Phase 3 role has needed a
+real secret yet (see [`ansible/README.md`](../ansible/README.md)) — but the
+pattern above applies identically once one does: `sops
+ansible/group_vars/all.sops.yml` to edit, `sops -d ...` to decrypt to
+stdout. The `community.sops` vars plugin (enabled in `ansible/ansible.cfg`)
+picks up any matching file automatically the moment it exists.
 
 `infra/tofu/secrets.sops.tfvars.json` and `state.sops.env` are normally
 decrypted for you by [`infra/tofu/tofu.sh`](../infra/tofu/tofu.sh) — you
@@ -76,6 +82,17 @@ to wherever you've restored it from the password manager instead.
   intentionally two independent secret stores, not one synced from the
   other, so a compromised GitHub Actions secret can't also unlock the age
   keypair.
+- **The Ansible gated apply workflow** (`ansible-apply.yml`) follows the
+  same principle: it reads only `PROXMOX_SSH_PRIVATE_KEY` (the same repo
+  secret `tofu-apply.yml` uses, its trust extended to the VM as well as the
+  host — see [`docs/ssh-keys.md`](ssh-keys.md)) and touches no SOPS/age
+  material at all. That's easy to hold today because no Ansible role
+  currently needs a secret — `ansible/group_vars/` holds only plain vars,
+  and the `community.sops` vars plugin (enabled in `ansible/ansible.cfg`)
+  has nothing to decrypt because no `*.sops.yml` file exists there yet. If
+  a future role needs one, CI would need a way to decrypt it without ever
+  holding the age key outright — same unsolved shape as "CI holds no age
+  key" above — a problem worth solving when it's real, not preemptively.
 - **Argo CD** decrypts in-cluster via the ksops Kustomize plugin. The
   private key is installed once at cluster bootstrap as a k8s Secret
   (`sops-age-key`) — see `docs/bootstrap.md` (Phase 4) for the exact
