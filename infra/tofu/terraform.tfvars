@@ -46,10 +46,7 @@ debian_image_checksum = "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a
 
 # --- VM guest OS / cloud-init --------------------------------------------------
 
-vm_username = "debian"
-# Authorized SSH public keys live in ../../config/lab.yml
-# (admin_ssh_public_keys) — shared with Ansible's future host hardening
-# role instead of duplicated here. See docs/ssh-keys.md.
+vm_username    = "debian"
 vm_dns_servers = ["1.1.1.1", "8.8.8.8"]
 
 # --- Firewall toggles ------------------------------------------------------------
