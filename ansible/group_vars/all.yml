@@ -1,0 +1,15 @@
+---
+# Shared, non-secret Ansible vars for every host. Secrets live in
+# all.sops.yml (SOPS + age, decrypted in-memory by the community.sops vars
+# plugin enabled in ../ansible.cfg — never written to disk).
+#
+# Facts shared with OpenTofu/Helm live in ../../config/lab.yml instead of
+# here, and are loaded per-playbook via `vars_files` (see docs/architecture.md
+# #configuration-single-source-of-truth). This file only holds vars that are
+# Ansible-only or, like ovh_public_ip below, needed before a playbook's
+# vars_files load (see inventory/hosts.yml's top comment for why).
+
+# Must match infra/tofu/terraform.tfvars `ovh_public_ip` — kept in sync by
+# hand, same as that file's own duplication of the value inside
+# `proxmox_endpoint`.
+ovh_public_ip: 145.239.3.55

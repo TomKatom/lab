@@ -1,0 +1,10 @@
+---
+# Pinned collections. Renovate's `ansible` manager tracks this file for
+# version-bump PRs (see ../renovate.json).
+collections:
+  - name: community.sops  # SOPS-encrypted group_vars, decrypted in-memory
+    version: "2.4.0"
+  - name: ansible.posix  # sysctl, mount, synchronize
+    version: "2.2.2"
+  - name: community.general  # ufw/nftables helpers, misc modules
+    version: "13.2.0"
