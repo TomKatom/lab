@@ -2,8 +2,8 @@
 # Layer 2, host-side configuration. Roles land here incrementally as their
 # PRs merge — pve_repos (this host has no paid PVE subscription, so its
 # enterprise apt repos are swapped for the free no-subscription one) must
-# run first, before any other role's apt tasks; wireguard next; hardening,
-# network-nat, zfs-tank follow.
+# run first, before any other role's apt tasks; wireguard and network_nat
+# next; hardening, zfs-tank follow.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -17,3 +17,4 @@
   roles:
     - pve_repos
     - wireguard
+    - network_nat

@@ -1,0 +1,21 @@
+# Managed by Ansible (roles/network_nat) — do not edit by hand.
+#
+# Dedicated `ip`-family table, deliberately not `inet`/`bridge`: keeps this
+# ruleset from ever colliding with PVE's own proxmox-firewall* tables (see
+# infra/tofu/firewall.tf) or anything in /etc/nftables.conf. Egress NAT only
+# — no prerouting/DNAT chain here, that lands in a later PR.
+table ip {{ network_nat_table }} {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		ip saddr {{ network.internal_subnet }} oifname "{{ ansible_default_ipv4.interface }}" masquerade
+	}
+
+	chain forward {
+		# Belt-and-suspenders: the Tofu-owned PVE firewall already sets
+		# forward_policy = ACCEPT, but this role shouldn't depend on that
+		# staying true to keep vmbr1 <-> uplink traffic flowing.
+		type filter hook forward priority filter; policy accept;
+		iifname "{{ network_nat_bridge }}" oifname "{{ ansible_default_ipv4.interface }}" accept
+		iifname "{{ ansible_default_ipv4.interface }}" oifname "{{ network_nat_bridge }}" accept
+	}
+}

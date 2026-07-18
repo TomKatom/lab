@@ -1,0 +1,17 @@
+# Managed by Ansible (roles/network_nat) — do not edit by hand.
+#
+# Static unit (no Jinja): the ruleset path here must stay in sync by hand
+# with defaults/main.yml's network_nat_ruleset_path.
+[Unit]
+Description=Load the lab-nat nftables ruleset (egress masquerade for vmbr1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/lab-nat.nft
+ExecStop=/usr/sbin/nft delete table ip lab-nat
+
+[Install]
+WantedBy=multi-user.target

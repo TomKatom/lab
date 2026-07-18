@@ -1,0 +1,61 @@
+---
+# Egress-only NAT (masquerade) for VMs on {{ network_nat_bridge }}. Ingress
+# DNAT (443/32400/51413 -> the VM) is explicitly out of scope — see the
+# lab-nat.nft.j2 template header — and lands in a later PR.
+
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read net.ipv4.ip_forward
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: network_nat_ip_forward
+  changed_when: false
+
+- name: Assert IPv4 forwarding is already enabled
+  # The wireguard role owns setting this sysctl (it runs earlier in the same
+  # play, playbooks/proxmox-host.yml) — this role only masquerades traffic
+  # that's already being forwarded, it doesn't turn forwarding on itself.
+  ansible.builtin.assert:
+    that:
+      - network_nat_ip_forward.stdout == "1"
+    fail_msg: >-
+      net.ipv4.ip_forward is not enabled. The wireguard role
+      (roles/wireguard/tasks/main.yml) should have set this — confirm it
+      runs before network_nat in playbooks/proxmox-host.yml.
+    success_msg: net.ipv4.ip_forward is already enabled.
+
+- name: Ensure the nftables ruleset directory exists
+  ansible.builtin.file:
+    path: "{{ network_nat_ruleset_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the lab-nat ruleset
+  ansible.builtin.template:
+    src: lab-nat.nft.j2
+    dest: "{{ network_nat_ruleset_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-nat
+
+- name: Install the lab-nat systemd unit
+  ansible.builtin.copy:
+    src: lab-nat.service
+    dest: /etc/systemd/system/lab-nat.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-nat
+
+- name: Enable and start lab-nat.service
+  ansible.builtin.systemd:
+    name: lab-nat
+    enabled: true
+    state: started

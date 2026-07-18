@@ -1,0 +1,10 @@
+---
+- name: Reload lab-nat
+  # Covers both triggers (ruleset template changed, unit file changed) with
+  # one handler: daemon_reload is a cheap no-op when the unit is unchanged,
+  # and a restart re-runs ExecStart, which re-applies the ruleset from disk
+  # — the standard way to "reload" a oneshot/RemainAfterExit unit.
+  ansible.builtin.systemd:
+    name: lab-nat
+    daemon_reload: true
+    state: restarted
