@@ -68,7 +68,7 @@ resource "proxmox_virtual_environment_vm" "k3s" {
 
     user_account {
       username = var.vm_username
-      keys     = var.ssh_public_keys
+      keys     = local.lab.admin_ssh_public_keys
     }
   }
 }

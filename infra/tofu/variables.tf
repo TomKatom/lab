@@ -136,12 +136,6 @@ variable "vm_username" {
   default     = "debian"
 }
 
-variable "ssh_public_keys" {
-  description = "SSH public keys authorized for vm_username via cloud-init."
-  type        = list(string)
-  default     = []
-}
-
 variable "vm_dns_servers" {
   description = "DNS servers configured on k3s-node via cloud-init."
   type        = list(string)

@@ -1,7 +1,7 @@
 # Non-secret, environment-specific values for infra/tofu. Committed to git.
 #
-# Facts shared across IaC layers (domain, subnet, ports) live in
-# ../../config/lab.yml instead of here — see locals.tf.
+# Facts shared across IaC layers (domain, subnet, ports, admin SSH keys)
+# live in ../../config/lab.yml instead of here — see locals.tf.
 #
 # Secrets (Proxmox/Cloudflare API tokens) live in secrets.sops.tfvars.json
 # (encrypted) — never here. See docs/runbooks/tofu-apply.md for the full
@@ -46,10 +46,7 @@ debian_image_checksum = "78f658893d7aecb56288b86afebb72dcdb1a636e8e9db8bda64851a
 
 # --- VM guest OS / cloud-init --------------------------------------------------
 
-vm_username = "debian"
-ssh_public_keys = [
-  "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCkCSAJYK97AI2NB+zudGuA/SIUZs1J+NT2ARY06JIsnTx+hoNFzAiKRdtiMNFq19T6QO8407hlYp6XD3yGAm/d3C+Q/xF0Es/C+0jWXhib6ZBrxvqPt8Cbl0OBgvhUQuEm8hJFy2T0B43h6vZyeXSeOrwRdLwGA0Ue6HDJb8iKcwRqqL4A856qS/eH1YW3LjgPrOSi95PpWhFUM2GuorQOJX/aAksSz5sFBXUyqRlhwnYlF1jO7YDlMEwpdinh5JJsGqa/6Ru7rdRflb4gZdH8pO2ZjX32h5zKXqqa6ILQahBdNoqXV6GVIeXQQZscTG3CpD3exigngEAIzCxyj0DI+XlhfoJDqOmeV75+g8FgWywYLTYV9fPdki4O5PKPtstW/zEhipoZtXOVEhjyhLVo+6QaKPp5g4+a1VIvWOMfFO7Yk/okPWO9Azkh3CvEUX/mozQvLNFKTRdzxwveBGqF+fEDyHZkfhBnXtvloBFrCof87fUGdasI3zffPoO/4Xk= katom@TOM-PC",
-]
+vm_username    = "debian"
 vm_dns_servers = ["1.1.1.1", "8.8.8.8"]
 
 # --- Firewall toggles ------------------------------------------------------------
