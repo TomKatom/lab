@@ -184,7 +184,7 @@ Reseller-mediated console is the slow last-resort fallback.
 
 1. **Repo scaffold** — structure above, `.sops.yaml`, age key generated, CI skeleton (fmt/lint/gitleaks), README + `docs/architecture.md`.
 2. **Provision (Tofu)** — providers + **native state encryption**, `bpg` VM `k3s-node` on `vmbr1`, disks, **Proxmox filter firewall**, foundational Cloudflare records (`*.tomkatom.com`). `tofu plan` green in CI.
-3. **Configure (Ansible)** — **WireGuard first** (verify, then Tofu drops public SSH), **NAT/DNAT** for the single IP, host hardening, `tank` mirror, virtiofs, VM hardening, install k3s (Traefik off).
+3. **Configure (Ansible)** — **WireGuard first** (verify, then Tofu drops public SSH), **NAT/DNAT** for the single IP, host hardening, `tank` mirror, virtiofs, VM hardening, install k3s (Traefik off). Also install/enable `qemu-guest-agent` in the VM, then grant the `Terraform` Proxmox role `VM.GuestAgent.Audit` (see `docs/architecture.md#guest-agent` — granting it before the agent exists hangs `tofu plan`/`apply`).
 4. **Bootstrap Argo CD** — helm install + **ksops** repo-server patch; create `sops-age-key` secret from the age key; apply `root-app.yaml`. Documented in `docs/bootstrap.md`.
 5. **Platform apps** — cert-manager (Cloudflare DNS-01, wildcard `*.tomkatom.com`), external-dns, Traefik (:443), Authelia (`auth.tomkatom.com`). Verify a test Ingress → valid cert + auth.
 6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge (torrent port) → Plex (direct port) → Overseerr, on the shared `/data` tree with hardlinks.

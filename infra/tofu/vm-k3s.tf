@@ -8,6 +8,11 @@ resource "proxmox_virtual_environment_vm" "k3s" {
 
   agent {
     enabled = true
+    # qemu-guest-agent isn't installed until Ansible (Phase 3) provisions the
+    # guest, so the provider's post-apply wait for its network-interfaces
+    # report can't succeed yet. Keep the timeout short so plan/apply don't
+    # sit on the default 15m wait every run until then.
+    timeout = "15s"
   }
 
   cpu {
