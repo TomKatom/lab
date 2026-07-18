@@ -1,0 +1,15 @@
+---
+# Layer 2, host-side configuration. Roles land here incrementally as their
+# PRs merge — wireguard now; hardening, network-nat, zfs-tank follow.
+#
+# Bootstrap ordering: this brings up WireGuard over the host's still-public
+# SSH. Do NOT flip infra/tofu's restrict_management to true until
+# playbooks/verify-wireguard.yml passes end-to-end — see
+# docs/architecture.md#management-plane.
+- name: Configure the Proxmox host
+  hosts: proxmox_host
+  become: false  # already connecting as root, no sudo needed
+  vars_files:
+    - ../../config/lab.yml
+  roles:
+    - wireguard

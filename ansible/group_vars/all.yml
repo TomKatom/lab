@@ -13,3 +13,24 @@
 # hand, same as that file's own duplication of the value inside
 # `proxmox_endpoint`.
 ovh_public_ip: 145.239.3.55
+
+# Shared between roles/wireguard and playbooks/verify-wireguard.yml — a
+# single name so neither has to redeclare it.
+wireguard_interface: wg0
+
+# Operator WireGuard peers: public keys and AllowedIPs only, never private
+# key material (each peer generates and holds its own private key — see
+# docs/ssh-keys.md's custody model for the same principle applied to SSH).
+# Empty until an operator peer exists; roles/wireguard renders an interface
+# with zero peers rather than failing when this list is empty.
+#
+# Add a peer once you've generated a keypair locally (`wg genkey | tee
+# privatekey | wg pubkey > publickey` — keep privatekey off this repo
+# entirely, it never needs to leave your machine):
+#   wireguard_peers:
+#     - name: my-laptop
+#       public_key: "<contents of publickey>"
+#       allowed_ips:
+#         - "{{ network.wireguard_subnet }}"
+#         - "{{ network.internal_subnet }}"
+wireguard_peers: []
