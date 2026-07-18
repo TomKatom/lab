@@ -67,7 +67,8 @@ to wherever you've restored it from the password manager instead.
   secrets (set once, by hand, in repo settings — see
   [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)). They're
   repo-scoped rather than scoped to the `production` Environment because
-  the `plan` job — which runs unattended on every push — needs them too;
+  the `plan` job — which runs unattended on every pull request — needs
+  them too;
   the Environment's required-reviewer rule is what gates the pipeline, not
   secret visibility. Keeping these in
   sync with the SOPS-encrypted local copies (`secrets.sops.tfvars.json`,

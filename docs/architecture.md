@@ -193,9 +193,9 @@ else default-drop.
 - **Gated apply pipeline**
   ([`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml))
   — two jobs, split so a bad diff can never apply unattended:
-  - `plan` runs automatically on every push to `master`, using GitHub
-    Actions secrets (not SOPS/age — the master age key never enters CI),
-    and posts the plan output to the job summary.
+  - `plan` runs automatically on every pull request targeting `master`,
+    using GitHub Actions secrets (not SOPS/age — the master age key never
+    enters CI), and posts the plan output to the job summary.
   - `apply` (`needs: plan`) runs in the `production` GitHub Environment.
     That environment's required-reviewer rule is the *only* gate: a human
     must click **Approve** in the Actions UI, having reviewed the exact
@@ -208,8 +208,11 @@ else default-drop.
     reaches the Proxmox API over its still-public IP:8006 for Phase 2/early
     Phase 3; once `restrict_management=true` lands, `TOFU_RUNNER` switches
     to a self-hosted runner reachable over WireGuard.
-  - On a state change, the job commits `terraform.tfstate` back to `master`
-    with `[skip ci]` (rebase-then-push, to avoid racing a concurrent push).
+  - On a state change, the job pushes `terraform.tfstate` as an extra
+    commit onto the PR's own branch (`[skip ci]`) rather than onto
+    `master` — `master` is protected and this workflow never pushes to it
+    directly. Squash-merging the PR then carries the state update into the
+    same commit as the change that produced it.
 - **Renovate** opens dependency-bump PRs (chart versions, provider pins via
   the committed `.terraform.lock.hcl`); the same PR gate validates them.
 
