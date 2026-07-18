@@ -130,8 +130,11 @@ instead of running by hand. This is a one-time setup step:
    - `PROXMOX_SSH_PRIVATE_KEY` (a private key authorized on the Proxmox
      host for the SSH-based image download/import operations; CI loads it
      into an `ssh-agent`, matching the local `ssh { agent = true }` setup)
-4. Optionally set a `TOFU_RUNNER` repository variable once the runner needs
-   to change — see the note on runner placement below.
+4. Optionally set a `LAB_RUNNER` repository variable once the runner needs
+   to change — see the note on runner placement below. This variable is
+   shared with [`ansible-apply.yml`](../../.github/workflows/ansible-apply.yml),
+   not Tofu-specific, since both pipelines end up needing the same
+   WireGuard-reachable runner once management access is restricted.
 
 From then on: every pull request targeting `master` runs the `plan` job
 automatically and posts the plan output to the job summary; the `apply`
@@ -148,12 +151,14 @@ update lands in the same commit as the change that produced it, so
 `master`'s history never gets a separate bot commit or bot-opened PR.
 
 **Runner placement:** the workflow runs on
-`${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}`. GitHub-hosted runners reach
+`${{ vars.LAB_RUNNER || 'ubuntu-latest' }}`. GitHub-hosted runners reach
 the Proxmox API over its still-public IP:8006, which is fine for Phase 2
 and early Phase 3. Once Phase 3 restricts management to WireGuard-only
 (`restrict_management = true`), a GitHub-hosted runner can no longer reach
-the API — set the `TOFU_RUNNER` repo variable to a self-hosted runner
-reachable over the WG tunnel before that flip lands.
+the API — set the `LAB_RUNNER` repo variable to a self-hosted runner
+reachable over the WG tunnel before that flip lands. `ansible-apply.yml`
+reads the same variable, since most Ansible playbooks target hosts behind
+the same WireGuard boundary.
 
 **`restrict_management = true` is a Phase 3 change** (Ansible, after
 WireGuard is verified end-to-end) — it still goes through this same

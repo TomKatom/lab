@@ -8,9 +8,11 @@ hardening, the `tank` ZFS pool, the virtiofs share, and the k3s install
 Layout:
 - `inventory/hosts.yml` — the Proxmox host (`server`) and the k3s VM
   (`k3s-node`, reached via `ProxyJump` through the host).
-- `group_vars/` — shared, DRY variables; secrets live in `all.sops.yml`
+- `group_vars/` — shared, DRY variables. No role currently needs a secret,
+  so there's no `*.sops.yml` file today; if one ever does, `all.sops.yml`
   (SOPS + age, decrypted in-memory at load time by the `community.sops`
-  vars plugin — see [`docs/secrets.md`](../docs/secrets.md)).
+  vars plugin — see [`docs/secrets.md`](../docs/secrets.md)) is the pattern
+  to follow.
 - `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `k3s-vm.yml` (lands with the `k3s` role).

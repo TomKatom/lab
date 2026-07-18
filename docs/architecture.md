@@ -230,10 +230,13 @@ which hangs `tofu plan`/`apply` on every run.
     environment is created and configured (a one-time manual step, see
     [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)), the `apply`
     job simply has nowhere to run.
-  - Runs on `${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}` — GitHub-hosted
+  - Runs on `${{ vars.LAB_RUNNER || 'ubuntu-latest' }}` — GitHub-hosted
     reaches the Proxmox API over its still-public IP:8006 for Phase 2/early
-    Phase 3; once `restrict_management=true` lands, `TOFU_RUNNER` switches
-    to a self-hosted runner reachable over WireGuard.
+    Phase 3; once `restrict_management=true` lands, `LAB_RUNNER` switches
+    to a self-hosted runner reachable over WireGuard. Named for the lab as
+    a whole, not Tofu specifically — `ansible-apply.yml`
+    (`.github/workflows/ansible-apply.yml`) shares the same variable and
+    the same eventual self-hosted runner.
   - On a state change, the job pushes `terraform.tfstate` as an extra
     commit onto the PR's own branch (`[skip ci]`) rather than onto
     `master` — `master` is protected and this workflow never pushes to it

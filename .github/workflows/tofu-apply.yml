@@ -50,7 +50,11 @@ permissions:
 jobs:
   plan:
     name: tofu plan
-    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    # LAB_RUNNER (not a Tofu-specific name): ansible-apply.yml will share
+    # this same self-hosted runner once one exists for the
+    # WireGuard-only-management phase, so a Tofu-specific variable name
+    # would be misleading now that Ansible needs one too.
+    runs-on: ${{ vars.LAB_RUNNER || 'ubuntu-latest' }}
     defaults:
       run:
         working-directory: infra/tofu
@@ -116,7 +120,8 @@ jobs:
     name: tofu apply
     needs: plan
     environment: production
-    runs-on: ${{ vars.TOFU_RUNNER || 'ubuntu-latest' }}
+    # See the `plan` job's runs-on comment: shared with ansible-apply.yml.
+    runs-on: ${{ vars.LAB_RUNNER || 'ubuntu-latest' }}
     concurrency:
       group: tofu-apply
       cancel-in-progress: false
