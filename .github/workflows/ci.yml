@@ -5,6 +5,14 @@ on:
   push:
     branches: [master]
 
+# On a PR, cancel the previous run when a new commit is pushed (head_ref
+# groups all pushes of one PR). On a push to master, head_ref is empty and
+# the fallback run_id makes each run its own group, so master runs always
+# finish - only redundant in-flight PR runs get cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
