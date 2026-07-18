@@ -14,11 +14,11 @@ phase lands.
 
 | Path | Layer | Tool |
 |---|---|---|
-| [`config/lab.yml`](config/lab.yml) | Shared facts (domain, subnet, ports) — single source of truth across all three layers below | — |
+| [`config/lab.yml`](config/lab.yml) | Shared facts (domain, subnet, ports, admin SSH keys) — single source of truth across all three layers below | — |
 | [`infra/tofu/`](infra/tofu/) | Provision (VM, disks, Proxmox firewall, DNS) | OpenTofu |
 | [`ansible/`](ansible/) | Configure (WireGuard, NAT, hardening, k3s bootstrap) | Ansible |
 | [`clusters/lab/`](clusters/lab/) | Deliver (everything in-cluster) | Argo CD |
-| [`docs/`](docs/) | Architecture, bootstrap, secrets, runbooks | — |
+| [`docs/`](docs/) | Architecture, bootstrap, secrets, SSH keys, runbooks | — |
 
 ## Status
 

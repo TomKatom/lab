@@ -16,3 +16,12 @@ ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
   wireguard: 51820
   pve_api: 8006
   k8s_api: 6443
+# Personal SSH public keys authorized for interactive admin access — human
+# login only, never the CI/automation key (that one stays out of git
+# entirely; see docs/ssh-keys.md). Consumed today by Tofu (VM cloud-init,
+# infra/tofu/vm-k3s.tf); Ansible's `hardening` role reads the same list for
+# the Proxmox host once Phase 3 lands. Add a key here once (password-manager
+# or hardware-backed, not tied to one laptop) rather than re-authorizing per
+# machine.
+admin_ssh_public_keys:
+  - "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCkCSAJYK97AI2NB+zudGuA/SIUZs1J+NT2ARY06JIsnTx+hoNFzAiKRdtiMNFq19T6QO8407hlYp6XD3yGAm/d3C+Q/xF0Es/C+0jWXhib6ZBrxvqPt8Cbl0OBgvhUQuEm8hJFy2T0B43h6vZyeXSeOrwRdLwGA0Ue6HDJb8iKcwRqqL4A856qS/eH1YW3LjgPrOSi95PpWhFUM2GuorQOJX/aAksSz5sFBXUyqRlhwnYlF1jO7YDlMEwpdinh5JJsGqa/6Ru7rdRflb4gZdH8pO2ZjX32h5zKXqqa6ILQahBdNoqXV6GVIeXQQZscTG3CpD3exigngEAIzCxyj0DI+XlhfoJDqOmeV75+g8FgWywYLTYV9fPdki4O5PKPtstW/zEhipoZtXOVEhjyhLVo+6QaKPp5g4+a1VIvWOMfFO7Yk/okPWO9Azkh3CvEUX/mozQvLNFKTRdzxwveBGqF+fEDyHZkfhBnXtvloBFrCof87fUGdasI3zffPoO/4Xk= katom@TOM-PC"

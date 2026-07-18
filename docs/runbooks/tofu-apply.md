@@ -14,9 +14,11 @@ round-trip. Everything below is written around that constraint.
 - Your age private key at `~/.config/sops/age/keys.txt` (or
   `SOPS_AGE_KEY_FILE` pointed at it) — see
   [`docs/secrets.md`](../secrets.md).
-- An SSH agent with a key loaded that can reach the Proxmox host as
-  `root` — `bpg` performs the cloud image download and disk import over
-  SSH (`ssh { agent = true }` in `providers.tf`).
+- An SSH agent with the `ci-tofu-apply` automation key loaded, authorized
+  as `root` on the Proxmox host — `bpg` performs the cloud image download
+  and disk import over SSH (`ssh { agent = true }` in `providers.tf`). See
+  [`docs/ssh-keys.md`](../ssh-keys.md) for what this key is (and isn't) and
+  how to load it into a scoped agent for a local run.
 - A Proxmox API token (`Sys.Audit`/`Sys.Modify`/`Datastore.AllocateTemplate`
   on the target datastore, plus VM/firewall management privileges) and a
   Cloudflare API token (`Zone:DNS:Edit` + `Zone:Read` on the `tomkatom.com`
@@ -26,8 +28,10 @@ round-trip. Everything below is written around that constraint.
 
 - `infra/tofu/terraform.tfvars` (committed, non-secret) — fill in every
   `CHANGE_ME`: the OVH public IP, Cloudflare zone ID, Proxmox endpoint,
-  node name, storage pool names, the Debian 13 image checksum, and your SSH
-  public key(s).
+  node name, storage pool names, and the Debian 13 image checksum.
+- `config/lab.yml` — add your personal SSH public key(s) to
+  `admin_ssh_public_keys` (shared with Ansible's future host hardening
+  role; see [`docs/ssh-keys.md`](../ssh-keys.md)).
 - `infra/tofu/secrets.sops.tfvars.json` (encrypted) — edit in place with
   `sops infra/tofu/secrets.sops.tfvars.json`, replacing the `CHANGE_ME`
   placeholders with the real Proxmox and Cloudflare API tokens.
