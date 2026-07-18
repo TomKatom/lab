@@ -1,0 +1,8 @@
+---
+# wireguard_interface and wireguard_peers are shared with
+# playbooks/verify-wireguard.yml, so they live in group_vars/all.yml
+# instead of here — a role default would be a second, competing source of
+# truth for values another file also needs.
+
+wireguard_key_dir: /etc/wireguard
+wireguard_private_key_path: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.key"

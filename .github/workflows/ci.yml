@@ -91,8 +91,20 @@ jobs:
           fi
       - uses: ansible/ansible-lint@v26.6.0
         if: steps.has-ansible.outputs.present == 'true'
+        env:
+          # ansible.cfg lives in ansible/, but this action (like pre-commit's
+          # ansible-lint hook) runs from the repo root, where ansible-core's
+          # default ansible.cfg discovery (cwd only, no parent-dir walk)
+          # never finds it — silently falling back to the wrong roles_path
+          # and breaking role resolution for every role-using playbook.
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         with:
           path: "ansible/playbooks"
+          # The action only installs Galaxy deps if this is set explicitly —
+          # it never auto-discovers a requirements.yml. Without it, any role
+          # using a collection module (e.g. ansible.posix.sysctl) fails to
+          # resolve here even though it's perfectly valid.
+          requirements_file: "ansible/requirements.yml"
       - name: no ansible files yet
         if: steps.has-ansible.outputs.present == 'false'
         run: echo "ansible/ has no playbooks yet, skipping"

@@ -1,0 +1,67 @@
+---
+# Anti-lockout gate. This server has no IPMI/console — proves the WireGuard
+# tunnel actually works end-to-end BEFORE infra/tofu's restrict_management
+# flip drops public SSH (see docs/architecture.md#management-plane and
+# docs/runbooks/lockout-recovery.md). Any failure below means: do not flip
+# restrict_management. Fix the tunnel and re-run this playbook instead.
+#
+# Prerequisite: bring up your own WireGuard peer locally first, using a
+# config that matches an entry in group_vars/all.yml's wireguard_peers —
+# see ansible/README.md.
+
+- name: Confirm the host's WireGuard interface has a live peer handshake
+  hosts: proxmox_host
+  gather_facts: false
+  tasks:
+    - name: Read wg0 latest handshakes
+      ansible.builtin.command: wg show {{ wireguard_interface }} latest-handshakes
+      register: wg_handshakes
+      changed_when: false
+
+    - name: Assert at least one peer has completed a handshake
+      ansible.builtin.assert:
+        # split() with no separator splits on any whitespace run (Python's
+        # str.split(None,...) semantics) — deliberately avoids embedding a
+        # literal tab character to match wg's tab-separated output, since an
+        # earlier version of this line silently broke: a YAML block scalar
+        # doesn't process backslash escapes, so '\t' reached Jinja as the
+        # literal two characters `\` `t`, never matched a real tab, and made
+        # this assert fail closed (0 handshakes) unconditionally. Verified
+        # offline (both the bug and this fix) before relying on it here.
+        that:
+          - "wg_handshakes.stdout_lines | map('split') | map('last') | map('int') | select('>', 0) | list | length > 0"
+        fail_msg: >-
+          No WireGuard peer has completed a handshake on
+          {{ wireguard_interface }}. Bring up your local peer (wg-quick up
+          <your-config>) and re-run this playbook — do NOT flip
+          restrict_management in infra/tofu/terraform.tfvars until this
+          passes.
+        success_msg: WireGuard handshake confirmed on the host.
+
+- name: Confirm the host is reachable AT ALL over the WireGuard tunnel itself
+  hosts: proxmox_host_wg
+  gather_facts: false
+  tasks:
+    - name: Ping the host at its WireGuard address
+      ansible.builtin.ping:
+
+- name: Confirm the k3s-node VM is reachable from the host over vmbr1
+  hosts: proxmox_host
+  gather_facts: false
+  vars_files:
+    - ../../config/lab.yml
+  tasks:
+    - name: Ping k3s-node's internal IP from the host
+      ansible.builtin.command: "ping -c2 -W2 {{ network.vm_ip_address }}"
+      changed_when: false
+
+- name: Confirm the k3s-node VM is reachable DIRECTLY over WireGuard
+  # Not via the server's ProxyJump — this proves the peer's own AllowedIPs
+  # route straight into vmbr1, the capability docs/architecture.md's
+  # management-plane section describes ("WG peers routed into vmbr1... a
+  # laptop reaches host and VM over the tunnel").
+  hosts: k3s_node_wg
+  gather_facts: false
+  tasks:
+    - name: Ping k3s-node directly
+      ansible.builtin.ping:

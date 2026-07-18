@@ -35,6 +35,12 @@ repos:
     hooks:
       - id: ansible-lint
         files: ^ansible/.*\.(yml|yaml)$
+        # ansible.cfg lives in ansible/, but pre-commit (like the CI action)
+        # runs hooks from the repo root, where ansible-core's ansible.cfg
+        # discovery (cwd only) never finds it — silently breaking
+        # roles_path and any role-using playbook. Override the upstream
+        # entry to inject the same env var .github/workflows/ci.yml sets.
+        entry: env ANSIBLE_CONFIG=ansible/ansible.cfg python3 -m ansiblelint -v --force-color
 
   - repo: local
     hooks:

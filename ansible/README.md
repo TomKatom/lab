@@ -11,10 +11,11 @@ Layout:
 - `group_vars/` — shared, DRY variables; secrets live in `all.sops.yml`
   (SOPS + age, decrypted in-memory at load time by the `community.sops`
   vars plugin — see [`docs/secrets.md`](../docs/secrets.md)).
-- `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`,
-  `k3s-vm.yml` (the latter two land with their roles).
-- `roles/` — `wireguard`, `network-nat`, `hardening`, `zfs-tank`, `virtiofs`,
-  `k3s` (land incrementally, one PR per role).
+- `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
+  (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
+  `k3s-vm.yml` (lands with the `k3s` role).
+- `roles/` — `wireguard` done; `network-nat`, `hardening`, `zfs-tank`,
+  `virtiofs`, `k3s` land incrementally, one PR per role.
 
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu
@@ -26,7 +27,11 @@ drop public SSH access. See
 ```sh
 uv tool install --with ansible ansible-core   # or: pip install --user ansible
 cd ansible
-ansible-galaxy collection install -r requirements.yml
+# -p is explicit on purpose: some install methods (uv tool among them)
+# don't default ansible-galaxy's install path to the standard
+# ~/.ansible/collections, which is also the one path all of ansible-core,
+# ansible-lint, and pre-commit's isolated ansible-lint hook actually search.
+ansible-galaxy collection install -r requirements.yml -p ~/.ansible/collections
 ./run.sh playbooks/ping.yml                   # connectivity smoke test
 ```
 
@@ -51,4 +56,29 @@ via `ProxyJump`, so the same agent covers both hops (plus the `debian` user
 key, which — being the conventional `~/.ssh/id_rsa` — SSH offers
 automatically).
 
-Not yet implemented — the roles above land in later Phase 3 PRs.
+## Bringing up WireGuard (anti-lockout gate)
+
+This server has no IPMI/console — a mistake here means ~30 minutes of OVH
+rescue mode (see `docs/runbooks/lockout-recovery.md`), so this step is
+**always run by a human, deliberately** (see `docs/ssh-keys.md`; this also
+means an assistant session should author and validate this code but never
+execute it against the live server itself).
+
+1. `./run.sh playbooks/proxmox-host.yml` — installs `wireguard-tools`,
+   generates the host's private key **in place** (it's created with `wg
+   genkey` directly on the host and never leaves it — see
+   `roles/wireguard/tasks/main.yml`), and brings up `wg0`. Note the printed
+   host public key.
+2. Add your own peer: generate a keypair locally (`wg genkey | tee
+   privatekey | wg pubkey > publickey` — keep `privatekey` off this repo
+   entirely), add an entry to `wireguard_peers` in `group_vars/all.yml` with
+   your public key, then re-run step 1 so the host picks up the new peer.
+3. Bring up your own local WireGuard interface using the host's public key
+   from step 1 and an endpoint of `<ovh_public_ip>:<ports.wireguard>`.
+4. `./run.sh playbooks/verify-wireguard.yml` — **must pass** before anyone
+   flips `restrict_management` in `infra/tofu/terraform.tfvars`. It checks a
+   live peer handshake, that the host is reachable over the tunnel itself,
+   and that both the host and the VM are reachable over `vmbr1` — read
+   `docs/architecture.md#management-plane` for why each check exists.
+
+Only once step 4 passes clean is it safe to move on to dropping public SSH.

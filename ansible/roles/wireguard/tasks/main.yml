@@ -1,0 +1,85 @@
+---
+# WireGuard management-plane tunnel on the Proxmox host. The host private
+# key is generated in place on first run and never leaves it — see the
+# "Read the host private key back" task below for why that's safe despite
+# needing the value to render wg0.conf.
+
+- name: Install wireguard-tools
+  ansible.builtin.apt:
+    name: wireguard-tools
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable IPv4 forwarding (WireGuard peers route into vmbr1)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Ensure /etc/wireguard exists with restrictive permissions
+  ansible.builtin.file:
+    path: "{{ wireguard_key_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Generate the host's WireGuard private key (once, ever — idempotent)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    wg genkey > {{ wireguard_private_key_path }}
+  args:
+    creates: "{{ wireguard_private_key_path }}"
+    executable: /bin/bash
+
+- name: Lock down the private key file permissions
+  ansible.builtin.file:
+    path: "{{ wireguard_private_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Read the host private key back
+  # This value only ever exists in this run's in-memory facts on the
+  # controller — never written to the controller's disk, never committed.
+  # It's needed here purely to render wg0.conf below (wg-quick's config
+  # format takes PrivateKey as a literal, not a file reference).
+  ansible.builtin.slurp:
+    src: "{{ wireguard_private_key_path }}"
+  register: wireguard_private_key_slurp
+  no_log: true
+
+- name: Derive the host's public key
+  ansible.builtin.command: wg pubkey
+  args:
+    stdin: "{{ wireguard_private_key_slurp.content | b64decode }}"
+  register: wireguard_pubkey_result
+  changed_when: false
+  no_log: true
+
+- name: Show the host's WireGuard public key
+  ansible.builtin.debug:
+    msg: >-
+      Host WireGuard public key: {{ wireguard_pubkey_result.stdout }}
+      — give this to peers configuring their own client tunnel.
+
+- name: Render wg0.conf
+  # The rendered file embeds the private key — no_log so --diff can't leak it.
+  ansible.builtin.template:
+    src: wg0.conf.j2
+    dest: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart wireguard
+
+- name: Enable and start wg-quick
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wireguard_interface }}"
+    enabled: true
+    state: started
