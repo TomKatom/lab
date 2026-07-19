@@ -15,6 +15,21 @@ output "vm_name" {
   value       = proxmox_virtual_environment_vm.k3s.name
 }
 
+output "runner_ip" {
+  description = "Static internal IP address of the ci-runner VM (on vmbr1)."
+  value       = local.lab.network.runner_address
+}
+
+output "runner_id" {
+  description = "Proxmox VM ID of the ci-runner VM."
+  value       = proxmox_virtual_environment_vm.runner.vm_id
+}
+
+output "runner_name" {
+  description = "Name of the ci-runner VM."
+  value       = proxmox_virtual_environment_vm.runner.name
+}
+
 output "node_name" {
   description = "Proxmox node the VM and firewall rules are provisioned on."
   value       = var.node_name

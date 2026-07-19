@@ -9,6 +9,7 @@ network:
   wireguard_subnet: 10.10.20.0/24  # WG peer subnet (Tofu fw mgmt, Ansible wireguard)
   wireguard_host_address: 10.10.20.1/24  # host side of wg0 (Ansible wireguard role)
   vm_ip_address: 10.10.10.10  # k3s-node static internal IP (Tofu cloud-init, Ansible DNAT)
+  runner_address: 10.10.10.20  # self-hosted GitHub Actions runner VM static internal IP (Tofu cloud-init)
 ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
   https: 443
   plex: 32400
