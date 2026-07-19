@@ -24,7 +24,7 @@ if ! command -v ansible-playbook > /dev/null 2>&1; then
 fi
 
 if ! command -v sops > /dev/null 2>&1; then
-  echo "error: sops is required (group_vars/*.sops.yml are SOPS-encrypted, decrypted via the community.sops vars plugin)" >&2
+  echo "error: sops is required (inventory/group_vars/*.sops.yml are SOPS-encrypted, decrypted via the community.sops vars plugin)" >&2
   exit 1
 fi
 

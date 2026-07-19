@@ -8,11 +8,13 @@ hardening, the `tank` ZFS pool, the virtiofs share, and the k3s install
 Layout:
 - `inventory/hosts.yml` — the Proxmox host (`server`) and the k3s VM
   (`k3s-node`, reached via `ProxyJump` through the host).
-- `group_vars/` — shared, DRY variables. No role currently needs a secret,
-  so there's no `*.sops.yml` file today; if one ever does, `all.sops.yml`
-  (SOPS + age, decrypted in-memory at load time by the `community.sops`
-  vars plugin — see [`docs/secrets.md`](../docs/secrets.md)) is the pattern
-  to follow.
+- `inventory/group_vars/` — shared, DRY variables. Must live next to
+  `hosts.yml` (or under `playbooks/`) — that's where Ansible's
+  `host_group_vars` plugin actually looks; a sibling `ansible/group_vars/`
+  is silently never loaded. No role currently needs a secret, so there's no
+  `*.sops.yml` file today; if one ever does, `all.sops.yml` (SOPS + age,
+  decrypted in-memory at load time by the `community.sops` vars plugin —
+  see [`docs/secrets.md`](../docs/secrets.md)) is the pattern to follow.
 - `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `k3s-vm.yml` (lands with the `k3s` role).
@@ -41,7 +43,7 @@ ansible-galaxy collection install -r requirements.yml -p ~/.ansible/collections
 `run.sh` just makes sure `ansible-playbook` always runs from this directory,
 regardless of the caller's cwd — the same guarantee
 [`infra/tofu/tofu.sh`](../infra/tofu/tofu.sh) gives `infra/tofu/`. Unlike
-that script, it doesn't decrypt anything itself: `group_vars/*.sops.yml` is
+that script, it doesn't decrypt anything itself: `inventory/group_vars/*.sops.yml` is
 decrypted per-value, in-memory, by the `community.sops` vars plugin
 (enabled in `ansible.cfg`) the moment a play needs those vars — nothing is
 ever written to disk. `sops` must still be on `PATH` and able to find the
@@ -77,7 +79,7 @@ execute it against the live server itself).
    Note the printed host public key.
 2. Add your own peer: generate a keypair locally (`wg genkey | tee
    privatekey | wg pubkey > publickey` — keep `privatekey` off this repo
-   entirely), add an entry to `wireguard_peers` in `group_vars/all.yml` with
+   entirely), add an entry to `wireguard_peers` in `inventory/group_vars/all.yml` with
    your public key, then re-run step 1 so the host picks up the new peer.
 3. Bring up your own local WireGuard interface using the host's public key
    from step 1 and an endpoint of `<ovh_public_ip>:<ports.wireguard>`.

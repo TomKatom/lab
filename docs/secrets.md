@@ -48,7 +48,7 @@ sops -d infra/tofu/state.sops.env
 No `ansible/**/*.sops.yml` file exists today — no Phase 3 role has needed a
 real secret yet (see [`ansible/README.md`](../ansible/README.md)) — but the
 pattern above applies identically once one does: `sops
-ansible/group_vars/all.sops.yml` to edit, `sops -d ...` to decrypt to
+ansible/inventory/group_vars/all.sops.yml` to edit, `sops -d ...` to decrypt to
 stdout. The `community.sops` vars plugin (enabled in `ansible/ansible.cfg`)
 picks up any matching file automatically the moment it exists.
 
@@ -87,7 +87,7 @@ to wherever you've restored it from the password manager instead.
   secret `tofu-apply.yml` uses, its trust extended to the VM as well as the
   host — see [`docs/ssh-keys.md`](ssh-keys.md)) and touches no SOPS/age
   material at all. That's easy to hold today because no Ansible role
-  currently needs a secret — `ansible/group_vars/` holds only plain vars,
+  currently needs a secret — `ansible/inventory/group_vars/` holds only plain vars,
   and the `community.sops` vars plugin (enabled in `ansible/ansible.cfg`)
   has nothing to decrypt because no `*.sops.yml` file exists there yet. If
   a future role needs one, CI would need a way to decrypt it without ever
