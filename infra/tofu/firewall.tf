@@ -201,3 +201,46 @@ resource "proxmox_virtual_environment_firewall_options" "vm" {
     }
   }
 }
+
+# --- VM (ci-runner) firewall -------------------------------------------------
+#
+# Same invariant, same order: rules first, DROP policy last. A third,
+# independent chain (ipset -> runner rules -> runner options), same shape as
+# the k3s-node chain above.
+
+resource "proxmox_virtual_environment_firewall_rules" "runner" {
+  depends_on = [proxmox_virtual_environment_firewall_ipset.mgmt]
+
+  node_name = var.node_name
+  vm_id     = proxmox_virtual_environment_vm.runner.vm_id
+
+  dynamic "rule" {
+    for_each = local.runner_mgmt_rules
+    content {
+      type    = "in"
+      action  = "ACCEPT"
+      comment = rule.value.comment
+      dport   = rule.value.dport
+      proto   = rule.value.proto
+      source  = var.restrict_management ? "+mgmt" : null
+    }
+  }
+}
+
+resource "proxmox_virtual_environment_firewall_options" "runner" {
+  depends_on = [proxmox_virtual_environment_firewall_rules.runner]
+
+  node_name = var.node_name
+  vm_id     = proxmox_virtual_environment_vm.runner.vm_id
+
+  enabled       = var.enable_firewall
+  input_policy  = "DROP"
+  output_policy = "ACCEPT"
+
+  lifecycle {
+    precondition {
+      condition     = length(local.runner_mgmt_rules) > 0
+      error_message = "Refusing to apply input_policy=DROP on the runner with no management accept rules in local.runner_mgmt_rules."
+    }
+  }
+}

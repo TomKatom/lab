@@ -33,6 +33,14 @@ vm_memory_mb         = 32768
 vm_disk_size_gb      = 64
 vm_data_disk_size_gb = 150
 
+# --- Runner VM ---------------------------------------------------------------
+
+runner_vm_name         = "ci-runner"
+runner_vm_id           = 9001
+runner_vm_cores        = 2
+runner_vm_memory_mb    = 2048
+runner_vm_disk_size_gb = 20
+
 # --- Storage / image ----------------------------------------------------------
 
 system_storage_pool = "local-zfs" # e.g. "local-zfs" — verify with `pvesm status` on the host

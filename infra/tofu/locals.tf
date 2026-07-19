@@ -7,6 +7,7 @@ locals {
 
   vm_gateway         = split("/", local.lab.network.vmbr1_host_address)[0]
   vm_ip_cidr         = "${local.lab.network.vm_ip_address}/${split("/", local.lab.network.internal_subnet)[1]}"
+  runner_ip_cidr     = "${local.lab.network.runner_address}/${split("/", local.lab.network.internal_subnet)[1]}"
   management_sources = [local.lab.network.internal_subnet, local.lab.network.wireguard_subnet]
 
   # Firewall rule sets (firewall.tf) — the always-public rules are identical
@@ -24,6 +25,11 @@ locals {
   vm_mgmt_rules = [
     { comment = "k8s API", proto = "tcp", dport = local.lab.ports.k8s_api },
     { comment = "SSH (VM)", proto = "tcp", dport = local.lab.ports.ssh },
+  ]
+  # ci-runner is strictly outbound-poll to GitHub — no k8s API rule, no
+  # public_service_rules, SSH only.
+  runner_mgmt_rules = [
+    { comment = "SSH (runner)", proto = "tcp", dport = local.lab.ports.ssh },
   ]
 
   # Cloudflare A records (cloudflare.tf).

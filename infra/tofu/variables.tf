@@ -99,6 +99,38 @@ variable "vm_data_disk_size_gb" {
   default     = 150
 }
 
+# --- Runner VM ---------------------------------------------------------------
+
+variable "runner_vm_name" {
+  description = "Name of the ci-runner VM."
+  type        = string
+  default     = "ci-runner"
+}
+
+variable "runner_vm_id" {
+  description = "Proxmox VM ID for ci-runner."
+  type        = number
+  default     = 9001
+}
+
+variable "runner_vm_cores" {
+  description = "vCPU cores for ci-runner."
+  type        = number
+  default     = 2
+}
+
+variable "runner_vm_memory_mb" {
+  description = "Dedicated memory (MB) for ci-runner."
+  type        = number
+  default     = 2048
+}
+
+variable "runner_vm_disk_size_gb" {
+  description = "OS disk (scsi0) size in GB for ci-runner."
+  type        = number
+  default     = 20
+}
+
 # --- Storage / image ----------------------------------------------------------
 
 variable "system_storage_pool" {
