@@ -9,12 +9,12 @@
 
 - name: Remove the PVE enterprise apt repo
   ansible.builtin.file:
-    path: "{{ pve_repos_enterprise_list }}"
+    path: "{{ pve_repos_enterprise_sources }}"
     state: absent
 
 - name: Remove the Ceph enterprise apt repo
   ansible.builtin.file:
-    path: "{{ pve_repos_ceph_enterprise_list }}"
+    path: "{{ pve_repos_ceph_enterprise_sources }}"
     state: absent
 
 - name: Point apt at the free PVE no-subscription repo
