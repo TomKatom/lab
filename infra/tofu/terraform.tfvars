@@ -60,7 +60,7 @@ vm_dns_servers = ["1.1.1.1", "8.8.8.8"]
 # --- Firewall toggles ------------------------------------------------------------
 
 enable_firewall = true
-# Must stay false until WireGuard (Phase 3) is verified end-to-end. See
+# WireGuard (Phase 3) is verified end-to-end. See
 # docs/architecture.md#management-plane and the anti-lockout note in
 # firewall.tf.
-restrict_management = false
+restrict_management = true
