@@ -1,0 +1,145 @@
+---
+# Installs and registers the self-hosted GitHub Actions runner agent on the
+# ci-runner VM (see infra/tofu/vm-runner.tf). Deliberately minimal: no
+# OpenTofu/sops/gh baked in here — ansible-apply.yml/tofu-apply.yml self
+# install their own toolchains per run (setup-opentofu, pip). A future PR
+# can bake sops onto this VM once an ansible *.sops.yml actually needs it.
+
+- name: Install base dependencies
+  ansible.builtin.apt:
+    name:
+      - git
+      - curl
+      - jq
+      - tar
+      - ca-certificates
+      - openssh-client
+      - python3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the runner system user
+  # config.sh/run.sh refuse to execute as root — everything that touches the
+  # agent binary/config below runs as this user via become_user.
+  ansible.builtin.user:
+    name: "{{ github_runner_user }}"
+    system: true
+    home: "{{ github_runner_dir }}"
+    shell: /bin/bash
+    create_home: true
+
+- name: Ensure the runner install directory exists
+  ansible.builtin.file:
+    path: "{{ github_runner_dir }}"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0755"
+
+- name: Download the actions-runner release tarball
+  # get_url's own checksum comparison already skips re-downloading once the
+  # destination file matches github_runner_sha256 — no extra creates: guard
+  # needed here.
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/actions/runner/releases/download/v{{ github_runner_version }}/actions-runner-linux-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz
+    dest: "/tmp/actions-runner-linux-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz"
+    checksum: "sha256:{{ github_runner_sha256 }}"
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    mode: "0644"
+
+- name: Unpack the actions-runner release tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/actions-runner-linux-{{ github_runner_arch }}-{{ github_runner_version }}.tar.gz"
+    dest: "{{ github_runner_dir }}"
+    remote_src: true
+    owner: "{{ github_runner_user }}"
+    group: "{{ github_runner_user }}"
+    creates: "{{ github_runner_dir }}/config.sh"
+
+- name: Install runner OS-level dependencies (installdependencies.sh)
+  # installdependencies.sh is an upstream apt-get wrapper for the .NET
+  # runtime's shared-library deps (liblttng-ust, libkrb5, icu, openssl, ...)
+  # with no version pin and no idempotency marker of its own. Touch a
+  # sentinel after a successful run so repeat plays don't re-run apt-get
+  # here every time.
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ github_runner_dir }}/bin/installdependencies.sh
+    touch {{ github_runner_dir }}/.installdependencies-done
+  args:
+    creates: "{{ github_runner_dir }}/.installdependencies-done"
+    executable: /bin/bash
+
+- name: Check whether the runner is already registered
+  ansible.builtin.stat:
+    path: "{{ github_runner_dir }}/.runner"
+  register: github_runner_registered_file
+
+- name: Assert GH_RUNNER_PAT is set
+  ansible.builtin.assert:
+    that:
+      - github_runner_pat | length > 0
+    fail_msg: >-
+      GH_RUNNER_PAT env var not set — export it before running this
+      playbook.
+  vars:
+    github_runner_pat: "{{ lookup('env', 'GH_RUNNER_PAT') }}"
+  no_log: true
+  when: not github_runner_registered_file.stat.exists
+
+- name: Mint a short-lived runner registration token
+  ansible.builtin.uri:
+    url: >-
+      https://api.github.com/repos/{{ github_runner_repo_url | regex_replace('^https://github\.com/', '') }}/actions/runners/registration-token
+    method: POST
+    headers:
+      Authorization: "Bearer {{ github_runner_pat }}"
+      Accept: application/vnd.github+json
+    status_code: 201
+    body_format: json
+  vars:
+    github_runner_pat: "{{ lookup('env', 'GH_RUNNER_PAT') }}"
+  register: github_runner_token_response
+  no_log: true
+  when: not github_runner_registered_file.stat.exists
+
+- name: Register the runner with GitHub
+  ansible.builtin.command: >-
+    ./config.sh --unattended --replace --disableupdate
+    --url {{ github_runner_repo_url }}
+    --token {{ github_runner_token_response.json.token }}
+    --name {{ github_runner_name }}
+    --labels {{ github_runner_labels }}
+    --work {{ github_runner_work_dir }}
+  args:
+    chdir: "{{ github_runner_dir }}"
+    creates: "{{ github_runner_dir }}/.runner"
+  become: true
+  become_user: "{{ github_runner_user }}"
+  no_log: true
+  when: not github_runner_registered_file.stat.exists
+
+- name: Install the runner as a systemd service
+  ansible.builtin.command: "./svc.sh install {{ github_runner_user }}"
+  args:
+    chdir: "{{ github_runner_dir }}"
+    creates: "/etc/systemd/system/{{ github_runner_service_name }}.service"
+  when: not github_runner_registered_file.stat.exists
+
+- name: Start the runner service via svc.sh
+  ansible.builtin.command: ./svc.sh start
+  args:
+    chdir: "{{ github_runner_dir }}"
+    creates: "/etc/systemd/system/{{ github_runner_service_name }}.service"
+  when: not github_runner_registered_file.stat.exists
+
+- name: Ensure the runner service is enabled and running
+  # Unconditional (outside the "not registered" guard above) so a re-run
+  # always converges service state even when registration already happened.
+  ansible.builtin.systemd:
+    name: "{{ github_runner_service_name }}.service"
+    enabled: true
+    state: started

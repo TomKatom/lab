@@ -54,6 +54,7 @@ on:
           - ping
           - proxmox-host
           - verify-wireguard
+          - runner
 
 permissions:
   contents: read
@@ -213,6 +214,11 @@ jobs:
       # human approves before this step ever runs; there is no other gate
       # in this file, and there must never be one.
       - name: Run playbook
+        env:
+          # Only the github_runner role reads this (registration-token
+          # lookup('env', 'GH_RUNNER_PAT')) — scoped to this step, not the
+          # whole job, so it's not exported for any other playbook run here.
+          GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
         run: |
           set -o pipefail
           ansible-playbook "ansible/playbooks/${{ inputs.playbook }}.yml" --diff | tee /tmp/ansible-apply.out
