@@ -3,6 +3,9 @@
 Address = {{ network.wireguard_host_address }}
 ListenPort = {{ ports.wireguard }}
 PrivateKey = {{ wireguard_private_key_slurp.content | b64decode }}
+# Table = off: see roles/wireguard/tasks/main.yml's "Render wg0.conf" task
+# for why (AllowedIPs below duplicates vmbr1's own connected route).
+Table = off
 {% for peer in wireguard_peers %}
 
 [Peer]

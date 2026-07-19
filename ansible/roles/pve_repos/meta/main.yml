@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: pve_repos
+  author: tomkatom
+  description: Point apt at the free PVE no-subscription repo instead of the subscriber-only enterprise repos
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

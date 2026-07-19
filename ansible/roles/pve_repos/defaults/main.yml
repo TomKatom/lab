@@ -1,0 +1,6 @@
+---
+# Role-private vars, prefixed pve_repos_* so they can't collide with another
+# role's defaults.
+
+pve_repos_enterprise_list: /etc/apt/sources.list.d/pve-enterprise.list
+pve_repos_ceph_enterprise_list: /etc/apt/sources.list.d/ceph.list
