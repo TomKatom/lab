@@ -28,6 +28,24 @@
       runs before network_nat in playbooks/proxmox-host.yml.
     success_msg: net.ipv4.ip_forward is already enabled.
 
+- name: Keep bridged VM frames out of the ip NAT hooks
+  # Proxmox defaults net.bridge.bridge-nf-call-iptables to 1, which pulls the
+  # k3s-node VM's frames through this ip-family ruleset while they're still
+  # being L2-bridged across its per-VM firewall bridge (fwbr9000i0) — so the
+  # masquerade fires *before* routing, rewrites the source to the host's own
+  # public IP, and the packet is then dropped as a martian on vmbr1 instead of
+  # egressing the uplink (confirmed via `tcpdump -nei any`: the frame is
+  # already SNAT'd leaving fwln9000i0, never reaches vmbr0). Disabling it lets
+  # NAT run only at the post-routing L3 stage, where oifname is the real
+  # uplink. Safe here: PVE 9 filters via the nftables `bridge`-family
+  # proxmox-firewall, which doesn't depend on this knob.
+  ansible.posix.sysctl:
+    name: net.bridge.bridge-nf-call-iptables
+    value: "0"
+    sysctl_set: true
+    state: present
+    reload: true
+
 - name: Ensure the nftables ruleset directory exists
   ansible.builtin.file:
     path: "{{ network_nat_ruleset_dir }}"
