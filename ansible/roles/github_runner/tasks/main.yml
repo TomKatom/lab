@@ -129,16 +129,11 @@
     creates: "/etc/systemd/system/{{ github_runner_service_name }}.service"
   when: not github_runner_registered_file.stat.exists
 
-- name: Start the runner service via svc.sh
-  ansible.builtin.command: ./svc.sh start
-  args:
-    chdir: "{{ github_runner_dir }}"
-    creates: "/etc/systemd/system/{{ github_runner_service_name }}.service"
-  when: not github_runner_registered_file.stat.exists
-
 - name: Ensure the runner service is enabled and running
-  # Unconditional (outside the "not registered" guard above) so a re-run
-  # always converges service state even when registration already happened.
+  # Starting/enabling is handled here rather than via `svc.sh start` — this
+  # task is unconditional (outside the "not registered" guard above) so a
+  # re-run always converges service state even when registration already
+  # happened, and it's idempotent by nature so no separate guard is needed.
   ansible.builtin.systemd:
     name: "{{ github_runner_service_name }}.service"
     enabled: true
