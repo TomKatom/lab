@@ -1,0 +1,79 @@
+---
+# Egress-only NAT (masquerade) for VMs on {{ network_nat_bridge }}. Ingress
+# DNAT (443/32400/51413 -> the VM) is explicitly out of scope — see the
+# lab-nat.nft.j2 template header — and lands in a later PR.
+
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read net.ipv4.ip_forward
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: network_nat_ip_forward
+  changed_when: false
+
+- name: Assert IPv4 forwarding is already enabled
+  # The wireguard role owns setting this sysctl (it runs earlier in the same
+  # play, playbooks/proxmox-host.yml) — this role only masquerades traffic
+  # that's already being forwarded, it doesn't turn forwarding on itself.
+  ansible.builtin.assert:
+    that:
+      - network_nat_ip_forward.stdout == "1"
+    fail_msg: >-
+      net.ipv4.ip_forward is not enabled. The wireguard role
+      (roles/wireguard/tasks/main.yml) should have set this — confirm it
+      runs before network_nat in playbooks/proxmox-host.yml.
+    success_msg: net.ipv4.ip_forward is already enabled.
+
+- name: Keep bridged VM frames out of the ip NAT hooks
+  # Proxmox defaults net.bridge.bridge-nf-call-iptables to 1, which pulls the
+  # k3s-node VM's frames through this ip-family ruleset while they're still
+  # being L2-bridged across its per-VM firewall bridge (fwbr9000i0) — so the
+  # masquerade fires *before* routing, rewrites the source to the host's own
+  # public IP, and the packet is then dropped as a martian on vmbr1 instead of
+  # egressing the uplink (confirmed via `tcpdump -nei any`: the frame is
+  # already SNAT'd leaving fwln9000i0, never reaches vmbr0). Disabling it lets
+  # NAT run only at the post-routing L3 stage, where oifname is the real
+  # uplink. Safe here: PVE 9 filters via the nftables `bridge`-family
+  # proxmox-firewall, which doesn't depend on this knob.
+  ansible.posix.sysctl:
+    name: net.bridge.bridge-nf-call-iptables
+    value: "0"
+    sysctl_set: true
+    state: present
+    reload: true
+
+- name: Ensure the nftables ruleset directory exists
+  ansible.builtin.file:
+    path: "{{ network_nat_ruleset_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the lab-nat ruleset
+  ansible.builtin.template:
+    src: lab-nat.nft.j2
+    dest: "{{ network_nat_ruleset_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-nat
+
+- name: Install the lab-nat systemd unit
+  ansible.builtin.template:
+    src: lab-nat.service.j2
+    dest: "/etc/systemd/system/{{ network_nat_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-nat
+
+- name: Enable and start lab-nat.service
+  ansible.builtin.systemd:
+    name: "{{ network_nat_service_name }}"
+    enabled: true
+    state: started

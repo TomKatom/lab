@@ -1,0 +1,14 @@
+# Managed by Ansible (roles/network_nat) — do not edit by hand.
+[Unit]
+Description=Load the {{ network_nat_table }} nftables ruleset (egress masquerade for {{ network_nat_bridge }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f {{ network_nat_ruleset_path }}
+ExecStop=/usr/sbin/nft delete table ip {{ network_nat_table }}
+
+[Install]
+WantedBy=multi-user.target

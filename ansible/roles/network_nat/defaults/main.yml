@@ -1,0 +1,11 @@
+---
+# Role-private vars, prefixed network_nat_* so they can't collide with
+# another role's defaults. Unlike wireguard_interface/wireguard_peers,
+# nothing here is needed outside this role, so it stays here rather than in
+# group_vars/all.yml.
+
+network_nat_table: lab-nat
+network_nat_ruleset_dir: /etc/nftables.d
+network_nat_ruleset_path: "{{ network_nat_ruleset_dir }}/lab-nat.nft"
+network_nat_bridge: vmbr1
+network_nat_service_name: lab-nat

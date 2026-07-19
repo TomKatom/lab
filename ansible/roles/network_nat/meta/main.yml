@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: network_nat
+  author: tomkatom
+  description: Outbound NAT (masquerade) so VMs on vmbr1 reach the internet through the host's single public IP
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []
