@@ -5,6 +5,6 @@
   # and a restart re-runs ExecStart, which re-applies the ruleset from disk
   # — the standard way to "reload" a oneshot/RemainAfterExit unit.
   ansible.builtin.systemd:
-    name: lab-nat
+    name: "{{ network_nat_service_name }}"
     daemon_reload: true
     state: restarted

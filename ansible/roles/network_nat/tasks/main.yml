@@ -46,9 +46,9 @@
   notify: Reload lab-nat
 
 - name: Install the lab-nat systemd unit
-  ansible.builtin.copy:
-    src: lab-nat.service
-    dest: /etc/systemd/system/lab-nat.service
+  ansible.builtin.template:
+    src: lab-nat.service.j2
+    dest: "/etc/systemd/system/{{ network_nat_service_name }}.service"
     owner: root
     group: root
     mode: "0644"
@@ -56,6 +56,6 @@
 
 - name: Enable and start lab-nat.service
   ansible.builtin.systemd:
-    name: lab-nat
+    name: "{{ network_nat_service_name }}"
     enabled: true
     state: started

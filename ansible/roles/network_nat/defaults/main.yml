@@ -8,3 +8,4 @@ network_nat_table: lab-nat
 network_nat_ruleset_dir: /etc/nftables.d
 network_nat_ruleset_path: "{{ network_nat_ruleset_dir }}/lab-nat.nft"
 network_nat_bridge: vmbr1
+network_nat_service_name: lab-nat
