@@ -16,8 +16,9 @@ Layout:
 - `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `k3s-vm.yml` (lands with the `k3s` role).
-- `roles/` — `wireguard` done; `network-nat`, `hardening`, `zfs-tank`,
-  `virtiofs`, `k3s` land incrementally, one PR per role.
+- `roles/` — `pve_repos` (apt repo fix, runs first) and `wireguard` done;
+  `network-nat`, `hardening`, `zfs-tank`, `virtiofs`, `k3s` land
+  incrementally, one PR per role.
 
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu
@@ -66,11 +67,14 @@ rescue mode (see `docs/runbooks/lockout-recovery.md`), so this step is
 means an assistant session should author and validate this code but never
 execute it against the live server itself).
 
-1. `./run.sh playbooks/proxmox-host.yml` — installs `wireguard-tools`,
-   generates the host's private key **in place** (it's created with `wg
-   genkey` directly on the host and never leaves it — see
-   `roles/wireguard/tasks/main.yml`), and brings up `wg0`. Note the printed
-   host public key.
+1. `./run.sh playbooks/proxmox-host.yml` — first swaps this host's
+   subscriber-only PVE/Ceph enterprise apt repos for the free
+   no-subscription one (`roles/pve_repos`; this host has no paid Proxmox VE
+   subscription, so those repos 401 on every apt update otherwise), then
+   installs `wireguard-tools`, generates the host's private key **in
+   place** (it's created with `wg genkey` directly on the host and never
+   leaves it — see `roles/wireguard/tasks/main.yml`), and brings up `wg0`.
+   Note the printed host public key.
 2. Add your own peer: generate a keypair locally (`wg genkey | tee
    privatekey | wg pubkey > publickey` — keep `privatekey` off this repo
    entirely), add an entry to `wireguard_peers` in `group_vars/all.yml` with
