@@ -69,6 +69,19 @@
 
 - name: Render wg0.conf
   # The rendered file embeds the private key — no_log so --diff can't leak it.
+  #
+  # The template sets `Table = off`: wireguard_peers' AllowedIPs (group_vars/
+  # all.yml) deliberately includes network.internal_subnet so a peer's own
+  # tunnel routes into vmbr1, but that means wg-quick's default automatic
+  # routing (Table = auto) tries `ip route add <internal_subnet> dev wg0` on
+  # the host too — and that subnet is already directly connected via vmbr1,
+  # so the duplicate route add fails with RTNETLINK "File exists" and takes
+  # the whole wg-quick@wg0 unit down with it. Table = off only disables
+  # wg-quick's own `ip route add` side effects; WireGuard's AllowedIPs-based
+  # crypto-routing and anti-spoof source filtering are set unconditionally
+  # via `wg set` either way, and the wireguard_subnet route still exists for
+  # free from the interface's own Address assignment — so peer connectivity
+  # is unaffected, and traffic to vmbr1 keeps using its pre-existing route.
   ansible.builtin.template:
     src: wg0.conf.j2
     dest: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.conf"
