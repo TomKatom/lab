@@ -221,13 +221,8 @@ jobs:
           GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
         run: |
           set -o pipefail
-          # TEMPORARY: -vvvv surfaces the raw ssh/ProxyCommand stderr while
-          # we confirm the inventory/hosts.yml ProxyCommand fix (see that
-          # file's runner/k3s_node comments) actually resolves the
-          # bastion-jump UNREACHABLE failure on a fresh CI runner. Remove
-          # once a clean apply confirms the fix.
-          ansible-playbook "ansible/playbooks/${{ inputs.playbook }}.yml" --diff -vvvv | tee /tmp/ansible-apply.out
-
+          ansible-playbook "ansible/playbooks/${{ inputs.playbook }}.yml" --diff | tee /tmp/ansible-apply.out
+          
       - name: Post output to job summary
         if: always()
         run: |
