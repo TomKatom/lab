@@ -12,9 +12,12 @@
       - curl
       - jq
       - tar
+      - unzip  # opentofu/setup-opentofu extracts its release archive with this
+      - nodejs  # opentofu/setup-opentofu's tofu_wrapper replaces `tofu` with a `#!/usr/bin/env node` script
       - ca-certificates
       - openssh-client
       - python3
+      - python3-venv  # ansible-apply.yml installs ansible-core into a venv - see its comment
     state: present
     update_cache: true
     cache_valid_time: 3600
