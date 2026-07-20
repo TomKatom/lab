@@ -12,6 +12,7 @@
       - curl
       - jq
       - tar
+      - unzip  # opentofu/setup-opentofu extracts its release archive with this
       - ca-certificates
       - openssh-client
       - python3
