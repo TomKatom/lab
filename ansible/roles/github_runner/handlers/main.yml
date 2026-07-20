@@ -1,0 +1,5 @@
+---
+- name: Restart actions runner
+  ansible.builtin.systemd:
+    name: "{{ github_runner_service_name }}.service"
+    state: restarted

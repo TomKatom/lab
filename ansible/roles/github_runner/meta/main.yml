@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: github_runner
+  author: tomkatom
+  description: Installs and registers the self-hosted GitHub Actions runner agent
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

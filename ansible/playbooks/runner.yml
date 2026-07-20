@@ -1,0 +1,13 @@
+---
+# Installs and registers the self-hosted GitHub Actions runner agent on
+# ci-runner (infra/tofu/vm-runner.tf). Requires GH_RUNNER_PAT in the
+# environment on first run (see roles/github_runner/tasks/main.yml) — a
+# fine-grained PAT with "Administration" repo permission, used only to mint
+# a short-lived runner registration token.
+- name: Configure the self-hosted GitHub Actions runner
+  hosts: runner
+  become: true  # connect as debian, need sudo for apt/user/systemd tasks
+  vars_files:
+    - ../../config/lab.yml
+  roles:
+    - github_runner

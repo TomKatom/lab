@@ -1,0 +1,32 @@
+---
+# Role-private vars, all prefixed github_runner_* so they can't collide with
+# another role's defaults.
+
+# renovate: datasource=github-releases depName=actions/runner
+github_runner_version: "2.335.1"
+# SHA256 of actions-runner-linux-x64-2.335.1.tar.gz. Verified two ways on
+# 2026-07-19: downloaded the asset and ran `shasum -a 256` locally, and
+# cross-checked against the "digest" field the GitHub Releases API reports
+# for this asset (https://api.github.com/repos/actions/runner/releases/latest,
+# tag_name v2.335.1). Both matched. Reviewer: worth a spot-check against
+# https://github.com/actions/runner/releases/tag/v2.335.1 before merge
+# since this pin can't be re-verified from this PR's diff alone.
+github_runner_sha256: "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
+
+github_runner_arch: x64
+github_runner_user: runner
+github_runner_dir: /opt/actions-runner
+github_runner_work_dir: _work
+github_runner_repo_url: https://github.com/TomKatom/lab
+github_runner_name: "{{ ansible_hostname }}"
+# `lab` is the distinctive label this repo's CI selects self-hosted jobs on
+# via the LAB_RUNNER repo variable (see .github/workflows/ansible-apply.yml,
+# tofu-apply.yml) — keep it in the list.
+github_runner_labels: "self-hosted,lab,linux,x64"
+
+# The exact unit name actions/runner's `svc.sh install` generates for a
+# repository-registered runner: actions.runner.<Owner>-<Repo>.<name>.service.
+# Derived here (not hand-maintained) so tasks/main.yml can guard idempotently
+# without a fragile systemd-unit glob.
+github_runner_service_name: >-
+  actions.runner.{{ github_runner_repo_url | regex_replace('^https://github\.com/', '') | regex_replace('/', '-') }}.{{ github_runner_name }}
