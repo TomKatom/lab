@@ -13,6 +13,7 @@
       - jq
       - tar
       - unzip  # opentofu/setup-opentofu extracts its release archive with this
+      - nodejs  # opentofu/setup-opentofu's tofu_wrapper replaces `tofu` with a `#!/usr/bin/env node` script
       - ca-certificates
       - openssh-client
       - python3
