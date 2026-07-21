@@ -1,8 +1,8 @@
 # Debian 13 (Trixie) cloud image, downloaded straight into the Proxmox
 # `import` datastore so vm-k3s.tf can `import_from` it as the OS disk.
 #
-# The `tank` HDD mirror is deliberately not referenced anywhere in
-# infra/tofu — it's created, mirrored, and mounted by Ansible (Phase 3).
+# The `tank` HDD stripe is deliberately not referenced anywhere in
+# infra/tofu — it's created, striped, and mounted by Ansible (Phase 3).
 #
 # depends_on vmbr1: the download's URL-metadata fetch runs on the node
 # itself (host resolver, host network stack), and proxmox_network_linux_bridge

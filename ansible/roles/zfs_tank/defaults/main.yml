@@ -1,0 +1,19 @@
+---
+# Role-private vars, prefixed zfs_tank_* so they can't collide with another
+# role's defaults.
+
+zfs_tank_pool_name: tank
+zfs_tank_dataset: tank/data
+zfs_tank_mountpoint: /tank/data
+zfs_tank_pool_mountpoint: /tank
+zfs_tank_pool_properties:
+  ashift: "12"
+zfs_tank_filesystem_properties:
+  compression: lz4
+  atime: "off"
+
+# Empty by default so the assert in tasks/main.yml fails loudly if
+# inventory/host_vars/server.yml isn't loaded, instead of this role silently
+# building a pool against the wrong (or no) disks — see that file for the
+# operator-verified by-id paths for this host's two tank HDDs.
+zfs_tank_pool_disks: []

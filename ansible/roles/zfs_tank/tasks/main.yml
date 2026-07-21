@@ -1,0 +1,116 @@
+---
+# Creates the tank zpool as a non-redundant 2-disk stripe (~4TB usable, no
+# fault tolerance) plus the tank/data dataset mounted at
+# {{ zfs_tank_mountpoint }}. zfs_tank_pool_disks (the two by-id disk paths)
+# comes from inventory/host_vars/server.yml, never hardcoded here.
+
+- name: Install zfsutils-linux
+  ansible.builtin.apt:
+    name: zfsutils-linux
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Assert exactly two distinct by-id disk paths are configured
+  # This role refuses to build a degraded or wrongly-targeted pool: it will
+  # not proceed without exactly two distinct /dev/disk/by-id paths for
+  # zfs_tank_pool_disks (see defaults/main.yml — empty by default so this
+  # fails loudly rather than silently building the wrong thing).
+  ansible.builtin.assert:
+    that:
+      - zfs_tank_pool_disks | length == 2
+      - zfs_tank_pool_disks | select('match', '^/dev/disk/by-id/.+') | list | length == 2
+      - zfs_tank_pool_disks | unique | length == 2
+    fail_msg: >-
+      zfs_tank_pool_disks must contain exactly two distinct
+      /dev/disk/by-id/... paths — this role refuses to build a degraded or
+      wrongly-targeted pool. Got: {{ zfs_tank_pool_disks }}.
+    success_msg: zfs_tank_pool_disks has exactly two distinct by-id disk paths.
+
+- name: Stat each configured tank disk
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: zfs_tank_disk_stat
+  loop: "{{ zfs_tank_pool_disks }}"
+
+- name: Assert every configured tank disk path exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: >-
+      {{ item.item }} does not exist on this host — check for a stale or
+      wrong by-id path in inventory/host_vars/server.yml.
+    success_msg: "{{ item.item }} exists."
+  loop: "{{ zfs_tank_disk_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Check whether the tank zpool already exists
+  ansible.builtin.command:
+    cmd: "zpool list -H -o name {{ zfs_tank_pool_name }}"
+  register: zfs_tank_pool_check
+  changed_when: false
+  failed_when: false
+
+- name: Create the tank zpool as a non-redundant stripe
+  # Two separate single-disk vdev entries (not one vdev with two disks), so
+  # the result is a plain stripe, not any redundant/combined layout.
+  # force is always false — never overwrite an existing device signature.
+  #
+  # Only runs when the pool doesn't already exist: community.general.zpool's
+  # reconciler resolves the current layout via `zpool status -LP`, which
+  # reports real device paths (e.g. /dev/sdX), never the by-id paths this
+  # role passes in — so on an existing pool it would always see a diff and
+  # attempt a spurious `zpool add` on every run. Guarding on existence avoids
+  # that known non-idempotence entirely.
+  community.general.zpool:
+    name: "{{ zfs_tank_pool_name }}"
+    state: present
+    force: false
+    mountpoint: "{{ zfs_tank_pool_mountpoint }}"
+    pool_properties: "{{ zfs_tank_pool_properties }}"
+    filesystem_properties: "{{ zfs_tank_filesystem_properties }}"
+    vdevs:
+      - disks:
+          - "{{ zfs_tank_pool_disks[0] }}"
+      - disks:
+          - "{{ zfs_tank_pool_disks[1] }}"
+  when: zfs_tank_pool_check.rc != 0
+
+- name: Ensure the tank/data dataset exists with the correct mountpoint
+  community.general.zfs:
+    name: "{{ zfs_tank_dataset }}"
+    state: present
+    extra_zfs_properties:
+      mountpoint: "{{ zfs_tank_mountpoint }}"
+
+- name: Read back tank pool status
+  ansible.builtin.command:
+    cmd: "zpool status {{ zfs_tank_pool_name }}"
+  register: zfs_tank_pool_status
+  changed_when: false
+
+- name: Assert the tank pool is healthy and has no redundant vdev
+  ansible.builtin.assert:
+    that:
+      - "'ONLINE' in zfs_tank_pool_status.stdout"
+      - "'mirror' not in zfs_tank_pool_status.stdout"
+      - "'raidz' not in zfs_tank_pool_status.stdout"
+    fail_msg: >-
+      tank pool is not ONLINE, or unexpectedly contains a mirror/raidz vdev —
+      expected a plain non-redundant stripe.
+    success_msg: tank pool is ONLINE as a non-redundant stripe, as expected.
+
+- name: Read back the tank/data dataset mountpoint
+  ansible.builtin.command:
+    cmd: "zfs list -H -o mountpoint {{ zfs_tank_dataset }}"
+  register: zfs_tank_dataset_mountpoint
+  changed_when: false
+
+- name: Assert tank/data is mounted at the expected path
+  ansible.builtin.assert:
+    that:
+      - zfs_tank_dataset_mountpoint.stdout == zfs_tank_mountpoint
+    fail_msg: >-
+      tank/data is not mounted at {{ zfs_tank_mountpoint }}.
+    success_msg: tank/data is mounted at {{ zfs_tank_mountpoint }} as expected.

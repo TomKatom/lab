@@ -24,7 +24,7 @@ recoverable (just slow). Management is via **WireGuard**, not public SSH.
 - **Management plane:** **WireGuard on the host** — SSH(22)/Proxmox API(8006)/k8s API(6443) reachable only over the tunnel; **no public SSH**. WG peers get a route into the internal bridge.
 - **Firewall split:** packet **filtering** → OpenTofu/`bpg` (Proxmox firewall, filters at the vNIC); **NAT/DNAT port-forwarding** → Ansible (`network-nat` role, nftables). They live in different nftables hooks and coexist.
 - **Torrents:** Deluge egresses via host masquerade → seeds from the **direct OVH IP** (no VPN); inbound torrent port DNAT'd to Deluge.
-- **HDD layout:** **ZFS mirror** (`tank`, 2 TB usable, 1-disk fault tolerant) for media + downloads.
+- **HDD layout:** **ZFS non-redundant stripe** (`tank`, ~4 TB usable, no fault tolerance) for media + downloads.
 - **Ingress/auth/TLS:** **Traefik + Authelia** forward-auth on **:443**; **wildcard cert `*.tomkatom.com`** via cert-manager (Let's Encrypt **DNS-01 / Cloudflare**); per-service subdomains (`plex.`, `sonarr.`, `auth.`…). external-dns manages records.
 - **Plex:** **direct-play only, no transcoding** → modest resources, no GPU concern, no transcode scratch; served on its own port (not behind Authelia/Traefik auth).
 - **Observability:** deferred (placeholder namespace now).
@@ -48,14 +48,14 @@ OVH dedicated (Proxmox 8) — SINGLE public IP
 │  Egress: VM → internet via host masquerade (appears as the OVH IP)
 │
 ├─ rpool (ZFS mirror, 2×500GB NVMe)  ── Proxmox root + VM system disks + app CONFIG (fast)
-├─ tank  (ZFS mirror, 2×2TB HDD)     ── media library + downloads (bulk, redundant)
+├─ tank  (ZFS stripe, 2×2TB HDD)     ── media library + downloads (bulk, non-redundant)
 │
 ├─ Proxmox firewall (filtering)      ←── OpenTofu (bpg): datacenter/node/VM rules
 ├─ WireGuard + NAT/DNAT + OS hardening + ZFS + virtiofs  ←── Ansible
 │      └─ WG peers routed into vmbr1 (10.10.10.0/24)
 │
 └─ VM: k3s-node  (vmbr1 internal IP, behind host NAT)
-     ├─ virtiofs mount /data  ← host tank/media (hardlink-friendly single tree)
+     ├─ virtiofs mount /data  ← host tank/data (hardlink-friendly single tree)
      ├─ local-path PVs        ← VM NVMe disk (app configs/DBs)
      │
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
@@ -70,7 +70,7 @@ OVH dedicated (Proxmox 8) — SINGLE public IP
 
 **Three IaC layers, one repo:**
 1. **Provision** (OpenTofu, `bpg/proxmox` + `cloudflare`) — k3s VM (attached to `vmbr1`), disks, **Proxmox filtering firewall**, foundational Cloudflare records. State local + natively encrypted.
-2. **Configure** (Ansible) — WireGuard mgmt plane, **NAT/DNAT for the single IP**, Proxmox host + VM OS hardening, `tank` mirror, virtiofs share, k3s install (bundled Traefik off).
+2. **Configure** (Ansible) — WireGuard mgmt plane, **NAT/DNAT for the single IP**, Proxmox host + VM OS hardening, `tank` stripe, virtiofs share, k3s install (bundled Traefik off).
 3. **Deliver** (Argo CD) — everything in-cluster reconciled from git.
 
 ---
@@ -118,7 +118,7 @@ lab/
 │   ├─ inventory/hosts.yml
 │   ├─ group_vars/all.sops.yml   # shared vars/secrets (DRY, encrypted)
 │   ├─ playbooks/{proxmox-host,k3s-vm}.yml
-│   └─ roles/{wireguard,network-nat,hardening,zfs-tank,virtiofs,k3s}
+│   └─ roles/{wireguard,network-nat,hardening,zfs_tank,virtiofs,k3s}
 └─ clusters/lab/                 # Layer 3: Argo CD (single source of truth)
     ├─ bootstrap/                # argocd helm values + ksops repo-server patch + root app
     │   ├─ argocd-values.yaml  root-app.yaml
@@ -155,7 +155,7 @@ Reseller-mediated console is the slow last-resort fallback.
 
 **Storage split (performance + correctness):**
 - App **configs/DBs** (*arr SQLite, Plex metadata) → VM NVMe via **local-path-provisioner**.
-- **Media + downloads** → host `tank/media` shared into the VM via **virtiofs**, mounted `/data`, exposed to pods as hostPath/local PVs; ZFS snapshots/scrubs stay on the host.
+- **Media + downloads** → host `tank/data` shared into the VM via **virtiofs**, mounted `/data`, exposed to pods as hostPath/local PVs; ZFS snapshots/scrubs stay on the host.
 - **Single `/data` tree** (`/data/torrents` + `/data/media`) so Sonarr/Radarr do **atomic hardlink moves** (TRaSH layout) — instant imports, no copies.
 
 ---
@@ -185,7 +185,7 @@ Reseller-mediated console is the slow last-resort fallback.
 
 1. **Repo scaffold** — structure above, `.sops.yaml`, age key generated, CI skeleton (fmt/lint/gitleaks), README + `docs/architecture.md`.
 2. **Provision (Tofu)** — providers + **native state encryption**, `bpg` VM `k3s-node` on `vmbr1`, disks, **Proxmox filter firewall**, foundational Cloudflare records (`*.tomkatom.com`). `tofu plan` green in CI.
-3. **Configure (Ansible)** — **WireGuard first** (verify, then Tofu drops public SSH), **NAT/DNAT** for the single IP, host hardening, `tank` mirror, virtiofs, VM hardening, install k3s (Traefik off). Also install/enable `qemu-guest-agent` in the VM, then grant the `Terraform` Proxmox role `VM.GuestAgent.Audit` (see `docs/architecture.md#guest-agent` — granting it before the agent exists hangs `tofu plan`/`apply`).
+3. **Configure (Ansible)** — **WireGuard first** (verify, then Tofu drops public SSH), **NAT/DNAT** for the single IP, host hardening, `tank` stripe, virtiofs, VM hardening, install k3s (Traefik off). Also install/enable `qemu-guest-agent` in the VM, then grant the `Terraform` Proxmox role `VM.GuestAgent.Audit` (see `docs/architecture.md#guest-agent` — granting it before the agent exists hangs `tofu plan`/`apply`).
 4. **Bootstrap Argo CD** — helm install + **ksops** repo-server patch; create `sops-age-key` secret from the age key; apply `root-app.yaml`. Documented in `docs/bootstrap.md`.
 5. **Platform apps** — cert-manager (Cloudflare DNS-01, wildcard `*.tomkatom.com`), external-dns, Traefik (:443), Authelia (`auth.tomkatom.com`). Verify a test Ingress → valid cert + auth.
 6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge (torrent port) → Plex (direct port) → Overseerr, on the shared `/data` tree with hardlinks.
@@ -213,4 +213,4 @@ Reseller-mediated console is the slow last-resort fallback.
 - **Secrets:** decrypt a `*.sops.yaml`, confirm Argo/ksops materializes the Secret and an app consumes it via `existingSecret`.
 - **Ingress/TLS/auth:** browse `sonarr.tomkatom.com` → Authelia login → HTTPS with a valid `*.tomkatom.com` cert; external-dns created the record automatically.
 - **Media pipeline:** Prowlarr indexer → Sonarr/Radarr search → Deluge download → **hardlink** import into `/data/media` (same inode, no copy) → **Plex direct-plays** to a remote client (confirm "Direct Play", zero transcode sessions).
-- **Security:** external port scan shows only 443/32400/torrent/51820-udp open; `tank` reports a healthy mirror.
+- **Security:** external port scan shows only 443/32400/torrent/51820-udp open; `tank` reports a healthy non-redundant stripe.

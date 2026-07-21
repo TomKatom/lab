@@ -1,0 +1,9 @@
+---
+# Operator-verified environment fact: the two 2TB HDDs for the `tank` stripe,
+# discovered read-only over WireGuard (2026-07-21) via
+# `lsblk -d -o NAME,SIZE,ROTA,MODEL,SERIAL` + `ls -l /dev/disk/by-id/`.
+# Stable by-id paths — do not use /dev/sdX (names can reorder across boots).
+# Consumed only by roles/zfs_tank on this host.
+zfs_tank_pool_disks:
+  - /dev/disk/by-id/ata-HGST_HUS726020ALA610_K5J12RAG
+  - /dev/disk/by-id/ata-HGST_HUS726020ALA610_K5HWWV7G
