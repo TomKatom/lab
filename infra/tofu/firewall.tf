@@ -70,6 +70,14 @@ resource "proxmox_virtual_environment_firewall_ipset" "mgmt" {
 resource "proxmox_node_firewall" "this" {
   node_name = var.node_name
   enabled   = var.enable_firewall
+  # The ansible/roles/pve_firewall role pins the node to the nftables backend
+  # live via `pvesh set .../firewall/options --nftables 1` (fixes the VM
+  # egress-NAT breakage the legacy iptables backend caused — see
+  # phase3-plan.md's PR-NAT-FIX). Declaring it here too keeps Tofu's state in
+  # sync with that Ansible-enforced reality; leaving it unset previously made
+  # every plan want to flip it back to the provider default (false), which
+  # would silently undo the Ansible fix on the next apply.
+  nftables = true
 }
 
 resource "proxmox_virtual_environment_firewall_rules" "node" {
