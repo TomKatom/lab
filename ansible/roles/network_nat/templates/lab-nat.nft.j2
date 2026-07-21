@@ -6,7 +6,14 @@
 # — no prerouting/DNAT chain here, that lands in a later PR.
 table ip {{ network_nat_table }} {
 	chain postrouting {
-		type nat hook postrouting priority srcnat; policy accept;
+		# priority srcnat - 5 (95), deliberately *before* the standard srcnat
+		# hook (100): any other nat postrouting chain that coexists at 100
+		# (an iptables-legacy nat table, or proxmox-firewall's own) would
+		# otherwise be free to commit a null SNAT binding first at the shared
+		# priority and win the race, leaving VM egress un-masqueraded. Running
+		# first makes this masquerade authoritative for internal_subnet
+		# traffic regardless of what else registers at that hook.
+		type nat hook postrouting priority srcnat - 5; policy accept;
 		ip saddr {{ network.internal_subnet }} oifname "{{ ansible_default_ipv4.interface }}" masquerade
 	}
 

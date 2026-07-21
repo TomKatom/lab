@@ -1,0 +1,64 @@
+---
+# Enforce the nftables firewall backend (proxmox-firewall) instead of the
+# legacy iptables backend (pve-firewall).
+#
+# WHY THIS EXISTS — the egress-NAT regression it fixes:
+# The legacy iptables backend sets net.bridge.bridge-nf-call-iptables=1 (it
+# needs it: its per-VM filter chains match on --physdev-is-bridged, which only
+# works while bridged frames traverse iptables). With that knob on, a
+# firewall=1 VM's frames are pulled through the ip-family nat POSTROUTING hook
+# at the L2 fwbr bridging stage — where oifname is the bridge port, not the
+# uplink — so network_nat's `oifname vmbr0` masquerade doesn't match and a
+# *null* SNAT binding gets committed before the packet is ever routed out the
+# uplink. Result: VMs egress with their raw internal source IP, replies never
+# route back (confirmed live: conntrack reply tuple kept dst=<VM internal IP>,
+# every flow UNREPLIED). The legacy backend also stands up an iptables nat
+# table whose empty POSTROUTING ties network_nat's nft chain at the shared
+# `srcnat` hook priority and can win the null binding outright.
+#
+# The nftables backend filters per-VM traffic in the nft `bridge` family with
+# no bridge-nf dependency, so network_nat keeps bridge-nf-call-iptables=0 and
+# NAT runs only at the L3 postrouting stage (oifname = real uplink). This role
+# must run before network_nat in proxmox-host.yml so the backend is flipped
+# before network_nat asserts/sets that sysctl.
+
+- name: Ensure the nftables firewall backend package is installed
+  ansible.builtin.apt:
+    name: proxmox-firewall
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read the node firewall options
+  ansible.builtin.command:
+    cmd: pvesh get /nodes/{{ pve_firewall_node }}/firewall/options --output-format json
+  register: pve_firewall_options
+  changed_when: false
+
+- name: Enable the nftables firewall backend on the node
+  # The `nftables` flag lives in /etc/pve/nodes/<node>/host.fw [OPTIONS];
+  # pvesh writes it atomically and proxmox-firewall picks it up on its next
+  # cycle, at which point pve-firewall stops managing iptables. Idempotent via
+  # the read above — no state change once it's already 1.
+  ansible.builtin.command:
+    cmd: pvesh set /nodes/{{ pve_firewall_node }}/firewall/options --nftables 1
+  when: >-
+    (pve_firewall_options.stdout | default('{}', true) | from_json).nftables
+    | default(0) | int != 1
+  register: pve_firewall_enable
+  changed_when: pve_firewall_enable.rc == 0
+
+- name: Ensure the nftables firewall backend service is enabled and running
+  ansible.builtin.systemd:
+    name: "{{ pve_firewall_service }}"
+    enabled: true
+    state: started
+
+- name: Confirm the node reports the nftables backend as active
+  ansible.builtin.command:
+    cmd: pvesh get /nodes/{{ pve_firewall_node }}/firewall/options --output-format json
+  register: pve_firewall_options_after
+  changed_when: false
+  failed_when: >-
+    (pve_firewall_options_after.stdout | default('{}', true) | from_json).nftables
+    | default(0) | int != 1

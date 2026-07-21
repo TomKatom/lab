@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: pve_firewall
+  author: tomkatom
+  description: Enforce the nftables firewall backend (proxmox-firewall) so per-VM filtering coexists with egress NAT
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []
