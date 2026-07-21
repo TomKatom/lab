@@ -1,0 +1,8 @@
+---
+# Formats/mounts the scsi1 data disk and installs single-node k3s (Traefik
+# disabled, klipper servicelb kept) in the k3s VM.
+- name: Install k3s in the k3s VM
+  hosts: k3s_node
+  become: true
+  roles:
+    - k3s

@@ -1,0 +1,56 @@
+---
+- name: Ensure the k3s config directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render k3s config.yaml
+  # Deliberately no `validate:` here — unlike sshd, where a bad config can
+  # lock out all access, a bad k3s config only fails a restartable systemd
+  # service. The "wait for node Ready" step later in this file is the real
+  # correctness gate for whether the rendered config actually works.
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ k3s_config_dir }}/config.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart k3s
+
+- name: Check the currently installed k3s version
+  ansible.builtin.command:
+    cmd: k3s --version
+  register: k3s_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install k3s
+  # config.yaml is already on disk from the template task above, so k3s's
+  # first start reads "disable: [traefik]" and never installs the Traefik
+  # helm chart in the first place.
+  #
+  # ansible.builtin.shell does not enable pipefail by default, so a failing
+  # `curl` piped into `sh` could be masked by `sh`'s own exit code and
+  # silently "succeed". Running under bash with `set -o pipefail` explicit
+  # in the script makes a curl failure fail the whole task instead.
+  ansible.builtin.shell: |
+    set -o pipefail
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={{ k3s_version }} sh -
+  args:
+    executable: /bin/bash
+  when: k3s_version_check.rc != 0 or k3s_version not in k3s_version_check.stdout
+  changed_when: true
+
+- name: Ensure k3s is started and enabled
+  ansible.builtin.systemd:
+    name: k3s
+    state: started
+    enabled: true
+
+- name: Wait for the node to report Ready
+  ansible.builtin.command:
+    cmd: k3s kubectl wait --for=condition=Ready node --all --timeout=120s
+  changed_when: false

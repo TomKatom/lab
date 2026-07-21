@@ -1,0 +1,5 @@
+# Managed by roles/k3s — do not edit by hand.
+disable:
+{% for component in k3s_disable_components %}
+  - {{ component }}
+{% endfor %}

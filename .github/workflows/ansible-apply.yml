@@ -57,6 +57,7 @@ on:
           - runner
           - hardening-vms
           - virtiofs
+          - k3s-vm
 
 permissions:
   contents: read
