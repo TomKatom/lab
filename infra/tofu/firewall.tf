@@ -16,7 +16,8 @@
 #          ├─> node accept rules ─> cluster policy (enable + input DROP)
 #   node firewall (enable) ─┘
 #
-#   VM accept rules ─> VM firewall options (enable + input DROP)
+# (There is no per-VM firewall chain: guests run firewall=false so host egress
+# NAT works — see the "VM (guest) firewall — intentionally absent" note below.)
 #
 # That single inversion gives three properties for free:
 #   1. Create: the holes exist before the wall goes up.
@@ -148,99 +149,22 @@ resource "proxmox_virtual_environment_cluster_firewall" "this" {
   }
 }
 
-# --- VM (k3s-node) firewall -------------------------------------------------
+# --- VM (guest) firewall — intentionally absent -----------------------------
 #
-# Same invariant, same order: rules first, DROP policy last.
-
-resource "proxmox_virtual_environment_firewall_rules" "vm" {
-  depends_on = [proxmox_virtual_environment_firewall_ipset.mgmt]
-
-  node_name = var.node_name
-  vm_id     = proxmox_virtual_environment_vm.k3s.vm_id
-
-  # Always-public: HTTPS/Plex/torrent — same service rules as the node scope.
-  dynamic "rule" {
-    for_each = local.public_service_rules
-    content {
-      type    = "in"
-      action  = "ACCEPT"
-      comment = rule.value.comment
-      dport   = rule.value.dport
-      proto   = rule.value.proto
-    }
-  }
-
-  # Management: k8s API + SSH into the VM. Same anti-lockout toggle.
-  dynamic "rule" {
-    for_each = local.vm_mgmt_rules
-    content {
-      type    = "in"
-      action  = "ACCEPT"
-      comment = rule.value.comment
-      dport   = rule.value.dport
-      proto   = rule.value.proto
-      source  = var.restrict_management ? "+mgmt" : null
-    }
-  }
-}
-
-resource "proxmox_virtual_environment_firewall_options" "vm" {
-  depends_on = [proxmox_virtual_environment_firewall_rules.vm]
-
-  node_name = var.node_name
-  vm_id     = proxmox_virtual_environment_vm.k3s.vm_id
-
-  enabled       = var.enable_firewall
-  input_policy  = "DROP"
-  output_policy = "ACCEPT"
-
-  lifecycle {
-    precondition {
-      condition     = length(local.vm_mgmt_rules) > 0
-      error_message = "Refusing to apply input_policy=DROP on the VM with no management accept rules in local.vm_mgmt_rules."
-    }
-  }
-}
-
-# --- VM (ci-runner) firewall -------------------------------------------------
+# There is deliberately NO per-VM (k3s-node / ci-runner) firewall here. A
+# per-VM firewall requires `firewall = true` on the vNIC (vm-k3s.tf /
+# vm-runner.tf), which makes Proxmox insert a per-VM firewall bridge (fwbr).
+# Under the nftables firewall backend that bridge does stateful L2 conntrack
+# (nf_conntrack_bridge) and CONFIRMS the guest's outbound connection before it
+# is routed — after which the host's L3 masquerade (Ansible network_nat) can
+# no longer attach a SNAT binding, so the guest has NO working egress. (The
+# legacy iptables backend breaks the same path differently, via
+# bridge-nf-call-iptables=1 committing a null SNAT binding at the bridge
+# stage.) Egress NAT and a per-VM firewall bridge are mutually exclusive here.
 #
-# Same invariant, same order: rules first, DROP policy last. A third,
-# independent chain (ipset -> runner rules -> runner options), same shape as
-# the k3s-node chain above.
-
-resource "proxmox_virtual_environment_firewall_rules" "runner" {
-  depends_on = [proxmox_virtual_environment_firewall_ipset.mgmt]
-
-  node_name = var.node_name
-  vm_id     = proxmox_virtual_environment_vm.runner.vm_id
-
-  dynamic "rule" {
-    for_each = local.runner_mgmt_rules
-    content {
-      type    = "in"
-      action  = "ACCEPT"
-      comment = rule.value.comment
-      dport   = rule.value.dport
-      proto   = rule.value.proto
-      source  = var.restrict_management ? "+mgmt" : null
-    }
-  }
-}
-
-resource "proxmox_virtual_environment_firewall_options" "runner" {
-  depends_on = [proxmox_virtual_environment_firewall_rules.runner]
-
-  node_name = var.node_name
-  vm_id     = proxmox_virtual_environment_vm.runner.vm_id
-
-  enabled       = var.enable_firewall
-  input_policy  = "DROP"
-  output_policy = "ACCEPT"
-
-  lifecycle {
-    precondition {
-      condition     = length(local.runner_mgmt_rules) > 0
-      error_message = "Refusing to apply input_policy=DROP on the runner with no management accept rules in local.runner_mgmt_rules."
-    }
-  }
-}
+# Guests run with `firewall = false` and are protected by position, not a
+# per-VM wall: they hold no public IP (RFC1918 on vmbr1), so the internet
+# reaches them only through explicit host DNAT, and management reaches them
+# only over WireGuard. The gap this leaves — a WG peer has unrestricted L3 to
+# the guests, and there is no east-west segmentation between guests — is a
+# tracked follow-up: see master-plan.md, "Internal segmentation / DMZ (TODO)".

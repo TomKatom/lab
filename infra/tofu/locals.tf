@@ -22,15 +22,10 @@ locals {
     { comment = "SSH (host)", proto = "tcp", dport = local.lab.ports.ssh },
     { comment = "Proxmox API/UI", proto = "tcp", dport = local.lab.ports.pve_api },
   ]
-  vm_mgmt_rules = [
-    { comment = "k8s API", proto = "tcp", dport = local.lab.ports.k8s_api },
-    { comment = "SSH (VM)", proto = "tcp", dport = local.lab.ports.ssh },
-  ]
-  # ci-runner is strictly outbound-poll to GitHub — no k8s API rule, no
-  # public_service_rules, SSH only.
-  runner_mgmt_rules = [
-    { comment = "SSH (runner)", proto = "tcp", dport = local.lab.ports.ssh },
-  ]
+  # No vm_mgmt_rules / runner_mgmt_rules: guests run without a per-VM firewall
+  # (firewall=false, so host egress NAT works) — see firewall.tf "VM (guest)
+  # firewall — intentionally absent". Guest ingress is governed by position
+  # (no public IP; internet via host DNAT only, mgmt via WireGuard only).
 
   # Cloudflare A records (cloudflare.tf).
   dns_a_records = {
