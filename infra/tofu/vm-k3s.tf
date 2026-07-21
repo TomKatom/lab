@@ -75,4 +75,11 @@ resource "proxmox_virtual_environment_vm" "k3s" {
       keys     = local.lab.admin_ssh_public_keys
     }
   }
+
+  # virtiofs share of host tank/data (see storage-virtiofs.tf). Not
+  # hot-pluggable: the device only attaches on the VM's next cold start —
+  # requires a manual cold stop/start after this apply (brief k3s outage).
+  virtiofs {
+    mapping = proxmox_hardware_mapping_dir.data.name
+  }
 }
