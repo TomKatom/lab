@@ -1,0 +1,6 @@
+---
+# Role-private vars, prefixed pve_permissions_* so they can't collide with
+# another role's defaults.
+pve_permissions_terraform_role: Terraform
+pve_permissions_grant_privs:
+  - VM.GuestAgent.Audit
