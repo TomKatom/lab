@@ -42,8 +42,12 @@ resource "proxmox_virtual_environment_vm" "runner" {
   network_device {
     bridge = proxmox_network_linux_bridge.vmbr1.name
     model  = "virtio"
-    # Required for the VM-scoped firewall (firewall.tf) to filter this vNIC.
-    firewall = true
+    # Must stay false: firewall=true attaches a per-VM firewall bridge (fwbr)
+    # whose L2 conntrack confirms this guest's outbound flow before routing,
+    # which defeats the host's L3 egress masquerade (network_nat) — the runner
+    # would have no internet and go offline. See firewall.tf "VM (guest)
+    # firewall — intentionally absent" and master-plan.md DMZ TODO.
+    firewall = false
   }
 
   initialization {
