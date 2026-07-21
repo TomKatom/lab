@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: virtiofs
+  author: tomkatom
+  description: Mounts the host's virtiofs share of tank/data inside the k3s VM and prepares its subdirectories
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []
