@@ -120,6 +120,16 @@ interface/vNIC; the NAT table (Ansible) governs address translation —
 different nftables hooks, no conflict. A DNAT'd packet still has to clear
 the VM-level accept rule.
 
+This "no conflict" holds only because PVE runs the **nftables firewall
+backend** (`proxmox-firewall`), pinned by the Ansible `pve_firewall` role.
+Under the legacy **iptables** backend the two collide: that backend forces
+`net.bridge.bridge-nf-call-iptables=1` for its per-VM `--physdev-is-bridged`
+filtering, which drags a `firewall=1` VM's frames through the ip-family NAT
+POSTROUTING hook at the L2 bridging stage and commits a null SNAT binding
+before the packet is routed — silently killing egress masquerade. The
+nftables backend filters per-VM traffic in the `bridge` family with no such
+dependency.
+
 ### Management plane
 
 WireGuard listens on public `51820/udp`. SSH(22), Proxmox UI/API(8006), and

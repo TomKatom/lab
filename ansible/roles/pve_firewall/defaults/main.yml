@@ -1,0 +1,12 @@
+---
+# Role-private vars, prefixed pve_firewall_* to avoid collisions.
+
+# The PVE node name equals the host's system hostname (pvesh addresses the
+# node as /nodes/<hostname>/...). Gathered facts are available because
+# proxmox-host.yml gathers them by default.
+pve_firewall_node: "{{ ansible_facts['hostname'] }}"
+
+# The nftables-based enforcement daemon (Rust). Distinct from the legacy
+# iptables daemon pve-firewall.service, which we deliberately let go inert
+# once the backend flips — see tasks/main.yml.
+pve_firewall_service: proxmox-firewall

@@ -2,8 +2,11 @@
 # Layer 2, host-side configuration. Roles land here incrementally as their
 # PRs merge — pve_repos (this host has no paid PVE subscription, so its
 # enterprise apt repos are swapped for the free no-subscription one) must
-# run first, before any other role's apt tasks; wireguard and network_nat
-# next; hardening, zfs-tank follow.
+# run first, before any other role's apt tasks; pve_firewall (flip to the
+# nftables firewall backend) must precede network_nat, whose egress
+# masquerade only works once the legacy iptables backend stops forcing
+# net.bridge.bridge-nf-call-iptables=1 (see roles/pve_firewall); wireguard
+# and network_nat next; hardening, zfs-tank follow.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -16,5 +19,6 @@
     - ../../config/lab.yml
   roles:
     - pve_repos
+    - pve_firewall
     - wireguard
     - network_nat

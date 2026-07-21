@@ -37,8 +37,13 @@
   # egressing the uplink (confirmed via `tcpdump -nei any`: the frame is
   # already SNAT'd leaving fwln9000i0, never reaches vmbr0). Disabling it lets
   # NAT run only at the post-routing L3 stage, where oifname is the real
-  # uplink. Safe here: PVE 9 filters via the nftables `bridge`-family
-  # proxmox-firewall, which doesn't depend on this knob.
+  # uplink. Safe here *because* the pve_firewall role (runs earlier in
+  # proxmox-host.yml) puts PVE on the nftables firewall backend, which filters
+  # per-VM traffic in the `bridge` family and doesn't depend on this knob.
+  # Under the legacy iptables backend this would be unsafe both ways: that
+  # backend needs the knob at 1 for its --physdev-is-bridged per-VM filtering,
+  # and it forces the knob back to 1 anyway — which is exactly what silently
+  # broke egress NAT before pve_firewall existed.
   ansible.posix.sysctl:
     name: net.bridge.bridge-nf-call-iptables
     value: "0"
