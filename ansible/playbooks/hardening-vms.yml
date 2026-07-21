@@ -1,0 +1,18 @@
+---
+# Applies the same OS/SSH hardening as playbooks/proxmox-host.yml, but to
+# the guest VMs rather than the host itself — see roles/hardening for the
+# host-vs-VM behaviour split (root login disabled, qemu-guest-agent
+# installed, no ip_forward assertion). Targets the vm_guests group
+# (inventory/hosts.yml): the runner and k3s-node. Because the hardening
+# role reconciles each guest's authorized_keys from config/lab.yml, this
+# play also enrols the automation key on k3s-node — a VM built before that
+# key existed, so cloud-init never seeded it (see docs/ssh-keys.md).
+- name: Harden guest VMs
+  hosts: vm_guests
+  become: true
+  vars_files:
+    - ../../config/lab.yml
+  roles:
+    - role: hardening
+      vars:
+        hardening_is_pve_host: false

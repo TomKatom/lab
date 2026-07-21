@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: hardening
+  author: tomkatom
+  description: SSH/OS hardening for the Proxmox host and its guest VMs (drop-in sshd, fail2ban, unattended-upgrades, auditd, sysctl baseline)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

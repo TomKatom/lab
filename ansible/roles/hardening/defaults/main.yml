@@ -1,0 +1,70 @@
+---
+# Role-private vars, prefixed hardening_* so they can't collide with another
+# role's defaults.
+
+# Host vs VM behaviour. Overridden to true at role-invocation level in
+# proxmox-host.yml; every VM play leaves it at the default (false).
+hardening_is_pve_host: false
+
+# --- SSH -----------------------------------------------------------------
+# HOST MUST stay prohibit-password: the bpg/proxmox Tofu provider SSHes in as
+# root@host — 'no' here bricks every `tofu apply`. VMs get 'no' (Tofu never
+# SSHes into guests).
+hardening_permit_root_login: "{{ 'prohibit-password' if hardening_is_pve_host else 'no' }}"
+hardening_admin_user: debian
+hardening_ssh_port: "{{ ports.ssh | default(22) }}"
+
+# authorized_keys management (closes the "host authorized_keys is
+# hand-maintained" gap noted in docs/ssh-keys.md). Exclusive: authorized_keys
+# becomes exactly this list, pruning anything not declared in config/lab.yml.
+hardening_authorized_keys_user: "{{ 'root' if hardening_is_pve_host else hardening_admin_user }}"
+hardening_admin_ssh_public_keys: "{{ admin_ssh_public_keys }}"
+hardening_authorized_keys_exclusive: true
+
+# --- feature toggles -------------------------------------------------------
+hardening_manage_sysctl: true
+hardening_fail2ban_enabled: true
+hardening_unattended_upgrades_enabled: true
+hardening_auditd_enabled: true
+hardening_install_qemu_guest_agent: "{{ not hardening_is_pve_host }}"
+
+# --- fail2ban ----------------------------------------------------------
+hardening_fail2ban_bantime: 1h
+hardening_fail2ban_findtime: 10m
+hardening_fail2ban_maxretry: 5
+# Never ban the management plane or internal automation traffic.
+hardening_fail2ban_ignoreip:
+  - 127.0.0.1/8
+  - ::1
+  - "{{ network.wireguard_subnet }}"
+  - "{{ network.internal_subnet }}"
+
+# --- unattended-upgrades ----------------------------------------------
+# Security origin only; NEVER auto-reboot (no IPMI/console on this box);
+# hold proxmox packages so an unattended apt run can't swap a kernel/pve
+# component out from under a running host.
+hardening_unattended_automatic_reboot: false
+hardening_unattended_package_blacklist:
+  - "proxmox-*"
+  - "pve-*"
+
+# --- sysctl baseline -----------------------------------------------------
+# Deliberately excludes net.ipv4.ip_forward (owned by the wireguard role,
+# asserted-only below) and net.bridge.bridge-nf-call-iptables (owned by
+# network_nat, must stay 0 for egress NAT to work) — do not add either here.
+hardening_sysctl_settings:
+  kernel.kptr_restrict: "1"
+  kernel.dmesg_restrict: "1"
+  kernel.yama.ptrace_scope: "1"
+  net.ipv4.conf.all.accept_redirects: "0"
+  net.ipv4.conf.default.accept_redirects: "0"
+  net.ipv4.conf.all.send_redirects: "0"
+  net.ipv4.conf.all.accept_source_route: "0"
+  net.ipv4.conf.all.log_martians: "1"
+  net.ipv4.tcp_syncookies: "1"
+  net.ipv6.conf.all.accept_redirects: "0"
+  fs.protected_hardlinks: "1"
+  fs.protected_symlinks: "1"
+
+# --- minimal-package posture ------------------------------------------
+hardening_purge_packages: []

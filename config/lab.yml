@@ -35,7 +35,8 @@ admin_ssh_public_keys:
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINYKFAMFWxDIsq8vAH6+Z2eYhlpQwsmdxou7SE0ofMiy tom-admin"
   # Automation key (`ci-tofu-apply`, GitHub secret PROXMOX_SSH_PRIVATE_KEY) —
   # not a personal key, added here deliberately: CI-driven Ansible applies
-  # (ansible-apply.yml) need to reach the VM too, not just the Proxmox host.
-  # See docs/ssh-keys.md ("Known gap: the VM") for why this alone doesn't
-  # yet authorize the key on the already-running k3s-node.
+  # (ansible-apply.yml) need to reach the VMs too, not just the Proxmox host.
+  # The `hardening` role reconciles this list onto the host's and guests'
+  # authorized_keys, so the key lands on k3s-node even though the VM predates
+  # it and cloud-init only seeds keys at first boot (see docs/ssh-keys.md).
   - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPIIYo8m5KqAITkQohEFdpXdsE5BvZKKn+QE9dGxrqde github-actions-tofu-apply"

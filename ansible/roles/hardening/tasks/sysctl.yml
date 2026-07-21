@@ -1,0 +1,32 @@
+---
+- name: Apply the sysctl hardening baseline
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ hardening_sysctl_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: hardening_manage_sysctl
+
+- name: Read net.ipv4.ip_forward
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: hardening_ip_forward
+  changed_when: false
+  when: hardening_is_pve_host and hardening_manage_sysctl
+
+- name: Assert IPv4 forwarding is already enabled
+  # The wireguard role owns setting this sysctl (it runs earlier in the same
+  # play, playbooks/proxmox-host.yml) — this role never sets ip_forward
+  # itself, it only asserts the wireguard role already turned it on.
+  ansible.builtin.assert:
+    that:
+      - hardening_ip_forward.stdout == "1"
+    fail_msg: >-
+      net.ipv4.ip_forward is not enabled. The wireguard role
+      (roles/wireguard/tasks/main.yml) should have set this — confirm it
+      runs before hardening in playbooks/proxmox-host.yml.
+    success_msg: net.ipv4.ip_forward is already enabled.
+  when: hardening_is_pve_host and hardening_manage_sysctl

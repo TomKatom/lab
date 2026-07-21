@@ -1,0 +1,19 @@
+---
+# Prerequisite for a later PR that grants VM.GuestAgent.Audit to the
+# Terraform PVE role — installing/enabling the agent must happen before
+# that grant, or tofu plan/apply hangs for minutes waiting on a guest agent
+# that was never running.
+- name: Install qemu-guest-agent
+  ansible.builtin.apt:
+    name: qemu-guest-agent
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: hardening_install_qemu_guest_agent
+
+- name: Enable and start qemu-guest-agent
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    enabled: true
+    state: started
+  when: hardening_install_qemu_guest_agent

@@ -1,0 +1,27 @@
+# Managed by Ansible (roles/hardening) — do not edit by hand.
+#
+# Deliberately conservative and kept small — this runs on a headless host
+# with no IPMI/console, so it must never emit -e 2 (immutable): flipping
+# that on requires a reboot to change the rules again, which this box
+# cannot recover from unattended. Covers identity files, sshd config,
+# time-change syscalls, and login records only — not a full CIS ruleset,
+# to avoid drowning the PVE host in noise.
+
+# Identity files
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k identity
+-w /etc/sudoers.d/ -p wa -k identity
+
+# SSH configuration
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+-w /etc/ssh/sshd_config.d/ -p wa -k sshd_config
+
+# Time changes
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k time-change
+
+# Login records
+-w /var/log/lastlog -p wa -k logins
+-w /var/run/faillock -p wa -k logins

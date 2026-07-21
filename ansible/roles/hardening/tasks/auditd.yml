@@ -1,0 +1,27 @@
+---
+- name: Install auditd
+  ansible.builtin.apt:
+    name:
+      - auditd
+      - audispd-plugins
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: hardening_auditd_enabled
+
+- name: Render the audit rules
+  ansible.builtin.template:
+    src: audit.rules.j2
+    dest: /etc/audit/rules.d/hardening.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Reload auditd rules
+  when: hardening_auditd_enabled
+
+- name: Enable and start auditd
+  ansible.builtin.systemd:
+    name: auditd
+    enabled: true
+    state: started
+  when: hardening_auditd_enabled
