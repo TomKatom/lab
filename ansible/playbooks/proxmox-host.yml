@@ -7,9 +7,16 @@
 # masquerade only works once the legacy iptables backend stops forcing
 # net.bridge.bridge-nf-call-iptables=1 (see roles/pve_firewall); wireguard
 # and network_nat next; hardening runs after that (its sysctl/ip_forward
-# assert depends on wireguard having already run); zfs_tank runs last (no
-# ordering dependency on the others — it only needs apt, so it could run
-# earlier, but landing last keeps this list append-only as roles land).
+# assert depends on wireguard having already run); zfs_tank has no ordering
+# dependency on the others — it only needs apt, so it could run earlier, but
+# lands here to keep this list append-only as roles land; pve_permissions
+# likewise has no ordering dependency on zfs_tank or anything else in this
+# list — its only real precondition is that qemu-guest-agent is already
+# running in the guest VMs, which happens via a separate playbook
+# (hardening-vms.yml) targeting vm_guests, not anything in this host
+# playbook's role list — so it's appended last purely to keep the list
+# append-only, not because of an ordering dependency on zfs_tank
+# specifically.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -41,3 +48,4 @@
       vars:
         hardening_is_pve_host: true
     - zfs_tank
+    - pve_permissions

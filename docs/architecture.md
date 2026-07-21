@@ -6,13 +6,14 @@ were made. This document is meant to stay in sync with what's actually
 implemented as each phase lands; where the two disagree, trust this file
 and the code, and update `master-plan.md`'s decision log if a call changed.
 
-**Status:** Phase 2 (provision) — `infra/tofu/` is authored and
-`tofu validate`s green in CI, but nothing has been applied yet: the server
-isn't reachable from CI or from wherever this was authored. The first apply
-is a manual, operator-run step (dead-man switch, see
-[`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)); every apply after
-that goes through the gated CI pipeline described in
-[CI/CD](#cicd--gitops-flow) below.
+**Status:** Phase 3 (configure) — `infra/tofu/` (Phase 2) is applied, and
+Ansible (Phase 3) is substantially complete and applied live: WireGuard
+management plane, single-IP NAT/DNAT, host + VM hardening, the `tank` ZFS
+stripe, the virtiofs share, and k3s are all up on the server. Every apply
+goes through the gated CI pipeline described in
+[CI/CD](#cicd--gitops-flow) below; the first Tofu apply was the one manual,
+operator-run step (dead-man switch, see
+[`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)).
 
 ## Overview
 
@@ -282,15 +283,15 @@ Each phase is its own PR. Full detail and current status in
 
 1. **Repo scaffold** — structure, `.sops.yaml`, age key, CI skeleton,
    README + this doc.
-2. **Provision (Tofu)** *(current)* — `vmbr1`, VM + disks, Proxmox filter
+2. **Provision (Tofu)** — `vmbr1`, VM + disks, Proxmox filter
    firewall (anti-lockout toggle), Cloudflare records, native state
    encryption, gated CI apply pipeline. Authored + `tofu validate` green;
    first apply is a manual operator step (see
    [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)).
-3. **Configure (Ansible)** — WireGuard first, then NAT/DNAT, hardening,
-   `tank`, virtiofs, k3s install. Also install/enable `qemu-guest-agent` in
-   the VM (see [Guest agent](#guest-agent) below) — Phase 2 deliberately
-   leaves this out, since the VM has no OS config yet.
+3. **Configure (Ansible)** *(current)* — WireGuard first, then NAT/DNAT,
+   hardening, `tank`, virtiofs, k3s install. Also install/enable
+   `qemu-guest-agent` in the VM (see [Guest agent](#guest-agent) below) —
+   Phase 2 deliberately leaves this out, since the VM has no OS config yet.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.
 5. **Platform apps** — cert-manager, external-dns, Traefik, Authelia.
 6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge → Plex →

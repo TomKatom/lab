@@ -1,0 +1,78 @@
+---
+# Grants VM.GuestAgent.Audit (read-only guest-agent status) to the Terraform
+# PVE role used by infra/tofu's bpg/proxmox provider. Must run after
+# qemu-guest-agent is installed+enabled in the guests (see
+# roles/hardening/tasks/qemu_guest_agent.yml) — granting this before the
+# agent is actually running makes tofu plan/apply hang for minutes waiting
+# on a guest agent that never responds. VM.GuestAgent.Unrestricted is
+# deliberately never granted (read-only access is all Tofu needs).
+
+- name: Read the current PVE role list
+  ansible.builtin.command:
+    cmd: pveum role list --output-format json
+  register: pve_permissions_role_list
+  changed_when: false
+
+- name: Assert the Terraform PVE role exists
+  ansible.builtin.assert:
+    that:
+      - (pve_permissions_role_list.stdout | from_json | selectattr('roleid', 'equalto', pve_permissions_terraform_role) | list | length) == 1
+    fail_msg: >-
+      No PVE role named "{{ pve_permissions_terraform_role }}" was found —
+      refusing to guess which role infra/tofu's API token actually uses.
+      Create the role manually (it's operator-managed, not code-managed) or
+      correct pve_permissions_terraform_role.
+    success_msg: "PVE role {{ pve_permissions_terraform_role }} exists."
+
+- name: Determine which privileges the Terraform role already has
+  # PVE stores a role's privileges as a single comma-separated string (the
+  # same format used in /etc/pve/user.cfg's role: lines), surfaced as the
+  # "privs" field here.
+  ansible.builtin.set_fact:
+    pve_permissions_current_privs: >-
+      {{ ((pve_permissions_role_list.stdout | from_json
+        | selectattr('roleid', 'equalto', pve_permissions_terraform_role)
+        | map(attribute='privs') | first | default(''))
+        | ansible.builtin.split(',') | reject('equalto', '') | list) }}
+
+- name: Determine which required privileges are missing
+  # A fact set above isn't visible to a sibling key in the same set_fact
+  # task (both are templated against pre-task vars) — needs its own task.
+  ansible.builtin.set_fact:
+    pve_permissions_missing_privs: >-
+      {{ pve_permissions_grant_privs | difference(pve_permissions_current_privs) }}
+
+- name: Grant the missing privileges to the Terraform role
+  ansible.builtin.command:
+    cmd: >-
+      pveum role modify {{ pve_permissions_terraform_role }}
+      --privs {{ pve_permissions_missing_privs | join(',') }}
+      --append 1
+  when: pve_permissions_missing_privs | length > 0
+  changed_when: true
+
+- name: Re-read the PVE role list
+  ansible.builtin.command:
+    cmd: pveum role list --output-format json
+  register: pve_permissions_role_list_after
+  changed_when: false
+
+- name: Determine the Terraform role's final privileges
+  ansible.builtin.set_fact:
+    pve_permissions_final_privs: >-
+      {{ ((pve_permissions_role_list_after.stdout | from_json
+        | selectattr('roleid', 'equalto', pve_permissions_terraform_role)
+        | map(attribute='privs') | first | default(''))
+        | ansible.builtin.split(',') | reject('equalto', '') | list) }}
+
+- name: Assert the Terraform role now has all required privileges
+  ansible.builtin.assert:
+    that:
+      - (pve_permissions_grant_privs | difference(pve_permissions_final_privs)) | length == 0
+    fail_msg: >-
+      The Terraform PVE role is still missing
+      {{ pve_permissions_grant_privs | difference(pve_permissions_final_privs) | join(', ') }}
+      after attempting the grant.
+    success_msg: >-
+      The Terraform PVE role has all required privileges:
+      {{ pve_permissions_grant_privs | join(', ') }}.
