@@ -2,7 +2,7 @@
 galaxy_info:
   role_name: network_nat
   author: tomkatom
-  description: Outbound NAT (masquerade) and inbound DNAT (443/32400/51413 -> the k3s VM) for VMs on vmbr1, using the host's single public IP
+  description: Outbound NAT (masquerade) for VMs on vmbr1, plus a generic inbound DNAT rule list (network_nat_ingress_rules), using the host's single public IP
   license: MIT
   min_ansible_version: "2.15"
   platforms:

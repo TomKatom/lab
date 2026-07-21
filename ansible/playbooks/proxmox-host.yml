@@ -18,6 +18,18 @@
   become: false  # already connecting as root, no sudo needed
   vars_files:
     - ../../config/lab.yml
+  pre_tasks:
+    - name: Resolve nat_ingress_rules port/destination names to concrete values
+      # config/lab.yml's nat_ingress_rules references ports/destinations by
+      # name (keys into `ports`/`network`) so the port list only exists in one
+      # place; network_nat itself is a generic DNAT-rule renderer and doesn't
+      # know about lab.yml's schema, so this is the one place that resolves
+      # names to the concrete {proto, port, destination} tuples it expects.
+      ansible.builtin.set_fact:
+        network_nat_ingress_rules: "{{ (network_nat_ingress_rules | default([])) + [rule | combine({'port': ports[rule.port], 'destination': network[rule.destination]})] }}"
+      loop: "{{ nat_ingress_rules }}"
+      loop_control:
+        loop_var: rule
   roles:
     - pve_repos
     - pve_firewall

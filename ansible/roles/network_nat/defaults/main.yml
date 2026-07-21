@@ -9,3 +9,10 @@ network_nat_ruleset_dir: /etc/nftables.d
 network_nat_ruleset_path: "{{ network_nat_ruleset_dir }}/lab-nat.nft"
 network_nat_bridge: vmbr1
 network_nat_service_name: lab-nat
+
+# Ingress DNAT rules: a plain list of {comment, proto, port, destination}
+# tuples, already resolved to concrete values by the caller (this role
+# doesn't know about config/lab.yml's schema — see playbooks/proxmox-host.yml
+# for where the port/destination names get resolved). Empty by default: no
+# rules means no prerouting/DNAT chain is rendered at all.
+network_nat_ingress_rules: []
