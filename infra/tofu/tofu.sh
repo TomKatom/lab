@@ -48,7 +48,13 @@ unset STATE_PASSPHRASE
 # that flag and would error if we always appended it.
 case "${1:-}" in
   plan | apply | destroy | refresh | import | console)
-    exec tofu "$@" -var-file=<(sops --input-type binary --output-type binary -d secrets.sops.tfvars.json)
+    # -var-file must precede any positional args of its own (e.g. import's
+    # ADDR ID, apply's optional plan file) — OpenTofu's flag parser stops
+    # reading flags after the first positional argument, so appending it
+    # after "$@" silently turns it into an extra positional arg instead.
+    subcommand=$1
+    shift
+    exec tofu "$subcommand" -var-file=<(sops --input-type binary --output-type binary -d secrets.sops.tfvars.json) "$@"
     ;;
   *)
     exec tofu "$@"
