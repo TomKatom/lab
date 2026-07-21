@@ -18,8 +18,8 @@ Layout:
 - `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `k3s-vm.yml` (lands with the `k3s` role).
-- `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`, and
-  `network_nat` done; `hardening`, `zfs-tank`, `virtiofs`, `k3s` land
+- `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`,
+  `network_nat`, `hardening`, `zfs_tank` done; `virtiofs`, `k3s` land
   incrementally, one PR per role. Role directory names use underscores, not
   hyphens (`network_nat`, not `network-nat`) — ansible-lint's `role-name`
   rule (safety profile) rejects hyphens in role names, so later roles should

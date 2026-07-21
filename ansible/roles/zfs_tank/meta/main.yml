@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: zfs_tank
+  author: tomkatom
+  description: Creates the tank ZFS pool (non-redundant 2-disk stripe) and its tank/data dataset mounted at /tank/data
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

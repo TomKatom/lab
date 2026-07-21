@@ -51,8 +51,8 @@ image checksum) stay declared in that layer, alongside its secrets.
    (OpenTofu ≥1.7, passphrase injected via `TF_ENCRYPTION`, never in code —
    see [`infra/tofu/README.md`](../infra/tofu/README.md)), committed to git.
 2. **Configure** — [`ansible/`](../ansible/). WireGuard management plane,
-   single-IP NAT/DNAT, host + VM OS hardening, the `tank` ZFS mirror, the
-   virtiofs share, k3s install (bundled Traefik disabled).
+   single-IP NAT/DNAT, host + VM OS hardening, the `tank` ZFS non-redundant
+   stripe, the virtiofs share, k3s install (bundled Traefik disabled).
 3. **Deliver** — [`clusters/lab/`](../clusters/lab/), Argo CD app-of-apps.
    Everything in-cluster is reconciled from git; no manual `kubectl apply`.
 
@@ -65,14 +65,14 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
 │  Egress: VM → internet via host masquerade (appears as the OVH IP)
 │
 ├─ rpool (ZFS mirror, 2×500GB NVMe)  ── Proxmox root + VM system disks + app CONFIG (fast)
-├─ tank  (ZFS mirror, 2×2TB HDD)     ── media library + downloads (bulk, redundant)
+├─ tank  (ZFS stripe, 2×2TB HDD)     ── media library + downloads (bulk, non-redundant)
 │
 ├─ Proxmox firewall (filtering)      ←── OpenTofu (bpg): datacenter/node/VM rules
 ├─ WireGuard + NAT/DNAT + OS hardening + ZFS + virtiofs  ←── Ansible
 │      └─ WG peers routed into vmbr1 (10.10.10.0/24)
 │
 └─ VM: k3s-node  (vmbr1 internal IP, behind host NAT)
-     ├─ virtiofs mount /data  ← host tank/media (hardlink-friendly single tree)
+     ├─ virtiofs mount /data  ← host tank/data (hardlink-friendly single tree)
      ├─ local-path PVs        ← VM NVMe disk (app configs/DBs)
      │
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
@@ -181,7 +181,7 @@ else default-drop.
 - App **configs/DBs** (*arr SQLite, Plex metadata) → VM NVMe via
   **local-path-provisioner**. Fast, doesn't need bulk-disk redundancy at
   this tier (backups cover loss).
-- **Media + downloads** → host `tank/media` shared into the VM via
+- **Media + downloads** → host `tank/data` shared into the VM via
   **virtiofs**, mounted `/data`, exposed to pods as hostPath/local PVs; ZFS
   snapshots/scrubs stay on the host.
 - **Single `/data` tree** (`/data/torrents` + `/data/media`, TRaSH layout)
