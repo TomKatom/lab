@@ -24,7 +24,7 @@
       correct pve_permissions_terraform_role.
     success_msg: "PVE role {{ pve_permissions_terraform_role }} exists."
 
-- name: Determine which required privileges are already granted
+- name: Determine which privileges the Terraform role already has
   # PVE stores a role's privileges as a single comma-separated string (the
   # same format used in /etc/pve/user.cfg's role: lines), surfaced as the
   # "privs" field here.
@@ -34,6 +34,11 @@
         | selectattr('roleid', 'equalto', pve_permissions_terraform_role)
         | map(attribute='privs') | first | default(''))
         | ansible.builtin.split(',') | reject('equalto', '') | list) }}
+
+- name: Determine which required privileges are missing
+  # A fact set above isn't visible to a sibling key in the same set_fact
+  # task (both are templated against pre-task vars) — needs its own task.
+  ansible.builtin.set_fact:
     pve_permissions_missing_privs: >-
       {{ pve_permissions_grant_privs | difference(pve_permissions_current_privs) }}
 
