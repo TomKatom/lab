@@ -1,0 +1,29 @@
+---
+# SSH/OS hardening for the Proxmox host and its guest VMs. hardening_is_pve_host
+# distinguishes host-only behaviour (root key login kept — Tofu needs it,
+# ip_forward only asserted not owned) from VM behaviour (root login disabled,
+# qemu-guest-agent installed). authorized_keys is applied before sshd is
+# tightened so access is never lost mid-run.
+- name: Manage authorized_keys
+  ansible.builtin.import_tasks: authorized_keys.yml
+
+- name: Harden sshd
+  ansible.builtin.import_tasks: sshd.yml
+
+- name: Apply sysctl baseline
+  ansible.builtin.import_tasks: sysctl.yml
+
+- name: Configure fail2ban
+  ansible.builtin.import_tasks: fail2ban.yml
+
+- name: Configure unattended-upgrades
+  ansible.builtin.import_tasks: unattended_upgrades.yml
+
+- name: Configure auditd
+  ansible.builtin.import_tasks: auditd.yml
+
+- name: Install qemu-guest-agent
+  ansible.builtin.import_tasks: qemu_guest_agent.yml
+
+- name: Purge unwanted packages
+  ansible.builtin.import_tasks: packages.yml

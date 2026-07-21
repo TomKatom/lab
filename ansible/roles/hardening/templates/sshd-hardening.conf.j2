@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/hardening) — do not edit by hand.
+PermitRootLogin {{ hardening_permit_root_login }}
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+MaxAuthTries 4
+LoginGraceTime 30
+{% if not hardening_is_pve_host %}
+AllowUsers {{ hardening_admin_user }}
+{% endif %}

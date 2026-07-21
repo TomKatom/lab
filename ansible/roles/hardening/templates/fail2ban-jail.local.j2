@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/hardening) — do not edit by hand.
+[DEFAULT]
+backend = systemd
+bantime = {{ hardening_fail2ban_bantime }}
+findtime = {{ hardening_fail2ban_findtime }}
+maxretry = {{ hardening_fail2ban_maxretry }}
+ignoreip = {{ hardening_fail2ban_ignoreip | join(' ') }}
+
+[sshd]
+enabled = true
+port = {{ hardening_ssh_port }}

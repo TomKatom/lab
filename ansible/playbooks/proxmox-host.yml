@@ -6,7 +6,8 @@
 # nftables firewall backend) must precede network_nat, whose egress
 # masquerade only works once the legacy iptables backend stops forcing
 # net.bridge.bridge-nf-call-iptables=1 (see roles/pve_firewall); wireguard
-# and network_nat next; hardening, zfs-tank follow.
+# and network_nat next; hardening runs last (its sysctl/ip_forward assert
+# depends on wireguard having already run) — zfs-tank still to follow.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -22,3 +23,6 @@
     - pve_firewall
     - wireguard
     - network_nat
+    - role: hardening
+      vars:
+        hardening_is_pve_host: true

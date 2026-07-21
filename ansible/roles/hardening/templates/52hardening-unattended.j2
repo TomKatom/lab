@@ -1,0 +1,12 @@
+// Managed by Ansible (roles/hardening) — do not edit by hand.
+// Never auto-reboot: this box has no IPMI/console, a bad unattended reboot
+// would strand it.
+Unattended-Upgrade::Automatic-Reboot "false";
+
+// Hold proxmox/pve packages: an unattended apt run must never swap a
+// kernel/pve component out from under a running host.
+Unattended-Upgrade::Package-Blacklist {
+{% for pkg in hardening_unattended_package_blacklist %}
+    "{{ pkg }}";
+{% endfor %}
+};

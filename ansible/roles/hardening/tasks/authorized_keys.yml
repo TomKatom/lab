@@ -1,0 +1,31 @@
+---
+- name: Assert admin_ssh_public_keys is not empty
+  ansible.builtin.assert:
+    that:
+      - hardening_admin_ssh_public_keys | length > 0
+    fail_msg: >-
+      hardening_admin_ssh_public_keys is empty — refusing to proceed with an
+      empty key list, since hardening_authorized_keys_exclusive would strand
+      access on this host.
+    success_msg: hardening_admin_ssh_public_keys is non-empty.
+
+- name: Assert root login stays possible on the PVE host
+  # PermitRootLogin no on the PVE host bricks the Tofu provider's
+  # root@host SSH — it must stay prohibit-password so key-based root login
+  # keeps working.
+  ansible.builtin.assert:
+    that:
+      - hardening_permit_root_login != 'no'
+    fail_msg: >-
+      hardening_permit_root_login is 'no' on the PVE host — this would brick
+      the bpg/proxmox Tofu provider's root@host SSH. It must stay
+      'prohibit-password' on the host.
+    success_msg: hardening_permit_root_login allows key-based root login.
+  when: hardening_is_pve_host
+
+- name: Manage authorized_keys exclusively
+  ansible.posix.authorized_key:
+    user: "{{ hardening_authorized_keys_user }}"
+    key: "{{ hardening_admin_ssh_public_keys | join('\n') }}"
+    exclusive: "{{ hardening_authorized_keys_exclusive }}"
+    state: present

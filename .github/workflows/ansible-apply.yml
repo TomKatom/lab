@@ -55,6 +55,7 @@ on:
           - proxmox-host
           - verify-wireguard
           - runner
+          - hardening-vms
 
 permissions:
   contents: read

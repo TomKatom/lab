@@ -1,0 +1,7 @@
+---
+- name: Purge unwanted packages
+  ansible.builtin.apt:
+    name: "{{ hardening_purge_packages }}"
+    state: absent
+    purge: true
+  when: hardening_purge_packages | length > 0

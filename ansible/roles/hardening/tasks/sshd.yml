@@ -1,0 +1,14 @@
+---
+- name: Render the sshd hardening drop-in
+  # The 00- prefix is load-bearing: sshd applies the first value it reads
+  # for a given keyword across Include'd files in glob order, and cloud-init
+  # ships a 50-cloud-init.conf with PasswordAuthentication yes on the VMs —
+  # 00- must sort first to win.
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "/usr/sbin/sshd -t -f %s"
+  notify: Reload sshd

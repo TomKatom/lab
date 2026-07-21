@@ -1,0 +1,17 @@
+---
+- name: Reload sshd
+  # reloaded, never restarted — must never drop an in-flight SSH connection
+  # mid-apply. Debian's openssh-server package ships the systemd unit as
+  # ssh.service, not sshd.service.
+  ansible.builtin.systemd:
+    name: ssh
+    state: reloaded
+
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted
+
+- name: Reload auditd rules
+  ansible.builtin.command: augenrules --load
+  changed_when: true
