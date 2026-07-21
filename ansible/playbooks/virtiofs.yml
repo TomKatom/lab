@@ -1,0 +1,12 @@
+---
+# Mounts the host's virtiofs share of tank/data inside the k3s VM (see
+# roles/virtiofs) and prepares /data/torrents + /data/media for the media
+# stack. Depends on infra/tofu's storage-virtiofs.tf having already been
+# applied (the virtiofs device must exist in the guest before this can
+# mount it) and on playbooks/hardening-vms.yml having run at least once
+# against k3s-node, so CI's automation SSH key can reach it.
+- name: Mount the virtiofs share in the k3s VM
+  hosts: k3s_node
+  become: true
+  roles:
+    - virtiofs

@@ -1,0 +1,20 @@
+---
+# Role-private vars, prefixed virtiofs_* so they can't collide with another
+# role's defaults.
+
+# Must match the proxmox_hardware_mapping_dir name in
+# infra/tofu/storage-virtiofs.tf — that's the virtiofs tag QEMU exposes to
+# this guest, not a block device path.
+virtiofs_tag: data
+virtiofs_mount_path: /data
+virtiofs_mount_opts: "defaults,nofail"
+virtiofs_owner: debian
+virtiofs_group: debian
+virtiofs_dir_mode: "2775"
+
+# One shared filesystem for both, not two separate mounts: the *arrs need
+# torrents and media to sit on the same filesystem so their import step can
+# hardlink instead of copy (see docs/architecture.md's "Single /data tree").
+virtiofs_subdirs:
+  - torrents
+  - media

@@ -1,0 +1,27 @@
+---
+# Mounts the host's virtiofs share of tank/data (created by
+# infra/tofu/storage-virtiofs.tf, see roles/zfs_tank for the host-side
+# dataset) at {{ virtiofs_mount_path }} inside the k3s VM, then prepares its
+# subdirectories. Both tasks must run in this order: the directories below
+# live on the filesystem the mount task brings up.
+
+- name: Mount the tank/data virtiofs share
+  # ansible.posix.mount's src accepts a bare virtiofs tag (not just a block
+  # device path) and state: mounted both writes the fstab line and performs
+  # the mount idempotently in one step — renders the equivalent of
+  # `data /data virtiofs defaults,nofail 0 0`.
+  ansible.posix.mount:
+    path: "{{ virtiofs_mount_path }}"
+    src: "{{ virtiofs_tag }}"
+    fstype: virtiofs
+    opts: "{{ virtiofs_mount_opts }}"
+    state: mounted
+
+- name: Ensure virtiofs subdirectories exist
+  ansible.builtin.file:
+    path: "{{ virtiofs_mount_path }}/{{ item }}"
+    state: directory
+    owner: "{{ virtiofs_owner }}"
+    group: "{{ virtiofs_group }}"
+    mode: "{{ virtiofs_dir_mode }}"
+  loop: "{{ virtiofs_subdirs }}"
