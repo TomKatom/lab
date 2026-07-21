@@ -22,8 +22,11 @@ phase lands.
 
 ## Status
 
-Currently in **Phase 1 — repo scaffold**. No infrastructure has been
-provisioned yet. See the phased plan in
+Phases 1 (repo scaffold) and 2 (Provision — Tofu) are done and applied.
+Currently in **Phase 3 — Configure (Ansible)**, substantially complete and
+applied live: WireGuard management plane, single-IP NAT/DNAT, host + VM
+hardening, the `tank` ZFS stripe, the virtiofs share, and k3s are all up on
+the server. See the phased plan in
 [`master-plan.md`](master-plan.md#phased-implementation-each-phase--its-own-pr).
 
 ## Secrets
