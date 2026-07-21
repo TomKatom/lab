@@ -1,0 +1,18 @@
+---
+# Dispatcher: storage must be mounted and config.yaml must exist before k3s's
+# first start, so import order matters here. Formatting/mounting scsi1 first
+# means local-path-provisioner's default storage dir already resolves to that
+# disk instead of the OS disk when k3s starts. Writing config.yaml before
+# install.yml's first `k3s` start means k3s reads "disable: [traefik]" on its
+# very first boot and never installs the Traefik helm chart at all — there is
+# no "uninstall Traefik afterwards" step. kubeconfig.yml runs last because it
+# depends on k3s already being up.
+
+- name: Format and mount the scsi1 data disk
+  ansible.builtin.import_tasks: disk.yml
+
+- name: Install and start k3s
+  ansible.builtin.import_tasks: install.yml
+
+- name: Fetch the kubeconfig for local use
+  ansible.builtin.import_tasks: kubeconfig.yml

@@ -32,5 +32,16 @@
       "matchDatasources": ["docker"],
       "groupName": "container images"
     }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^ansible/roles/[^/]+/defaults/main\\.ya?ml$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
+      ],
+      "datasourceTemplate": "{{{datasource}}}",
+      "depNameTemplate": "{{{depName}}}"
+    }
   ]
 }

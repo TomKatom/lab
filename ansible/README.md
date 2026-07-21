@@ -18,13 +18,13 @@ Layout:
 - `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `hardening-vms.yml` (VM hardening), `virtiofs.yml` (mounts the tank/data
-  share in the k3s VM); `k3s-vm.yml` lands with the `k3s` role.
+  share in the k3s VM), `k3s-vm.yml` (formats/mounts the scsi1 data disk and
+  installs single-node k3s in the k3s VM).
 - `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`,
-  `network_nat`, `hardening`, `zfs_tank`, `virtiofs` done; `k3s` lands
-  incrementally, one PR per role. Role directory names use underscores, not
-  hyphens (`network_nat`, not `network-nat`) — ansible-lint's `role-name`
-  rule (safety profile) rejects hyphens in role names, so later roles should
-  follow the same convention.
+  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s` done. Role
+  directory names use underscores, not hyphens (`network_nat`, not
+  `network-nat`) — ansible-lint's `role-name` rule (safety profile) rejects
+  hyphens in role names, so later roles should follow the same convention.
 
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu

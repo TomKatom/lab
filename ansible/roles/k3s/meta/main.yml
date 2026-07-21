@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: k3s
+  author: tomkatom
+  description: Formats/mounts the scsi1 data disk and installs single-node k3s with Traefik disabled
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

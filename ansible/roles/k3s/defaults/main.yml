@@ -1,0 +1,26 @@
+---
+# Role-private vars, prefixed k3s_* so they can't collide with another role's
+# defaults.
+
+# renovate: datasource=github-releases depName=k3s-io/k3s
+k3s_version: "v1.36.2+k3s1"
+
+# Device letters (sda/sdb) are not guaranteed stable on this VM's
+# virtio-scsi controller — on the real VM /dev/sdb turned out to be the
+# root disk, not the 150GB data disk. Leave this empty (default) to
+# auto-detect the data disk at runtime (not the root disk, size within the
+# window below); set explicitly only to force a specific device.
+k3s_data_disk_device: ""
+k3s_data_disk_min_size_gb: 140
+k3s_data_disk_max_size_gb: 170
+k3s_data_disk_fstype: ext4
+k3s_storage_mount_path: /var/lib/rancher/k3s/storage
+k3s_data_disk_mount_opts: defaults
+
+k3s_config_dir: /etc/rancher/k3s
+k3s_disable_components:
+  - traefik
+
+k3s_apiserver_ip: 10.10.10.10
+k3s_kubeconfig_remote_path: /etc/rancher/k3s/k3s.yaml
+k3s_kubeconfig_local_path: "{{ playbook_dir }}/../../kubeconfig"
