@@ -2,9 +2,27 @@
 #
 # Dedicated `ip`-family table, deliberately not `inet`/`bridge`: keeps this
 # ruleset from ever colliding with PVE's own proxmox-firewall* tables (see
-# infra/tofu/firewall.tf) or anything in /etc/nftables.conf. Egress NAT only
-# — no prerouting/DNAT chain here, that lands in a later PR.
+# infra/tofu/firewall.tf) or anything in /etc/nftables.conf. Both directions
+# of the single-IP NAT model live here: ingress DNAT (prerouting) and egress
+# masquerade (postrouting).
 table ip {{ network_nat_table }} {
+{% if network_nat_ingress_rules %}
+	chain prerouting {
+		# dstnat = priority -100, the standard DNAT hook: runs before the
+		# routing decision, so the destination rewrite happens before the
+		# kernel decides whether the packet is for local delivery or needs
+		# forwarding — required for a rewritten destination to actually be
+		# routed on to its guest. One rule per network_nat_ingress_rules
+		# entry (comment/proto/port/destination) — a generic list, not
+		# hardcoded services, so adding a forward or splitting services
+		# across guests never touches this template.
+		type nat hook prerouting priority dstnat; policy accept;
+{% for rule in network_nat_ingress_rules %}
+		iifname "{{ ansible_default_ipv4.interface }}" {{ rule.proto }} dport {{ rule.port }} dnat to {{ rule.destination }}
+{% endfor %}
+	}
+
+{% endif %}
 	chain postrouting {
 		# priority srcnat - 5 (95), deliberately *before* the standard srcnat
 		# hook (100): any other nat postrouting chain that coexists at 100

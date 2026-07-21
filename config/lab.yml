@@ -18,6 +18,29 @@ ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
   wireguard: 51820
   pve_api: 8006
   k8s_api: 6443
+# Host-inbound port forwards. Single source of truth for both Tofu's host
+# firewall accept rules (infra/tofu/locals.tf public_service_rules) and
+# Ansible's DNAT rules (ansible/roles/network_nat) — add/change a forward
+# here once and both layers pick it up. `port`/`destination` are keys into
+# `ports`/`network` above, never raw numbers/IPs, so a port renumber or a
+# destination change (e.g. splitting services across VMs) is one edit.
+nat_ingress_rules:
+  - comment: HTTPS
+    proto: tcp
+    port: https
+    destination: vm_ip_address
+  - comment: Plex
+    proto: tcp
+    port: plex
+    destination: vm_ip_address
+  - comment: Torrent TCP
+    proto: tcp
+    port: torrent
+    destination: vm_ip_address
+  - comment: Torrent UDP
+    proto: udp
+    port: torrent
+    destination: vm_ip_address
 # SSH public keys authorized for admin/automation access — public halves
 # only, always safe to commit; the matching private keys never enter git
 # (personal keys stay in a password manager/agent, the automation key's

@@ -10,13 +10,15 @@ locals {
   runner_ip_cidr     = "${local.lab.network.runner_address}/${split("/", local.lab.network.internal_subnet)[1]}"
   management_sources = [local.lab.network.internal_subnet, local.lab.network.wireguard_subnet]
 
-  # Firewall rule sets (firewall.tf) — the always-public rules are identical
-  # on the node (DNAT target) and VM scopes; only the comments used to differ.
+  # Firewall rule sets (firewall.tf). public_service_rules is derived from
+  # config/lab.yml's nat_ingress_rules — the same list Ansible's network_nat
+  # role DNATs from — so the set of forwarded ports only exists in one place.
   public_service_rules = [
-    { comment = "HTTPS", proto = "tcp", dport = local.lab.ports.https },
-    { comment = "Plex", proto = "tcp", dport = local.lab.ports.plex },
-    { comment = "Torrent TCP", proto = "tcp", dport = local.lab.ports.torrent },
-    { comment = "Torrent UDP", proto = "udp", dport = local.lab.ports.torrent },
+    for rule in local.lab.nat_ingress_rules : {
+      comment = rule.comment
+      proto   = rule.proto
+      dport   = local.lab.ports[rule.port]
+    }
   ]
   node_mgmt_rules = [
     { comment = "SSH (host)", proto = "tcp", dport = local.lab.ports.ssh },

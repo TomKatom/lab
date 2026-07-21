@@ -1,7 +1,8 @@
 ---
-# Egress-only NAT (masquerade) for VMs on {{ network_nat_bridge }}. Ingress
-# DNAT (443/32400/51413 -> the VM) is explicitly out of scope — see the
-# lab-nat.nft.j2 template header — and lands in a later PR.
+# Egress NAT (masquerade) for VMs on {{ network_nat_bridge }}, plus ingress
+# DNAT for whatever's in network_nat_ingress_rules (empty by default — see
+# defaults/main.yml) — see the lab-nat.nft.j2 template for the full ruleset
+# (prerouting/postrouting/forward chains).
 
 - name: Install nftables
   ansible.builtin.apt:
