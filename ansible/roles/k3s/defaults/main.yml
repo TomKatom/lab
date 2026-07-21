@@ -9,7 +9,6 @@ k3s_version: "v1.36.2+k3s1"
 # guest (scsi0, the OS disk, is /dev/sda). Never formatted before this role
 # runs.
 k3s_data_disk_device: /dev/sdb
-k3s_data_disk_expected_size_gb: 150
 k3s_data_disk_min_size_gb: 140
 k3s_data_disk_fstype: ext4
 k3s_storage_mount_path: /var/lib/rancher/k3s/storage
