@@ -140,15 +140,13 @@ jobs:
       # here. Treat this job's output as lint + partial preview, never a
       # guarantee - unlike `tofu plan`.
       #
-      # `--limit proxmox_host`: the automation key isn't trusted on the VM
-      # yet (see docs/ssh-keys.md's "Known gap: the VM"), so a --check run
-      # against k3s_node would just fail to connect, not meaningfully
-      # preview anything. playbooks/proxmox-host.yml only targets
-      # proxmox_host anyway, so the limit is a no-op for it.
-      # playbooks/verify-wireguard.yml also has plays against
-      # proxmox_host_wg/k3s_node_wg; --limit causes those plays to cleanly
-      # report "no hosts matched" and skip rather than fail, which is
-      # called out in the summary below.
+      # `--limit proxmox_host`: this preview is scoped to the host apply
+      # (playbooks/proxmox-host.yml only targets proxmox_host anyway, so the
+      # limit is a no-op for it). It also makes verify-wireguard.yml's
+      # WG-only plays against proxmox_host_wg/k3s_node_wg cleanly report "no
+      # hosts matched" and skip rather than fail — those addresses are
+      # reachable only from an operator's WireGuard peer, not from CI — which
+      # is called out in the summary below.
       - name: Best-effort --check --diff preview
         continue-on-error: true
         run: |
@@ -163,10 +161,10 @@ jobs:
             echo "do run. Treat this as lint + partial preview, not a"
             echo "guarantee, unlike \`tofu plan\`."
             echo
-            echo "Limited to \`--limit proxmox_host\`: the automation key isn't"
-            echo "trusted on \`k3s_node\` yet (docs/ssh-keys.md, \"Known gap: the"
-            echo "VM\"), so plays targeting \`proxmox_host_wg\`/\`k3s_node_wg\`"
-            echo "below report \"no hosts matched\" and skip rather than preview."
+            echo "Limited to \`--limit proxmox_host\` (the host apply): plays"
+            echo "targeting \`proxmox_host_wg\`/\`k3s_node_wg\` are reachable only"
+            echo "from an operator's WireGuard peer, not from CI, so they"
+            echo "report \"no hosts matched\" and skip rather than preview."
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           for playbook in ansible/playbooks/*.yml; do

@@ -13,7 +13,7 @@ blurs "the pipeline did this" from "I did this" in any audit trail.
 | Lives in git? | No — never in `~/.ssh` used for anything else, never committed | Public half only, via `admin_ssh_public_keys` in [`config/lab.yml`](../config/lab.yml) |
 | Durable custody | GitHub Actions secret `PROXMOX_SSH_PRIVATE_KEY` + a password-manager backup entry | Password-manager or hardware-token-backed SSH agent — not a bare file on one laptop |
 | Host (`root@proxmox`) trust | `authorized_keys`, bootstrapped by hand (see [Current gap](#current-gap-the-host)) | Same, same gap |
-| VM (`debian@k3s-node`) trust | Yes — CI-driven Ansible applies (`ansible-apply.yml`) need to reach the VM, not just the host. Declared the same way personal keys are, via `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`), but see [Known gap: the VM](#known-gap-the-vm) — that declaration doesn't retroactively reach the already-running VM | `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`) — fully GitOps'd already |
+| VM (`debian@k3s-node`) trust | Yes — CI-driven Ansible applies (`ansible-apply.yml`) need to reach the VM, not just the host. Declared the same way personal keys are, via `admin_ssh_public_keys`; seeded into a fresh build by cloud-init (`infra/tofu/vm-k3s.tf`) and reconciled onto the running VM by the `hardening` role (`ansible/roles/hardening`) | `admin_ssh_public_keys` → cloud-init (`infra/tofu/vm-k3s.tf`) + `hardening` role — fully GitOps'd |
 
 ## Why the split
 
@@ -81,8 +81,10 @@ deliberately, per the runbook.
 ## Adding access from a new machine
 
 **VM (`k3s-node`)** — already fully GitOps'd: add the public key to
-`admin_ssh_public_keys` in `config/lab.yml`, PR, merge. Cloud-init picks it
-up on next apply. No server ever touched by hand.
+`admin_ssh_public_keys` in `config/lab.yml`, PR, merge, then apply the
+`hardening` role (`playbooks/hardening-vms.yml`) — it reconciles the running
+VM's `authorized_keys` to match (cloud-init only seeds keys into a fresh
+build). No server ever touched by hand.
 
 **Proxmox host** — today, still manual (see [Current gap](#current-gap-the-host)
 below): SSH in with an already-trusted key and append the new public key to
@@ -106,42 +108,41 @@ public SSH to the host goes away entirely and this file's "adding a new
 machine" story for the host becomes: add the key to `config/lab.yml`, get
 on WireGuard, `ssh`.
 
-## Known gap: the VM
+## VM key trust: cloud-init seeds, the hardening role reconciles
 
-Unlike the host, the VM's key trust *is* already fully declarative —
-`admin_ssh_public_keys` in `config/lab.yml` flows into cloud-init
-(`infra/tofu/vm-k3s.tf`) — but declarative doesn't mean retroactive.
-`k3s-node` already exists (Phase 2's Tofu apply already ran), and cloud-init
-only reads `user_account.keys` on **first boot**. Adding the automation
-key's public half to `admin_ssh_public_keys` changes what a *future* VM
-build would trust; it does nothing to the *running* VM's
-`/home/debian/.ssh/authorized_keys` today.
+The VM's key trust is fully declarative from `admin_ssh_public_keys`, but by
+two complementary mechanisms — because declarative doesn't mean retroactive.
+Cloud-init (`infra/tofu/vm-k3s.tf`) only reads `user_account.keys` on a VM's
+**first boot**, so it seeds keys into a *fresh* build but never touches an
+already-running VM. The `hardening` role (`ansible/roles/hardening`, applied
+via `playbooks/hardening-vms.yml`) closes that window: it reconciles the
+running VM's `authorized_keys` to exactly `admin_ssh_public_keys`
+(`exclusive: true`), every run, idempotently — the same way it manages the
+host.
 
-Until one of the following happens, the automation key is not actually
-authorized on `k3s-node`, regardless of what `config/lab.yml` says:
+This is what authorizes the automation key on `k3s-node`: that VM was built
+in Phase 2, before the automation key was added to `admin_ssh_public_keys`,
+so cloud-init never seeded it. Enrolling `k3s_node` in the `vm_guests`
+inventory group hands its `authorized_keys` to the hardening role, which
+installs the key on the next apply.
 
-- An operator with existing VM access (a personal key) appends the
-  automation key's public half to `authorized_keys` by hand, or
-- The VM is rebuilt (Tofu destroy/recreate), which re-runs cloud-init from
-  scratch and picks up the current `admin_ssh_public_keys` list.
-
-Until then, `ansible-apply.yml`'s `apply` job only reliably works for
-playbooks targeting `proxmox_host` — the Proxmox host itself already trusts
-this key today (a separate, pre-existing situation: see
-[Current gap: the host](#current-gap-the-host) above, which is about *how*
-that host trust is maintained, not *whether* it exists). Playbooks or plays
-touching `k3s_node` — `verify-wireguard.yml`'s VM-reachability checks today,
-and any future role (hardening, k3s, etc.) that targets the VM — will fail
-to connect from CI until an operator closes this gap by hand.
+> First enrollment is the one place this needs an operator, not CI. CI
+> authenticates with the automation key — the very key not yet on the VM —
+> so it can't perform the run that installs it (chicken-and-egg). Break it
+> once: an operator runs `playbooks/hardening-vms.yml --limit k3s-node` over
+> WireGuard with their **personal** key loaded (which the VM already trusts
+> from its Phase 2 build). The role's `authorized_keys` task runs first and
+> keeps the personal key (it's in the list), while adding the automation
+> key. Every apply after that — including CI — is ordinary and idempotent.
 
 ## Rotation / compromise
 
 - **Automation key compromised or rotating:** generate a new keypair,
   update `PROXMOX_SSH_PRIVATE_KEY` in GitHub Actions secrets and the
-  password-manager backup, re-authorize the new public key on the host,
-  remove the old one from `authorized_keys` — and, once the VM gap above is
-  closed, do the same in the VM's `authorized_keys` too. Doesn't touch your
-  personal access.
+  password-manager backup, swap the public half in `admin_ssh_public_keys`,
+  then apply the `hardening` role — its exclusive `authorized_keys`
+  management adds the new key and prunes the old one across the host and
+  every enrolled guest in one pass. Doesn't touch your personal access.
 - **Personal key compromised or rotating:** remove it from
   `admin_ssh_public_keys` in `config/lab.yml`, add the replacement, PR +
   apply (VM); remove/append the host's `authorized_keys` by hand until the
