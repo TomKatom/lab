@@ -21,6 +21,16 @@ name: OpenTofu Apply
 # branch, so it rides along in the PR's own squash-merge instead of landing
 # as a separate bot commit/PR afterwards. Master itself is never pushed to
 # by this workflow, so none of this needs a branch-protection exception.
+#
+# Both jobs get their secrets by running infra/tofu/tofu.sh - the same
+# wrapper a local apply uses - which decrypts state.sops.env (the
+# state-encryption passphrase) and secrets.sops.tfvars.json (the Proxmox and
+# Cloudflare API tokens) in memory with the age key, supplied here as the
+# SOPS_AGE_KEY repository secret. There is deliberately no parallel set of
+# per-token Actions secrets to hand-sync any more: the committed ciphertext
+# is the single source of truth, and CI and a laptop take the identical code
+# path. What that concentrates into one key, and why it was accepted, is
+# spelled out in docs/secrets.md - read it before narrowing or widening this.
 
 on:
   pull_request:
@@ -47,6 +57,23 @@ concurrency:
 permissions:
   contents: read
 
+# The runner brings no toolchain of its own (ansible/roles/github_runner
+# installs none - each workflow self-installs what it needs per run), so both
+# jobs below install sops. Pinned and checksum-verified because this one
+# binary is what unlocks every encrypted file in the repo: an unverified
+# download here would sit inside the trust root itself. Bump the two values
+# together - SOPS_SHA256 is of the sops-v${SOPS_VERSION}.linux.amd64 release
+# asset (amd64 covers both the self-hosted runner and the ubuntu-latest
+# fallback), published in that release's checksums.txt and reported as the
+# asset `digest` by the GitHub releases API; both were checked for v3.13.2 on
+# 2026-07-22. Renovate proposes the version bump but cannot compute the new
+# hash, so its PR fails this step until the hash is updated by hand - loud and
+# safe, the same trade ansible/roles/github_runner/defaults/main.yml makes.
+env:
+  # renovate: datasource=github-releases depName=getsops/sops
+  SOPS_VERSION: "3.13.2"
+  SOPS_SHA256: "154dfe4cd70554bdd82b98e4cd4acf191d43d01ead6f00a73477aa44c4ac42ef"
+
 jobs:
   plan:
     name: tofu plan
@@ -67,33 +94,54 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
+      # tofu_wrapper: false is load-bearing, not tidiness. The wrapper (whose
+      # only purpose is exposing tofu's stdout/stderr/exit code as step
+      # outputs, which nothing here consumes) replaces `tofu` with a Node
+      # script that re-spawns the real binary as a child. tofu.sh passes the
+      # decrypted tfvars as `-var-file=<(sops -d ...)`, i.e. a /dev/fd/NN
+      # path, and that file descriptor is not inherited across the extra
+      # spawn - so with the wrapper on, every plan/apply fails to read its
+      # variables.
       - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_wrapper: false
 
-      # CI uses GitHub Actions secrets, not SOPS/age - the master age key
-      # never enters CI (see docs/secrets.md: "CI holds no age key").
-      - name: Build TF_ENCRYPTION
-        env:
-          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+      - name: Install sops
+        # Under $HOME, not /usr/local/bin: the self-hosted runner's service
+        # account has no sudo, and $GITHUB_PATH is how every other
+        # self-installed tool in these workflows gets onto PATH. A re-run with
+        # the pinned binary already in place is a no-op.
         run: |
-          {
-            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
-            ./build-tf-encryption.sh
-            echo "___TF_ENCRYPTION_EOF___"
-          } >> "$GITHUB_ENV"
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if ! echo "${SOPS_SHA256}  $HOME/.local/bin/sops" | sha256sum -c - > /dev/null 2>&1; then
+            curl -fsSL -o "$HOME/.local/bin/sops.tmp" \
+              "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+            echo "${SOPS_SHA256}  $HOME/.local/bin/sops.tmp" | sha256sum -c -
+            chmod +x "$HOME/.local/bin/sops.tmp"
+            mv "$HOME/.local/bin/sops.tmp" "$HOME/.local/bin/sops"
+          fi
 
+      # SOPS_AGE_KEY is scoped to the steps that actually run tofu.sh rather
+      # than set job-wide, so the one key that unlocks every encrypted file in
+      # this repo never sits in the environment of a third-party action step -
+      # same reasoning as ansible-apply.yml's GH_RUNNER_PAT. The guard below
+      # turns "the operator never set the secret" into one obvious line
+      # instead of a sops "no identity matched any of the recipients" trace.
       - name: tofu init
         env:
-          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: tofu init -input=false
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          : "${SOPS_AGE_KEY:?not set - add the repository secret, see docs/runbooks/tofu-apply.md}"
+          ./tofu.sh init -input=false
 
       - name: tofu plan
         env:
-          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -o pipefail
-          tofu plan -input=false -no-color -out=tofu.tfplan | tee /tmp/tofu-plan.out
+          ./tofu.sh plan -input=false -no-color -out=tofu.tfplan | tee /tmp/tofu-plan.out
 
       - name: Post plan to job summary
         if: always()
@@ -145,34 +193,49 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
+      # See the `plan` job's identical step for why the wrapper is disabled.
       - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_wrapper: false
 
-      - name: Build TF_ENCRYPTION
-        env:
-          STATE_PASSPHRASE: ${{ secrets.STATE_PASSPHRASE }}
+      # See the `plan` job's identical step.
+      - name: Install sops
         run: |
-          {
-            echo "TF_ENCRYPTION<<___TF_ENCRYPTION_EOF___"
-            ./build-tf-encryption.sh
-            echo "___TF_ENCRYPTION_EOF___"
-          } >> "$GITHUB_ENV"
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          if ! echo "${SOPS_SHA256}  $HOME/.local/bin/sops" | sha256sum -c - > /dev/null 2>&1; then
+            curl -fsSL -o "$HOME/.local/bin/sops.tmp" \
+              "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+            echo "${SOPS_SHA256}  $HOME/.local/bin/sops.tmp" | sha256sum -c -
+            chmod +x "$HOME/.local/bin/sops.tmp"
+            mv "$HOME/.local/bin/sops.tmp" "$HOME/.local/bin/sops"
+          fi
 
+      # tofu.sh still decrypts state.sops.env here: TF_ENCRYPTION's `plan`
+      # block means the saved plan file downloaded above is itself an
+      # encrypted envelope, unreadable without the same passphrase the state
+      # needs. See the `plan` job for why SOPS_AGE_KEY is scoped per-step.
       - name: tofu init
         env:
-          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: tofu init -input=false
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          : "${SOPS_AGE_KEY:?not set - add the repository secret, see docs/runbooks/tofu-apply.md}"
+          ./tofu.sh init -input=false
 
       # Applies the exact plan file the `plan` job produced and a human
       # approved above - not a freshly recomputed plan. This step is safe
       # unattended ONLY because this job runs behind the `production`
       # environment's required-reviewer gate: a human already approved this
       # specific plan file before this step ever runs.
+      #
+      # tofu.sh deliberately omits its -var-file for this form: a saved plan
+      # replays the variable values baked into it, and OpenTofu aborts if
+      # values passed alongside disagree with them.
       - name: tofu apply
         env:
-          TF_VAR_proxmox_api_token: ${{ secrets.PROXMOX_API_TOKEN }}
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: tofu apply -input=false tofu.tfplan
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: ./tofu.sh apply -input=false tofu.tfplan
 
       # State changed -> push it as an extra commit onto this PR's own
       # branch (never onto master - master is never touched by this

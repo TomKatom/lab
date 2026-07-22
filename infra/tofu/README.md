@@ -28,7 +28,7 @@ Facts shared with the other IaC layers (domain, subnet, ports) live in
 | `terraform.tfvars` | Committed, non-secret environment values (`CHANGE_ME` placeholders). |
 | `secrets.sops.tfvars.json` | Encrypted: Proxmox + Cloudflare API tokens. |
 | `state.sops.env` | Encrypted: the state-encryption passphrase. |
-| `tofu.sh` | Local apply wrapper — injects `TF_ENCRYPTION`, decrypts secrets. |
+| `tofu.sh` | Apply wrapper (local *and* CI) — injects `TF_ENCRYPTION`, decrypts secrets. |
 
 ## Usage
 
@@ -56,7 +56,10 @@ documented in
 [`docs/runbooks/tofu-apply.md`](../../docs/runbooks/tofu-apply.md). Every
 apply after the first one runs through
 [`.github/workflows/tofu-apply.yml`](../../.github/workflows/tofu-apply.yml):
-a `plan` job on every push to `master`, gated by a `production` GitHub
-Environment approval before `apply` ever runs.
+a `plan` job on every pull request targeting `master`, gated by a
+`production` GitHub Environment approval before `apply` ever runs. That workflow runs this same
+`tofu.sh`, decrypting the same committed SOPS files with the age key from
+the `SOPS_AGE_KEY` repo secret — so CI and a laptop take one code path and
+there is no parallel copy of any credential to keep in sync.
 
 See [`docs/architecture.md`](../../docs/architecture.md) for the design.

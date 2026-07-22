@@ -124,12 +124,28 @@ instead of running by hand. This is a one-time setup step:
    environment-scoped secrets would be invisible to it; the
    required-reviewer rule on `production` is what gates the pipeline, not
    secret visibility:
-   - `PROXMOX_API_TOKEN`
-   - `CLOUDFLARE_API_TOKEN`
-   - `STATE_PASSPHRASE` (the same value you put in `state.sops.env`)
+   - `SOPS_AGE_KEY` — the **contents** of your age private key file
+     (`~/.config/sops/age/keys.txt`, comment lines and all; `sops` takes the
+     file verbatim). CI decrypts `state.sops.env` and
+     `secrets.sops.tfvars.json` with it by running the same
+     [`infra/tofu/tofu.sh`](../../infra/tofu/tofu.sh) wrapper you run
+     locally, so the committed ciphertext stays the only copy of those
+     values. Read
+     [the accepted trade](../secrets.md#accepted-trade-ci-holds-the-age-key)
+     first — this one key decrypts everything this repo will ever encrypt.
    - `PROXMOX_SSH_PRIVATE_KEY` (a private key authorized on the Proxmox
      host for the SSH-based image download/import operations; CI loads it
      into an `ssh-agent`, matching the local `ssh { agent = true }` setup)
+
+   If `PROXMOX_API_TOKEN`, `CLOUDFLARE_API_TOKEN` or `STATE_PASSPHRASE`
+   are still there from an earlier setup, **delete them**. Nothing reads
+   them any more, and they are stale hand-synced duplicates of values CI
+   now decrypts from the repo itself — rotating a token is a
+   `sops infra/tofu/secrets.sops.tfvars.json` edit plus a commit, with no
+   second place to remember to update.
+
+   The runner needs no `sops` of its own: the workflow installs a pinned,
+   checksum-verified binary per run (see its `SOPS_VERSION`/`SOPS_SHA256`).
 4. Optionally set a `LAB_RUNNER` repository variable once the runner needs
    to change — see the note on runner placement below. This variable is
    shared with [`ansible-apply.yml`](../../.github/workflows/ansible-apply.yml),
