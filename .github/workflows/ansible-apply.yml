@@ -58,6 +58,7 @@ on:
           - hardening-vms
           - virtiofs
           - k3s-vm
+          - argocd-bootstrap
 
 permissions:
   contents: read

@@ -1,0 +1,157 @@
+---
+# Installs Argo CD (app-of-apps root + ksops-patched repo-server) on the
+# k3s cluster via a pinned helm binary, then applies root-app.yaml. Runs on
+# k3s-node itself, so `k3s kubectl` needs no explicit KUBECONFIG (root reads
+# /etc/rancher/k3s/k3s.yaml implicitly); `helm` does not know that default
+# path, so it gets an explicit KUBECONFIG env on the tasks that need it.
+#
+# PR4 (trust-root cluster secrets) hasn't landed yet — the asserts below are
+# expected to fail until it has and the real bootstrap dispatch runs. This
+# role deliberately fails loudly here rather than silently proceeding
+# without a working ksops repo-server.
+
+- name: Check whether the sops-age-key trust-root secret exists
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get secret sops-age-key"
+  register: argocd_sops_age_key_check
+  changed_when: false
+  failed_when: false
+
+- name: Check whether an Argo repository credential secret exists
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ argocd_namespace }} get secret
+      -l argocd.argoproj.io/secret-type=repository -o name
+  register: argocd_repo_secret_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert PR4's trust-root secrets already exist
+  ansible.builtin.assert:
+    that:
+      - argocd_sops_age_key_check.rc == 0
+      - argocd_repo_secret_check.rc == 0
+      - argocd_repo_secret_check.stdout | trim | length > 0
+    fail_msg: >-
+      Trust-root secrets are missing from the {{ argocd_namespace }}
+      namespace (sops-age-key and/or an argocd.argoproj.io/secret-type=repository
+      Secret). PR4 (trust-root cluster secrets) must be applied before this
+      role can bootstrap Argo CD — see phase4-handoff.md's "PR4" section.
+    success_msg: >-
+      Both trust-root secrets (sops-age-key, Argo repository credential)
+      are present in the {{ argocd_namespace }} namespace.
+
+- name: Download the helm release tarball
+  # get_url's own checksum comparison already skips re-downloading once the
+  # destination file matches argocd_helm_sha256 — no extra creates: guard
+  # needed here, same pattern as github_runner's download task.
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-v{{ argocd_helm_version }}-linux-amd64.tar.gz"
+    dest: "/tmp/helm-v{{ argocd_helm_version }}-linux-amd64.tar.gz"
+    checksum: "sha256:{{ argocd_helm_sha256 }}"
+    mode: "0644"
+
+- name: Unpack the helm binary onto PATH
+  # The upstream tarball extracts a linux-amd64/ dir containing helm plus
+  # LICENSE/README — strip-components + naming the one member we want pulls
+  # just the binary straight into /usr/local/bin. creates: guards the
+  # extraction itself (unlike get_url above, unarchive has no built-in
+  # content check).
+  ansible.builtin.unarchive:
+    src: "/tmp/helm-v{{ argocd_helm_version }}-linux-amd64.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+      - linux-amd64/helm
+    owner: root
+    group: root
+    mode: "0755"
+    creates: /usr/local/bin/helm
+
+- name: Add the argo helm repo
+  # helm repo add is naturally idempotent against the same URL — re-running
+  # it just refreshes the local repo cache entry, no existence-check
+  # scaffolding needed here (unlike the stateful cluster changes below).
+  ansible.builtin.command:
+    cmd: "helm repo add {{ argocd_helm_repo_name }} {{ argocd_helm_repo_url }}"
+  changed_when: true
+
+- name: Update the argo helm repo cache
+  ansible.builtin.command:
+    cmd: "helm repo update {{ argocd_helm_repo_name }}"
+  changed_when: true
+
+- name: Ensure the bootstrap scratch dir exists on the node
+  ansible.builtin.file:
+    path: "{{ argocd_bootstrap_remote_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy argocd-values.yaml to the node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../clusters/lab/bootstrap/argocd-values.yaml"
+    dest: "{{ argocd_bootstrap_remote_dir }}/argocd-values.yaml"
+    mode: "0644"
+
+- name: Copy root-app.yaml to the node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../clusters/lab/bootstrap/root-app.yaml"
+    dest: "{{ argocd_bootstrap_remote_dir }}/root-app.yaml"
+    mode: "0644"
+
+- name: Install/upgrade the argo-cd helm release
+  # helm upgrade --install is itself idempotent (create-or-update) — no
+  # separate check-then-act wrapper needed.
+  ansible.builtin.command:
+    cmd: >-
+      helm upgrade --install argo-cd {{ argocd_helm_repo_name }}/argo-cd
+      --version {{ argocd_chart_version }}
+      -n {{ argocd_namespace }} --create-namespace
+      -f {{ argocd_bootstrap_remote_dir }}/argocd-values.yaml
+      --wait
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  changed_when: true
+
+- name: Apply the root-app app-of-apps manifest
+  # Server-side apply semantics make `k3s kubectl apply` naturally
+  # idempotent too — no check-then-act wrapper needed here either.
+  ansible.builtin.command:
+    cmd: "k3s kubectl apply -f {{ argocd_bootstrap_remote_dir }}/root-app.yaml"
+  changed_when: true
+
+- name: Read back the repo-server rollout status
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ argocd_namespace }} rollout status
+      deployment/argo-cd-repo-server --timeout=120s
+  register: argocd_repo_server_rollout
+  changed_when: false
+  failed_when: false
+
+- name: Assert the repo-server rolled out successfully
+  ansible.builtin.assert:
+    that:
+      - argocd_repo_server_rollout.rc == 0
+    fail_msg: >-
+      argo-cd-repo-server did not become ready within the timeout — check
+      `k3s kubectl -n {{ argocd_namespace }} get pods` and the ksops
+      init-container logs.
+    success_msg: argo-cd-repo-server rolled out successfully.
+
+- name: Read back the root-app Application object
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get application root-app -o name"
+  register: argocd_root_app_check
+  changed_when: false
+  failed_when: false
+
+- name: Assert the root-app Application is present
+  ansible.builtin.assert:
+    that:
+      - "'root-app' in argocd_root_app_check.stdout"
+    fail_msg: >-
+      root-app Application object not found in the {{ argocd_namespace }}
+      namespace after applying root-app.yaml.
+    success_msg: root-app Application is present and reconciling.

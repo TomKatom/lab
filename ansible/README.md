@@ -19,10 +19,13 @@ Layout:
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `hardening-vms.yml` (VM hardening), `virtiofs.yml` (mounts the tank/data
   share in the k3s VM), `k3s-vm.yml` (formats/mounts the scsi1 data disk and
-  installs single-node k3s in the k3s VM).
+  installs single-node k3s in the k3s VM), `argocd-bootstrap.yml` (installs
+  Argo CD via a pinned helm binary and applies the `root-app` app-of-apps
+  manifest — install only; no dispatch has been run against the live
+  cluster yet, see `clusters/lab/bootstrap/README.md`).
 - `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`,
-  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s` done. Role
-  directory names use underscores, not hyphens (`network_nat`, not
+  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s`, `argocd` done.
+  Role directory names use underscores, not hyphens (`network_nat`, not
   `network-nat`) — ansible-lint's `role-name` rule (safety profile) rejects
   hyphens in role names, so later roles should follow the same convention.
 

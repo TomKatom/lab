@@ -1,0 +1,37 @@
+---
+# Role-private vars, prefixed argocd_* so they can't collide with another
+# role's defaults.
+
+# renovate: datasource=github-releases depName=helm/helm
+argocd_helm_version: "4.2.3"
+# SHA256 of helm-v4.2.3-linux-amd64.tar.gz. Verified two ways on 2026-07-23:
+# fetched https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz.sha256sum and
+# cross-checked against the checksum listed on
+# https://github.com/helm/helm/releases/tag/v4.2.3. Both matched.
+argocd_helm_sha256: "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c"
+
+# Pinned here directly rather than derived from
+# clusters/lab/platform/argo-cd.yaml (PR5) via shell/grep, per the phase4
+# plan's own documented fallback ("Documented fallback if this proves too
+# clever in practice" in phase4-handoff.md's "DRY on the chart version"
+# section) — PR5 doesn't exist yet (only a README lives under
+# clusters/lab/platform/ today), so there is nothing to grep. When PR5
+# lands, its targetRevision must be set to match this pin by hand once;
+# from then on both literals live under renovate.json's existing
+# "helm charts" packageRule groupName, so future chart bumps land together
+# in one PR instead of silently drifting apart.
+# renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
+argocd_chart_version: "10.1.4"
+# argo-cd chart 10.1.4 bundles Argo CD app version v3.4.5 (upstream
+# Chart.yaml appVersion, confirmed 2026-07-23) — informational only, not
+# consumed by this role.
+
+argocd_namespace: argocd
+argocd_helm_repo_name: argo
+argocd_helm_repo_url: https://argoproj.github.io/argo-helm
+
+# Node-local scratch dir the controller's checkout of
+# clusters/lab/bootstrap/*.yaml is copied into before helm/kubectl consume
+# it — the role runs on k3s-node, but those files live in the controller's
+# git checkout, not on the node.
+argocd_bootstrap_remote_dir: /tmp/argocd-bootstrap
