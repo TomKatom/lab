@@ -36,7 +36,10 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^ansible/roles/[^/]+/defaults/main\\.ya?ml$"],
+      "fileMatch": [
+        "^ansible/roles/[^/]+/defaults/main\\.ya?ml$",
+        "^\\.github/workflows/[^/]+\\.ya?ml$"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
       ],

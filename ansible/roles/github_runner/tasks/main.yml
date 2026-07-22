@@ -2,8 +2,9 @@
 # Installs and registers the self-hosted GitHub Actions runner agent on the
 # ci-runner VM (see infra/tofu/vm-runner.tf). Deliberately minimal: no
 # OpenTofu/sops/gh baked in here — ansible-apply.yml/tofu-apply.yml self
-# install their own toolchains per run (setup-opentofu, pip). A future PR
-# can bake sops onto this VM once an ansible *.sops.yml actually needs it.
+# install their own toolchains per run (setup-opentofu, pip, and a
+# checksum-pinned sops binary), which keeps every tool version pinned in the
+# workflow that uses it instead of in this VM's accumulated state.
 
 - name: Install base dependencies
   ansible.builtin.apt:
@@ -13,7 +14,6 @@
       - jq
       - tar
       - unzip  # opentofu/setup-opentofu extracts its release archive with this
-      - nodejs  # opentofu/setup-opentofu's tofu_wrapper replaces `tofu` with a `#!/usr/bin/env node` script
       - ca-certificates
       - openssh-client
       - python3

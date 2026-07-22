@@ -231,8 +231,13 @@ which hangs `tofu plan`/`apply` on every run.
   ([`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml))
   — two jobs, split so a bad diff can never apply unattended:
   - `plan` runs automatically on every pull request targeting `master`,
-    using GitHub Actions secrets (not SOPS/age — the master age key never
-    enters CI), and posts the plan output to the job summary.
+    and posts the plan output to the job summary. Both jobs get their
+    credentials by running the same `infra/tofu/tofu.sh` wrapper a local
+    apply uses, decrypting the committed SOPS files with the age key held
+    as the `SOPS_AGE_KEY` repo secret — so there is no second, hand-synced
+    copy of any token. That CI holds the age key at all is a deliberate
+    reversal of the earlier "no age key in CI" rule; the blast radius it
+    accepts is spelled out in [`docs/secrets.md`](secrets.md#accepted-trade-ci-holds-the-age-key).
   - `apply` (`needs: plan`) runs in the `production` GitHub Environment.
     That environment's required-reviewer rule is the *only* gate: a human
     must click **Approve** in the Actions UI, having reviewed the exact
@@ -269,9 +274,10 @@ which hangs `tofu plan`/`apply` on every run.
 - Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
   plex.tv auth on its own port, outside Traefik/Authelia.
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
-  `gitleaks` in CI blocks anything that slips through, the age private key
-  is held out-of-band (password manager) and injected once at bootstrap.
-  Tofu state is natively encrypted even though it's committed. Details:
+  `gitleaks` in CI blocks anything that slips through, and the age private
+  key is held out-of-band (password manager), as the `SOPS_AGE_KEY` repo
+  secret for the gated pipelines, and in-cluster for Argo/ksops. Tofu state
+  is natively encrypted even though it's committed. Details:
   [`docs/secrets.md`](secrets.md).
 - **Backups** are deferred — later, `vzdump` → NFS on a separate box; the
   age key and the Argo/ksops secret get backed up alongside cluster state.
