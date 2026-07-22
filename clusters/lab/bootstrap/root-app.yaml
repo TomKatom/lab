@@ -1,0 +1,27 @@
+# App-of-apps entrypoint. Applied once by the Ansible `argocd` role during
+# bootstrap (PR3); from then on it's just another object Argo reconciles
+# from git like everything else it manages.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
