@@ -1,0 +1,63 @@
+# Helm values for the argo-helm `argo-cd` chart. This one file is the
+# single source of truth for both the initial bootstrap install (Ansible
+# `argocd` role, PR3) and Argo's self-management of its own chart
+# afterward (clusters/lab/platform/argo-cd.yaml, PR5, via a `$values`
+# source reference) — never duplicated between the two.
+#
+# ksops repo-server patch: lets the repo-server decrypt
+# clusters/**/*.sops.yaml via the kustomize-sops plugin.
+# Ref: https://github.com/viaduct-ai/kustomize-sops#argo-cd-integration-
+
+configs:
+  cm:
+    kustomize.buildOptions: "--enable-alpha-plugins --enable-exec"
+
+# Single-node cluster: no redis-ha subchart, one replica per controller.
+redis-ha:
+  enabled: false
+
+controller:
+  replicas: 1
+
+server:
+  replicas: 1
+
+applicationSet:
+  replicas: 1
+
+repoServer:
+  replicas: 1
+
+  env:
+    - name: SOPS_AGE_KEY_FILE
+      value: /.config/sops/age/keys.txt
+    - name: XDG_CONFIG_HOME
+      value: /.config
+
+  volumes:
+    - name: custom-tools
+      emptyDir: {}
+    # Private key half lives in the `sops-age-key` Secret (key: keys.txt),
+    # created by the gated CI bootstrap dispatch (PR4) — never committed.
+    - name: sops-age-key
+      secret:
+        secretName: sops-age-key
+
+  volumeMounts:
+    - mountPath: /usr/local/bin/ksops
+      name: custom-tools
+      subPath: ksops
+    - mountPath: /usr/local/bin/kustomize
+      name: custom-tools
+      subPath: kustomize
+    - mountPath: /.config/sops/age
+      name: sops-age-key
+      readOnly: true
+
+  initContainers:
+    - name: install-ksops
+      image: viaductoss/ksops:v4.5.1
+      command: ["/usr/local/bin/ksops", "install", "--with-kustomize", "/custom-tools"]
+      volumeMounts:
+        - mountPath: /custom-tools
+          name: custom-tools
