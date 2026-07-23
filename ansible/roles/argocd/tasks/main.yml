@@ -123,10 +123,15 @@
   changed_when: true
 
 - name: Read back the repo-server rollout status
+  # Deployment name is argo-cd-argocd-repo-server, not argo-cd-repo-server:
+  # the chart's default nameOverride ("argocd") only collapses into the bare
+  # release name when the release name *contains* it (Helm's fullname
+  # helper), and "argo-cd" does not contain "argocd" (the hyphen differs) —
+  # so the fullname becomes "<release>-<nameOverride>" = "argo-cd-argocd".
   ansible.builtin.command:
     cmd: >-
       k3s kubectl -n {{ argocd_namespace }} rollout status
-      deployment/argo-cd-repo-server --timeout=120s
+      deployment/argo-cd-argocd-repo-server --timeout=120s
   register: argocd_repo_server_rollout
   changed_when: false
   failed_when: false
@@ -136,10 +141,10 @@
     that:
       - argocd_repo_server_rollout.rc == 0
     fail_msg: >-
-      argo-cd-repo-server did not become ready within the timeout — check
-      `k3s kubectl -n {{ argocd_namespace }} get pods` and the ksops
+      argo-cd-argocd-repo-server did not become ready within the timeout —
+      check `k3s kubectl -n {{ argocd_namespace }} get pods` and the ksops
       init-container logs.
-    success_msg: argo-cd-repo-server rolled out successfully.
+    success_msg: argo-cd-argocd-repo-server rolled out successfully.
 
 - name: Read back the root-app Application object
   ansible.builtin.command:
