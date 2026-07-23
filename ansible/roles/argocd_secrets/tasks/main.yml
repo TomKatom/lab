@@ -118,13 +118,9 @@
         path: /tmp/argocd-repo-secret.yml
         state: absent
 
-- name: Read back the Argo repository credential secret
-  ansible.builtin.command:
-    cmd: "k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_secrets_repo_secret_name }}"
-  register: argocd_secrets_repo_secret_readback
-  changed_when: false
-  failed_when: false
-
+# A single label-scoped readback proves both facts the assert needs: that the
+# named secret exists and that it carries the repository label (an unlabeled or
+# missing secret simply won't appear in this list).
 - name: Read back repository-labeled secrets
   ansible.builtin.command:
     cmd: >-
@@ -137,7 +133,6 @@
 - name: Assert the Argo repository credential secret is present and labeled
   ansible.builtin.assert:
     that:
-      - argocd_secrets_repo_secret_readback.rc == 0
       - "'secret/' + argocd_secrets_repo_secret_name in argocd_secrets_repo_label_readback.stdout_lines"
     fail_msg: >-
       {{ argocd_secrets_repo_secret_name }} secret is missing from the
