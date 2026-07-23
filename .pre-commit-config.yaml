@@ -35,12 +35,20 @@ repos:
     hooks:
       - id: ansible-lint
         files: ^ansible/.*\.(yml|yaml)$
+        # pass_filenames: false + a fixed `ansible/` target (rather than
+        # letting pre-commit pass just the staged files) so a local run
+        # lints the same scope CI does. ansible-lint resolves roles/module
+        # collections project-wide, not per-file — a diff-scoped run can
+        # miss a role broken by files outside the diff (see #32, where CI's
+        # whole-repo lint caught something a files-only local run never
+        # would have looked at).
+        pass_filenames: false
         # ansible.cfg lives in ansible/, but pre-commit (like the CI action)
         # runs hooks from the repo root, where ansible-core's ansible.cfg
         # discovery (cwd only) never finds it — silently breaking
         # roles_path and any role-using playbook. Override the upstream
         # entry to inject the same env var .github/workflows/ci.yml sets.
-        entry: env ANSIBLE_CONFIG=ansible/ansible.cfg python3 -m ansiblelint -v --force-color
+        entry: env ANSIBLE_CONFIG=ansible/ansible.cfg python3 -m ansiblelint -v --force-color ansible/
 
   - repo: local
     hooks:

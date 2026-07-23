@@ -41,10 +41,11 @@
         "^\\.github/workflows/[^/]+\\.ya?ml$"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s+\\w+:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
       ],
       "datasourceTemplate": "{{{datasource}}}",
-      "depNameTemplate": "{{{depName}}}"
+      "depNameTemplate": "{{{depName}}}",
+      "registryUrlTemplate": "{{{registryUrl}}}"
     }
   ]
 }
