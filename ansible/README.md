@@ -15,7 +15,9 @@ Layout:
   `*.sops.yml` file today; if one ever does, `all.sops.yml` (SOPS + age,
   decrypted in-memory at load time by the `community.sops` vars plugin —
   see [`docs/secrets.md`](../docs/secrets.md)) is the pattern to follow.
-- `playbooks/` — `ping.yml` (connectivity smoke test), `proxmox-host.yml`
+- `playbooks/` — `site.yml` (the full converge, every configuration
+  playbook in dependency order — what a merge to `master` auto-deploys, see
+  below), `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
   `hardening-vms.yml` (VM hardening), `virtiofs.yml` (mounts the tank/data
   share in the k3s VM), `k3s-vm.yml` (formats/mounts the scsi1 data disk and
@@ -32,7 +34,24 @@ Layout:
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu
 drop public SSH access. See
-[`docs/architecture.md`](../docs/architecture.md#management-plane).
+[`docs/architecture.md`](../docs/architecture.md#management-plane), and
+[`docs/runbooks/provision-new-server.md`](../docs/runbooks/provision-new-server.md)
+for the full from-scratch ordering.
+
+## Deploying changes
+
+Merging an ansible/config change to `master` **is** the deploy:
+[`.github/workflows/ansible-apply.yml`](../.github/workflows/ansible-apply.yml)
+runs `playbooks/site.yml` (the full converge, dependency-ordered) behind
+the `production` environment's required-reviewer gate — the operator
+approves the run in the Actions UI and never picks a playbook. Host groups
+that don't exist yet (mid-bootstrap, rebuilds) are excluded by a
+reachability probe so a partial topology still converges green.
+
+`workflow_dispatch` remains for what `site.yml` deliberately excludes —
+the verification playbooks (`ping`, `verify-wireguard`), read-only
+discovery, and the one-time `argocd-bootstrap` — plus targeted re-runs of
+a single playbook when diagnosing something specific.
 
 ## Running playbooks
 

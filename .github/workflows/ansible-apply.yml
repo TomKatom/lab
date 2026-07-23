@@ -8,9 +8,18 @@ name: Ansible Apply
 #           best-effort previews a `--check --diff` run (non-blocking).
 #           This is lint + partial preview, not a guarantee - see the
 #           caveat in the job below for exactly why.
-#   apply - workflow_dispatch only, gated by the `production` environment's
-#           required-reviewer rule (the same gate tofu-apply.yml uses). A
-#           human picks exactly which playbook to run and clicks Approve.
+#   apply - two triggers, one gate (the `production` environment's
+#           required-reviewer rule, the same gate tofu-apply.yml uses):
+#             push to master (paths-filtered) - the auto-converge: runs
+#               playbooks/site.yml, the full converge in dependency order.
+#               Merging IS the deploy; the operator approves the gated run
+#               and never picks a playbook. Host groups that don't exist
+#               yet (mid-bootstrap) are excluded by a reachability probe -
+#               see the Run step.
+#             workflow_dispatch - the operator picks one playbook. For the
+#               bootstrap/verification playbooks that deliberately stay
+#               out of site.yml (see its header) and for targeted re-runs;
+#               steady-state deploys should never need it.
 #
 # Unlike tofu-apply.yml, `apply` does NOT `need:` `check`, and does not
 # download any artifact `check` produced. Tofu's `apply` applies the
@@ -21,19 +30,31 @@ name: Ansible Apply
 # environment approval, not a saved artifact. Don't assume the two jobs are
 # linked the way Tofu's are.
 #
-# Both triggers live in one `on:` block (pull_request + workflow_dispatch)
-# so this stays one workflow file, but that means each job below gates
-# itself with `if: github.event_name == ...` - unlike tofu-apply.yml, where
-# both jobs always run together off the same `pull_request` trigger. One
-# consequence: because `check` and `apply` never run for the same trigger,
-# they can never contend for the same concurrency group, so the
-# supersede-a-waiting-approval deadlock tofu-apply.yml's workflow-level
-# concurrency block exists to prevent structurally cannot happen here -
-# each job below gets its own, simpler, job-scoped concurrency group
-# instead (see each job).
+# All triggers live in one `on:` block so this stays one workflow file, but
+# that means each job below gates itself on the event name - unlike
+# tofu-apply.yml, where both jobs always run together off the same
+# `pull_request` trigger. Because `check` (pull_request) and `apply`
+# (push/dispatch) never run for the same trigger, they can never contend
+# for the same concurrency group, so the supersede-a-waiting-approval
+# deadlock tofu-apply.yml's workflow-level concurrency block exists to
+# prevent structurally cannot happen here - each job below gets its own,
+# simpler, job-scoped concurrency group instead (see each job).
+#
+# Trap to know about: GitHub skips push-triggered workflows entirely when
+# the pushed commit's message contains [skip ci]. The repo's squash-merge
+# message setting must stay "pull request title" - a default that inlines
+# the PR's commit list would inherit tofu-apply.yml's "[skip ci]" state
+# commits on mixed PRs and silently skip the auto-converge for exactly the
+# merges that need it.
 
 on:
   pull_request:
+    branches: [master]
+    paths:
+      - "ansible/**"
+      - "config/lab.yml"
+      - ".github/workflows/ansible-apply.yml"
+  push:
     branches: [master]
     paths:
       - "ansible/**"
@@ -47,10 +68,12 @@ on:
           extension). Maintained by hand - add an option here whenever a
           new playbook lands; deliberately not auto-discovered (the
           playbook list grows one PR at a time by design, see
-          ansible/README.md).
+          ansible/README.md). site = the same full converge a push to
+          master runs.
         type: choice
         required: true
         options:
+          - site
           - ping
           - report-disks
           - proxmox-host
@@ -185,7 +208,7 @@ jobs:
 
   apply:
     name: ansible apply
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     environment: production
     # Shared with tofu-apply.yml's runners once a self-hosted runner exists
     # (see that workflow's runs-on comment) - LAB_RUNNER, not TOFU_RUNNER.
@@ -221,22 +244,61 @@ jobs:
       # required-reviewer rule (same gate tofu-apply.yml uses) is what a
       # human approves before this step ever runs; there is no other gate
       # in this file, and there must never be one.
+      #
+      # site runs get a reachability probe first: mid-bootstrap, the guest
+      # groups may not exist yet (VMs not created, or a rebuild in
+      # progress), and a converge that hard-fails at the first absent host
+      # would make every merge red until the topology is complete. Probing
+      # with an ad-hoc ping and excluding unreachable groups via --limit
+      # converges the frontier that exists; a play whose group is excluded
+      # reports "no hosts matched" and skips. proxmox_host is never
+      # excluded - if the host itself is down there is nothing to deploy
+      # to, and that run SHOULD be red. Dispatch runs skip the probe: the
+      # operator chose the playbook deliberately, and a failure against an
+      # absent host should be loud, not masked.
       - name: Run playbook
         env:
           # Only the github_runner role reads this (registration-token
           # lookup('env', 'GH_RUNNER_PAT')) — scoped to this step, not the
-          # whole job, so it's not exported for any other playbook run here.
+          # whole job, so it's not exported for any other steps here.
           GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
+          # push -> the full converge; dispatch -> whatever the operator
+          # picked (which may also be site).
+          PLAYBOOK: ${{ github.event_name == 'push' && 'site' || inputs.playbook }}
         run: |
           set -o pipefail
-          ansible-playbook "ansible/playbooks/${{ inputs.playbook }}.yml" --diff | tee /tmp/ansible-apply.out
+          limit_args=()
+          if [ "$PLAYBOOK" = "site" ]; then
+            limit="proxmox_host"
+            for group in runner k3s_node; do
+              # timeout caps the probe: an unreachable internal host on a
+              # GitHub-hosted runner otherwise burns the ProxyJump's full
+              # retry budget (ConnectionAttempts x ConnectTimeout) per group.
+              if timeout 90 ansible "$group" -m ping -o > /dev/null 2>&1; then
+                limit="${limit},${group}"
+              else
+                echo "::warning::${group} unreachable - its plays are skipped this converge (expected mid-bootstrap; see docs/runbooks/provision-new-server.md)"
+                echo "probe: ${group} unreachable, excluded from --limit" >> /tmp/ansible-probe.out
+              fi
+            done
+            limit_args=(--limit "$limit")
+          fi
+          ansible-playbook "ansible/playbooks/${PLAYBOOK}.yml" --diff "${limit_args[@]}" | tee /tmp/ansible-apply.out
 
       - name: Post output to job summary
         if: always()
+        env:
+          PLAYBOOK: ${{ github.event_name == 'push' && 'site' || inputs.playbook }}
         run: |
           {
-            echo "## ansible-playbook ${{ inputs.playbook }}.yml --diff"
+            echo "## ansible-playbook ${PLAYBOOK}.yml --diff"
             echo
+            if [ -f /tmp/ansible-probe.out ]; then
+              echo '```'
+              cat /tmp/ansible-probe.out
+              echo '```'
+              echo
+            fi
             echo '```'
             if [ -f /tmp/ansible-apply.out ]; then
               cat /tmp/ansible-apply.out
