@@ -15,6 +15,11 @@
 # `proxmox_endpoint`.
 ovh_public_ip: 145.239.3.55
 
+# Shared between roles/argocd and roles/argocd_secrets — both need the same
+# namespace name, and argocd_secrets' tasks must run before argocd's helm
+# install, so this can't live only in either role's own defaults/main.yml.
+argocd_namespace: argocd
+
 # Shared between roles/wireguard and playbooks/verify-wireguard.yml — a
 # single name so neither has to redeclare it.
 wireguard_interface: wg0

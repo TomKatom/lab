@@ -1,0 +1,38 @@
+name: Install sops
+description: >-
+  Installs a pinned, checksum-verified sops binary onto $GITHUB_PATH under
+  $HOME/.local/bin (the self-hosted runner's service account has no sudo).
+  Idempotent - a re-run with the pinned binary already in place is a no-op.
+
+runs:
+  using: composite
+  steps:
+    # Extracted from tofu-apply.yml, where this exact "Install sops" step
+    # used to appear twice (once in `plan`, once in `apply`) with an
+    # identical pin. ansible-apply.yml needs the same install now that
+    # ansible/inventory/group_vars/k3s_node.sops.yml exists - a third copy
+    # would have made this the second time the pin drifted across files
+    # instead of the first.
+    #
+    # The pin lives here, inlined, rather than in a workflow-level `env:`
+    # block: composite actions don't share the calling workflow's `env:` as
+    # a default across their own steps, so inlining is the one place left
+    # that keeps it to a single copy. Renovate still tracks it via the
+    # `# renovate:` comment - see renovate.json's customManagers entry for
+    # `.github/actions/*/action.yml`.
+    - name: Install sops
+      shell: bash
+      run: |
+        set -euo pipefail
+        # renovate: datasource=github-releases depName=getsops/sops
+        SOPS_VERSION="3.13.2"
+        SOPS_SHA256="154dfe4cd70554bdd82b98e4cd4acf191d43d01ead6f00a73477aa44c4ac42ef"
+        mkdir -p "$HOME/.local/bin"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        if ! echo "${SOPS_SHA256}  $HOME/.local/bin/sops" | sha256sum -c - > /dev/null 2>&1; then
+          curl -fsSL -o "$HOME/.local/bin/sops.tmp" \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
+          echo "${SOPS_SHA256}  $HOME/.local/bin/sops.tmp" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/sops.tmp"
+          mv "$HOME/.local/bin/sops.tmp" "$HOME/.local/bin/sops"
+        fi

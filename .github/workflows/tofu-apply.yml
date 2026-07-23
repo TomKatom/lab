@@ -59,20 +59,11 @@ permissions:
 
 # The runner brings no toolchain of its own (ansible/roles/github_runner
 # installs none - each workflow self-installs what it needs per run), so both
-# jobs below install sops. Pinned and checksum-verified because this one
-# binary is what unlocks every encrypted file in the repo: an unverified
-# download here would sit inside the trust root itself. Bump the two values
-# together - SOPS_SHA256 is of the sops-v${SOPS_VERSION}.linux.amd64 release
-# asset (amd64 covers both the self-hosted runner and the ubuntu-latest
-# fallback), published in that release's checksums.txt and reported as the
-# asset `digest` by the GitHub releases API; both were checked for v3.13.2 on
-# 2026-07-22. Renovate proposes the version bump but cannot compute the new
-# hash, so its PR fails this step until the hash is updated by hand - loud and
-# safe, the same trade ansible/roles/github_runner/defaults/main.yml makes.
-env:
-  # renovate: datasource=github-releases depName=getsops/sops
-  SOPS_VERSION: "3.13.2"
-  SOPS_SHA256: "154dfe4cd70554bdd82b98e4cd4acf191d43d01ead6f00a73477aa44c4ac42ef"
+# jobs below install sops via ./.github/actions/install-sops. Pinned and
+# checksum-verified because this one binary is what unlocks every encrypted
+# file in the repo: an unverified download here would sit inside the trust
+# root itself. See that composite action for the pin itself and how
+# Renovate tracks it.
 
 jobs:
   plan:
@@ -107,21 +98,7 @@ jobs:
           tofu_wrapper: false
 
       - name: Install sops
-        # Under $HOME, not /usr/local/bin: the self-hosted runner's service
-        # account has no sudo, and $GITHUB_PATH is how every other
-        # self-installed tool in these workflows gets onto PATH. A re-run with
-        # the pinned binary already in place is a no-op.
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          if ! echo "${SOPS_SHA256}  $HOME/.local/bin/sops" | sha256sum -c - > /dev/null 2>&1; then
-            curl -fsSL -o "$HOME/.local/bin/sops.tmp" \
-              "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
-            echo "${SOPS_SHA256}  $HOME/.local/bin/sops.tmp" | sha256sum -c -
-            chmod +x "$HOME/.local/bin/sops.tmp"
-            mv "$HOME/.local/bin/sops.tmp" "$HOME/.local/bin/sops"
-          fi
+        uses: ./.github/actions/install-sops
 
       # SOPS_AGE_KEY is scoped to the steps that actually run tofu.sh rather
       # than set job-wide, so the one key that unlocks every encrypted file in
@@ -258,17 +235,7 @@ jobs:
 
       # See the `plan` job's identical step.
       - name: Install sops
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          if ! echo "${SOPS_SHA256}  $HOME/.local/bin/sops" | sha256sum -c - > /dev/null 2>&1; then
-            curl -fsSL -o "$HOME/.local/bin/sops.tmp" \
-              "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64"
-            echo "${SOPS_SHA256}  $HOME/.local/bin/sops.tmp" | sha256sum -c -
-            chmod +x "$HOME/.local/bin/sops.tmp"
-            mv "$HOME/.local/bin/sops.tmp" "$HOME/.local/bin/sops"
-          fi
+        uses: ./.github/actions/install-sops
 
       # tofu.sh still decrypts state.sops.env here: TF_ENCRYPTION's `plan`
       # block means the saved plan file downloaded above is itself an

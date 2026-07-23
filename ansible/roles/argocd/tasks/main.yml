@@ -5,10 +5,10 @@
 # /etc/rancher/k3s/k3s.yaml implicitly); `helm` does not know that default
 # path, so it gets an explicit KUBECONFIG env on the tasks that need it.
 #
-# PR4 (trust-root cluster secrets) hasn't landed yet — the asserts below are
-# expected to fail until it has and the real bootstrap dispatch runs. This
-# role deliberately fails loudly here rather than silently proceeding
-# without a working ksops repo-server.
+# The trust-root assert below is defense-in-depth, not the primary
+# guarantee: argocd-bootstrap.yml runs the argocd_secrets role first, which
+# creates both Secrets. This still catches the case where someone runs the
+# argocd role in isolation (outside that playbook) without them.
 
 - name: Check whether the sops-age-key trust-root secret exists
   ansible.builtin.command:
@@ -35,8 +35,9 @@
     fail_msg: >-
       Trust-root secrets are missing from the {{ argocd_namespace }}
       namespace (sops-age-key and/or an argocd.argoproj.io/secret-type=repository
-      Secret). PR4 (trust-root cluster secrets) must be applied before this
-      role can bootstrap Argo CD — see phase4-handoff.md's "PR4" section.
+      Secret). Run the argocd_secrets role (or the argocd-bootstrap.yml
+      playbook, which already includes it) before this role can bootstrap
+      Argo CD.
     success_msg: >-
       Both trust-root secrets (sops-age-key, Argo repository credential)
       are present in the {{ argocd_namespace }} namespace.
@@ -122,10 +123,15 @@
   changed_when: true
 
 - name: Read back the repo-server rollout status
+  # Deployment name is argo-cd-argocd-repo-server, not argo-cd-repo-server:
+  # the chart's default nameOverride ("argocd") only collapses into the bare
+  # release name when the release name *contains* it (Helm's fullname
+  # helper), and "argo-cd" does not contain "argocd" (the hyphen differs) —
+  # so the fullname becomes "<release>-<nameOverride>" = "argo-cd-argocd".
   ansible.builtin.command:
     cmd: >-
       k3s kubectl -n {{ argocd_namespace }} rollout status
-      deployment/argo-cd-repo-server --timeout=120s
+      deployment/argo-cd-argocd-repo-server --timeout=120s
   register: argocd_repo_server_rollout
   changed_when: false
   failed_when: false
@@ -135,10 +141,10 @@
     that:
       - argocd_repo_server_rollout.rc == 0
     fail_msg: >-
-      argo-cd-repo-server did not become ready within the timeout — check
-      `k3s kubectl -n {{ argocd_namespace }} get pods` and the ksops
+      argo-cd-argocd-repo-server did not become ready within the timeout —
+      check `k3s kubectl -n {{ argocd_namespace }} get pods` and the ksops
       init-container logs.
-    success_msg: argo-cd-repo-server rolled out successfully.
+    success_msg: argo-cd-argocd-repo-server rolled out successfully.
 
 - name: Read back the root-app Application object
   ansible.builtin.command:

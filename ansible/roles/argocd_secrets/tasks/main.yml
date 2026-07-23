@@ -1,0 +1,144 @@
+---
+# Creates the two trust-root Secrets Argo CD needs before it can do
+# anything: sops-age-key (lets the ksops-patched repo-server decrypt
+# clusters/**/*.sops.yaml in-cluster) and a repository-credential Secret
+# (lets the repo-server git-clone this private repo over SSH). Runs on
+# k3s-node, before the argocd role's helm install — that role's own
+# trust-root assert exists specifically to catch this role being skipped.
+#
+# The age key itself never touches disk here except transiently, in a
+# node-local temp file removed immediately after the Secret is created from
+# it (block/always so cleanup happens even if the create step fails).
+
+- name: Assert SOPS_AGE_KEY is set on the controller
+  # This lookup runs on the controller (the CI runner process invoking
+  # ansible-playbook), not the remote k3s-node — deliberate: the age key
+  # never touches a laptop or the node's disk outside the temp file below,
+  # only the gated CI dispatch's own environment.
+  ansible.builtin.assert:
+    that:
+      - argocd_secrets_sops_age_key | length > 0
+    fail_msg: >-
+      the SOPS_AGE_KEY Actions secret / environment variable must be set
+      before this role can run — see docs/secrets.md.
+  vars:
+    argocd_secrets_sops_age_key: "{{ lookup('env', 'SOPS_AGE_KEY') }}"
+  no_log: true
+
+- name: Check whether the argocd namespace already exists
+  ansible.builtin.command:
+    cmd: "k3s kubectl get namespace {{ argocd_namespace }}"
+  register: argocd_secrets_namespace_check
+  changed_when: false
+  failed_when: false
+
+- name: Create the argocd namespace
+  # Has to happen here, not in the argocd role's own --create-namespace
+  # helm flag: the Secrets below must exist in the namespace before that
+  # role's helm upgrade --install ever runs.
+  ansible.builtin.command:
+    cmd: "k3s kubectl create namespace {{ argocd_namespace }}"
+  changed_when: true
+  when: argocd_secrets_namespace_check.rc != 0
+
+- name: Check whether the sops-age-key secret already exists
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get secret sops-age-key"
+  register: argocd_secrets_age_key_check
+  changed_when: false
+  failed_when: false
+
+- name: Create the sops-age-key secret
+  when: argocd_secrets_age_key_check.rc != 0
+  block:
+    - name: Write the age private key to a node-local temp file
+      ansible.builtin.copy:
+        content: "{{ argocd_secrets_sops_age_key }}"
+        dest: /tmp/argocd-sops-age-key.txt
+        mode: "0600"
+      vars:
+        argocd_secrets_sops_age_key: "{{ lookup('env', 'SOPS_AGE_KEY') }}"
+      no_log: true
+
+    - name: Create the sops-age-key secret from the temp file
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl create secret generic sops-age-key
+          -n {{ argocd_namespace }}
+          --from-file=keys.txt=/tmp/argocd-sops-age-key.txt
+      no_log: true
+      changed_when: true
+  always:
+    - name: Remove the node-local age key temp file
+      ansible.builtin.file:
+        path: /tmp/argocd-sops-age-key.txt
+        state: absent
+
+- name: Read back the sops-age-key secret
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get secret sops-age-key"
+  register: argocd_secrets_age_key_readback
+  changed_when: false
+  failed_when: false
+
+- name: Assert the sops-age-key secret is present
+  ansible.builtin.assert:
+    that:
+      - argocd_secrets_age_key_readback.rc == 0
+    fail_msg: >-
+      sops-age-key secret is still missing from the {{ argocd_namespace }}
+      namespace after attempting to create it.
+    success_msg: sops-age-key secret is present.
+
+- name: Check whether the Argo repository credential secret already exists
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get secret {{ argocd_secrets_repo_secret_name }}"
+  register: argocd_secrets_repo_secret_check
+  changed_when: false
+  failed_when: false
+
+- name: Create the Argo repository credential secret
+  when: argocd_secrets_repo_secret_check.rc != 0
+  block:
+    - name: Render the repository credential secret manifest
+      ansible.builtin.template:
+        src: repo-secret.yml.j2
+        dest: /tmp/argocd-repo-secret.yml
+        mode: "0600"
+      no_log: true
+
+    - name: Apply the repository credential secret manifest
+      ansible.builtin.command:
+        cmd: "k3s kubectl apply -f /tmp/argocd-repo-secret.yml"
+      no_log: true
+      changed_when: true
+  always:
+    - name: Remove the node-local repository secret manifest
+      ansible.builtin.file:
+        path: /tmp/argocd-repo-secret.yml
+        state: absent
+
+# A single label-scoped readback proves both facts the assert needs: that the
+# named secret exists and that it carries the repository label (an unlabeled or
+# missing secret simply won't appear in this list).
+- name: Read back repository-labeled secrets
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ argocd_namespace }} get secret
+      -l argocd.argoproj.io/secret-type=repository -o name
+  register: argocd_secrets_repo_label_readback
+  changed_when: false
+  failed_when: false
+
+- name: Assert the Argo repository credential secret is present and labeled
+  ansible.builtin.assert:
+    that:
+      - "'secret/' + argocd_secrets_repo_secret_name in argocd_secrets_repo_label_readback.stdout_lines"
+    fail_msg: >-
+      {{ argocd_secrets_repo_secret_name }} secret is missing from the
+      {{ argocd_namespace }} namespace, or exists but lacks the
+      argocd.argoproj.io/secret-type=repository label Argo's repo-server
+      needs to pick it up as a repository credential.
+    success_msg: >-
+      {{ argocd_secrets_repo_secret_name }} secret is present and labeled as an Argo
+      repository credential.

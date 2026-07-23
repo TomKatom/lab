@@ -3,12 +3,12 @@
 # k3s cluster via a pinned helm binary, then applies root-app.yaml. Depends
 # on k3s-vm.yml having already run (k3s up, kubeconfig present) and
 # hardening-vms.yml having enrolled the automation SSH key on k3s-node.
-# Trust-root secrets (sops-age-key, Argo repo credential) are created by
-# PR4's tasks, prepended ahead of this role in a later change — this
-# playbook's role assumes they already exist and fails loudly if they
-# don't.
+# argocd_secrets runs first: it creates the argocd namespace and the two
+# trust-root Secrets (sops-age-key, Argo repo credential) the argocd role's
+# helm install assumes already exist and fails loudly if they don't.
 - name: Install Argo CD on the k3s cluster
   hosts: k3s_node
   become: true
   roles:
+    - argocd_secrets
     - argocd

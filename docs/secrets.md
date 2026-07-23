@@ -47,12 +47,13 @@ sops --input-type binary --output-type binary infra/tofu/secrets.sops.tfvars.jso
 sops -d infra/tofu/state.sops.env
 ```
 
-No `ansible/**/*.sops.yml` file exists today — no Phase 3 role has needed a
-real secret yet (see [`ansible/README.md`](../ansible/README.md)) — but the
-pattern above applies identically once one does: `sops
-ansible/inventory/group_vars/all.sops.yml` to edit, `sops -d ...` to decrypt to
-stdout. The `community.sops` vars plugin (enabled in `ansible/ansible.cfg`)
-picks up any matching file automatically the moment it exists.
+`ansible/inventory/group_vars/k3s_node.sops.yml` (see
+[`ansible/README.md`](../ansible/README.md)) holds `argocd_repo_deploy_key`
+— the Argo CD read-only GitHub deploy key's private half. Same workflow as
+any other SOPS file: `sops ansible/inventory/group_vars/k3s_node.sops.yml`
+to edit, `sops -d ...` to decrypt to stdout. The `community.sops` vars
+plugin (enabled in `ansible/ansible.cfg`) decrypts it in-memory whenever the
+`k3s_node` group is in scope — never written to disk.
 
 `infra/tofu/secrets.sops.tfvars.json` and `state.sops.env` are normally
 decrypted for you by [`infra/tofu/tofu.sh`](../infra/tofu/tofu.sh) — locally
@@ -83,14 +84,14 @@ to wherever you've restored it from the password manager instead.
   `environment:` key, so an Environment-scoped secret would be invisible to
   it. The required-reviewer rule on `production` is what gates the pipeline,
   not secret visibility.
-- **The Ansible gated apply workflow** (`ansible-apply.yml`) reads only
+- **The Ansible gated apply workflow** (`ansible-apply.yml`) reads
   `PROXMOX_SSH_PRIVATE_KEY` (the same repo secret `tofu-apply.yml` uses, its
   trust extended to the VM as well as the host — see
-  [`docs/ssh-keys.md`](ssh-keys.md)) and `GH_RUNNER_PAT`, and touches no
-  SOPS material — because no `ansible/**/*.sops.yml` exists yet. When one
-  lands (Phase 4's Argo deploy key), it gets `SOPS_AGE_KEY` the same way,
-  and the `community.sops` vars plugin enabled in `ansible/ansible.cfg`
-  decrypts it in memory at load time.
+  [`docs/ssh-keys.md`](ssh-keys.md)), `GH_RUNNER_PAT`, and — now that
+  `ansible/inventory/group_vars/k3s_node.sops.yml` exists —
+  `SOPS_AGE_KEY` the same way `tofu-apply.yml` supplies it. The
+  `community.sops` vars plugin enabled in `ansible/ansible.cfg` decrypts it
+  in memory at load time, whenever the `k3s_node` group is in scope.
 - **Argo CD** decrypts in-cluster via the ksops Kustomize plugin, from its
   own `sops-age-key` k8s Secret — planted at bootstrap by a gated CI
   dispatch rather than from a laptop. See `docs/bootstrap.md` (Phase 4).

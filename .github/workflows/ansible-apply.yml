@@ -145,6 +145,13 @@ jobs:
         # invocations below) actually searches.
         run: ansible-galaxy collection install -r ansible/requirements.yml -p ~/.ansible/collections
 
+      # ansible/inventory/group_vars/k3s_node.sops.yml needs sops on PATH
+      # for the community.sops vars plugin to decrypt it - only the preview
+      # step below actually loads group_vars (see its SOPS_AGE_KEY comment),
+      # but installing here keeps both self-installed tools together.
+      - name: Install sops
+        uses: ./.github/actions/install-sops
+
       - name: Syntax-check every playbook
         run: |
           set -euo pipefail
@@ -176,6 +183,15 @@ jobs:
       # is called out in the summary below.
       - name: Best-effort --check --diff preview
         continue-on-error: true
+        env:
+          # Vars plugins (community.sops included) load group_vars/host_vars
+          # for the whole inventory at parse time, not just the hosts
+          # --limit proxmox_host actually runs plays against - so this needs
+          # the age key to decrypt inventory/group_vars/k3s_node.sops.yml
+          # even though this preview's own plays never touch k3s_node.
+          # Scoped to this step, not job-wide, same reasoning as
+          # GH_RUNNER_PAT in the apply job below.
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -uo pipefail
           {
@@ -239,6 +255,11 @@ jobs:
       - name: Install Galaxy collections
         run: ansible-galaxy collection install -r ansible/requirements.yml -p ~/.ansible/collections
 
+      # ansible/inventory/group_vars/k3s_node.sops.yml needs sops on PATH -
+      # see the `check` job's identical step.
+      - name: Install sops
+        uses: ./.github/actions/install-sops
+
       # No `needs: check` and no downloaded plan artifact - see the header
       # comment above for why. The `production` environment's
       # required-reviewer rule (same gate tofu-apply.yml uses) is what a
@@ -262,6 +283,13 @@ jobs:
           # lookup('env', 'GH_RUNNER_PAT')) — scoped to this step, not the
           # whole job, so it's not exported for any other steps here.
           GH_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
+          # Same step-scoping reasoning as GH_RUNNER_PAT above: needed by
+          # the community.sops vars plugin to decrypt
+          # inventory/group_vars/k3s_node.sops.yml (argocd_repo_deploy_key)
+          # whenever a playbook run touches the k3s_node group, and by the
+          # argocd_secrets role itself (lookup('env', 'SOPS_AGE_KEY')) to
+          # seed the in-cluster sops-age-key Secret.
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
           # push -> the full converge; dispatch -> whatever the operator
           # picked (which may also be site).
           PLAYBOOK: ${{ github.event_name == 'push' && 'site' || inputs.playbook }}
