@@ -1,0 +1,45 @@
+---
+# The full steady-state converge, in dependency order — what the
+# push-to-master auto-deploy runs (see .github/workflows/ansible-apply.yml).
+# Merging an ansible/config change to master IS the deploy; the operator
+# approves the production-gated run, never picks a playbook.
+#
+# Only converge playbooks belong here. The others stay dispatch-only, each
+# for its own reason:
+#   ping / verify-wireguard — prove connectivity rather than declare state
+#     (verify-wireguard also needs the operator's own WG peer, which CI
+#     doesn't have);
+#   report-disks — read-only discovery for new hardware;
+#   argocd-bootstrap — one-time cluster bootstrap; once Argo CD
+#     self-manages its own helm release (Phase 4), routinely re-running the
+#     bootstrap install would fight the self-manage Application.
+#
+# Ordering is the provisioning DAG (see
+# docs/runbooks/provision-new-server.md for the full dependency map):
+#   proxmox-host   host base: apt repos, firewall backend, WireGuard, NAT,
+#                  hardening, tank, PVE permissions — safe at any stage
+#                  (the guest-agent grant self-gates until agents respond)
+#   hardening-vms  guest OS/SSH hardening + qemu-guest-agent — needs the
+#                  Tofu-created VMs
+#   runner         CI runner registration — needs its hardened VM
+#   virtiofs       tank/data mount in the k3s VM — needs the Tofu virtiofs
+#                  device and the hardened VM
+#   k3s-vm         data disk + k3s install — needs the Tofu scsi1 disk
+#
+# Mid-bootstrap, groups whose hosts don't exist yet are excluded by the
+# workflow's reachability probe (--limit), so a partial topology converges
+# green instead of failing at the first absent VM.
+- name: Converge the Proxmox host
+  ansible.builtin.import_playbook: proxmox-host.yml
+
+- name: Converge guest VM hardening
+  ansible.builtin.import_playbook: hardening-vms.yml
+
+- name: Converge the CI runner
+  ansible.builtin.import_playbook: runner.yml
+
+- name: Converge the virtiofs mount
+  ansible.builtin.import_playbook: virtiofs.yml
+
+- name: Converge k3s
+  ansible.builtin.import_playbook: k3s-vm.yml
