@@ -52,6 +52,7 @@ on:
         required: true
         options:
           - ping
+          - report-disks
           - proxmox-host
           - verify-wireguard
           - runner
