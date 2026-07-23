@@ -164,9 +164,67 @@ jobs:
           path: infra/tofu/tofu.tfplan
           retention-days: 1
 
+  # Machine-checks the flip runbook's CI preconditions
+  # (docs/runbooks/restrict-management-flip.md §1 rows 1-3): a PR that turns
+  # restrict_management false->true must not be appliable while CI still
+  # runs on a public-IP hosted runner — the apply would sever its own
+  # connection to 22/8006 mid-flight and half-apply. Cheap and read-only; a
+  # no-op for every PR that doesn't flip the flag. This deliberately checks
+  # only what GitHub can see (LAB_RUNNER set, that runner online): the
+  # human parts of the runbook — WireGuard verified end-to-end, the
+  # dead-man switch armed, pve-firewall daemon confirmed running — cannot
+  # be machine-checked from here and remain the operator's responsibility
+  # before approving.
+  flip-guard:
+    name: restrict_management flip guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
+          # Full history so the base branch's version of terraform.tfvars is
+          # diffable below.
+          fetch-depth: 0
+
+      - name: Block a false->true flip unless CI is routed onto an online internal runner
+        env:
+          LAB_RUNNER: ${{ vars.LAB_RUNNER }}
+          # GH_RUNNER_PAT (repo Administration) is the one token this repo
+          # has that can list self-hosted runners; the default GITHUB_TOKEN
+          # cannot. Only consulted when the PR actually flips the flag, so
+          # an expired PAT can never block ordinary PRs.
+          GH_TOKEN: ${{ secrets.GH_RUNNER_PAT }}
+          BASE_REF: ${{ github.base_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          read_flag() {
+            # Missing file/line counts as false: the guard only cares about
+            # a false->true transition.
+            { cat -; } | grep -E '^restrict_management' | grep -m1 -oE 'true|false' || echo false
+          }
+          base=$(git show "origin/${BASE_REF}:infra/tofu/terraform.tfvars" 2> /dev/null | read_flag)
+          head=$(read_flag < infra/tofu/terraform.tfvars)
+          if [ "$head" != "true" ] || [ "$base" = "true" ]; then
+            echo "No false->true restrict_management flip (base=${base}, head=${head}) - nothing to guard."
+            exit 0
+          fi
+          echo "This PR flips restrict_management false->true - checking CI can survive the apply."
+          if [ -z "${LAB_RUNNER}" ]; then
+            echo "::error::restrict_management flip blocked: the LAB_RUNNER repo variable is unset, so the apply would run on a public-IP hosted runner and cut itself off mid-flight. Register the self-hosted runner and set LAB_RUNNER first (docs/runbooks/restrict-management-flip.md §2)." >&2
+            exit 1
+          fi
+          online=$(gh api "repos/${REPO}/actions/runners" \
+            --jq "[.runners[] | select(.status == \"online\") | select(.labels[].name == \"${LAB_RUNNER}\")] | length")
+          if [ "${online}" -lt 1 ]; then
+            echo "::error::restrict_management flip blocked: no ONLINE self-hosted runner carries the '${LAB_RUNNER}' label. The apply routed to it would queue forever (or run nowhere safe). Fix the runner before approving (docs/runbooks/restrict-management-flip.md §1 rows 1-3)." >&2
+            exit 1
+          fi
+          echo "OK: LAB_RUNNER='${LAB_RUNNER}' with ${online} online runner(s) - the flip apply will run inside the management network."
+
   apply:
     name: tofu apply
-    needs: plan
+    needs: [plan, flip-guard]
     environment: production
     # See the `plan` job's runs-on comment: shared with ansible-apply.yml.
     runs-on: ${{ vars.LAB_RUNNER || 'ubuntu-latest' }}
