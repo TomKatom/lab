@@ -11,10 +11,13 @@ Layout:
 - `inventory/group_vars/` — shared, DRY variables. Must live next to
   `hosts.yml` (or under `playbooks/`) — that's where Ansible's
   `host_group_vars` plugin actually looks; a sibling `ansible/group_vars/`
-  is silently never loaded. No role currently needs a secret, so there's no
-  `*.sops.yml` file today; if one ever does, `all.sops.yml` (SOPS + age,
-  decrypted in-memory at load time by the `community.sops` vars plugin —
-  see [`docs/secrets.md`](../docs/secrets.md)) is the pattern to follow.
+  is silently never loaded. `k3s_node.sops.yml` (SOPS + age, decrypted
+  in-memory at load time by the `community.sops` vars plugin — see
+  [`docs/secrets.md`](../docs/secrets.md)) holds the Argo CD read-only
+  deploy key's private half: the real example of the pattern to follow for
+  any future group-scoped secret — group_vars files are named after the
+  Ansible inventory *group* they apply to (`k3s_node`, per `hosts.yml`),
+  never the individual host.
 - `playbooks/` — `site.yml` (the full converge, every configuration
   playbook in dependency order — what a merge to `master` auto-deploys, see
   below), `ping.yml` (connectivity smoke test), `proxmox-host.yml`
@@ -26,10 +29,11 @@ Layout:
   manifest — install only; no dispatch has been run against the live
   cluster yet, see `clusters/lab/bootstrap/README.md`).
 - `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`,
-  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s`, `argocd` done.
-  Role directory names use underscores, not hyphens (`network_nat`, not
-  `network-nat`) — ansible-lint's `role-name` rule (safety profile) rejects
-  hyphens in role names, so later roles should follow the same convention.
+  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s`, `argocd_secrets`
+  (trust-root cluster Secrets), `argocd` done. Role directory names use
+  underscores, not hyphens (`network_nat`, not `network-nat`) —
+  ansible-lint's `role-name` rule (safety profile) rejects hyphens in role
+  names, so later roles should follow the same convention.
 
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu

@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: argocd_secrets
+  author: tomkatom
+  description: Creates the trust-root cluster Secrets (sops-age-key, Argo repository credential) Argo CD needs before it can bootstrap
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

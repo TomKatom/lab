@@ -1,0 +1,9 @@
+---
+# Role-private vars, prefixed argocd_secrets_* per ansible-lint's
+# var-naming[no-role-prefix] rule (safety profile). argocd_namespace itself
+# lives in inventory/group_vars/all.yml instead — this role and the argocd
+# role both reference it, so it has one home, not two, and neither role's
+# own prefix would fit a var shared by both.
+
+argocd_secrets_repo_url: git@github.com:TomKatom/lab.git
+argocd_secrets_repo_secret_name: repo-lab

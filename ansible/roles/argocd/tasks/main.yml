@@ -5,10 +5,10 @@
 # /etc/rancher/k3s/k3s.yaml implicitly); `helm` does not know that default
 # path, so it gets an explicit KUBECONFIG env on the tasks that need it.
 #
-# PR4 (trust-root cluster secrets) hasn't landed yet — the asserts below are
-# expected to fail until it has and the real bootstrap dispatch runs. This
-# role deliberately fails loudly here rather than silently proceeding
-# without a working ksops repo-server.
+# The trust-root assert below is defense-in-depth, not the primary
+# guarantee: argocd-bootstrap.yml runs the argocd_secrets role first, which
+# creates both Secrets. This still catches the case where someone runs the
+# argocd role in isolation (outside that playbook) without them.
 
 - name: Check whether the sops-age-key trust-root secret exists
   ansible.builtin.command:
@@ -35,8 +35,9 @@
     fail_msg: >-
       Trust-root secrets are missing from the {{ argocd_namespace }}
       namespace (sops-age-key and/or an argocd.argoproj.io/secret-type=repository
-      Secret). PR4 (trust-root cluster secrets) must be applied before this
-      role can bootstrap Argo CD — see phase4-handoff.md's "PR4" section.
+      Secret). Run the argocd_secrets role (or the argocd-bootstrap.yml
+      playbook, which already includes it) before this role can bootstrap
+      Argo CD.
     success_msg: >-
       Both trust-root secrets (sops-age-key, Argo repository credential)
       are present in the {{ argocd_namespace }} namespace.

@@ -26,7 +26,6 @@ argocd_chart_version: "10.1.4"
 # Chart.yaml appVersion, confirmed 2026-07-23) — informational only, not
 # consumed by this role.
 
-argocd_namespace: argocd
 argocd_helm_repo_name: argo
 argocd_helm_repo_url: https://argoproj.github.io/argo-helm
 
