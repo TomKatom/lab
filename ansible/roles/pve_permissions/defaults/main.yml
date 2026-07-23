@@ -43,7 +43,6 @@ pve_permissions_role_privs:
   - VM.Config.Network
   - VM.Config.Options
   - VM.Migrate
-  - VM.Monitor
   - VM.PowerMgmt
 
 # Granted separately from the base list, and only once every running guest's
