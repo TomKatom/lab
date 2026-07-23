@@ -297,17 +297,43 @@ internal runner.
 
 ## 7. Stage E — Argo CD bootstrap
 
-One gated dispatch: `ansible-apply.yml` → `argocd-bootstrap` → approve. It
-creates the trust-root secrets in-cluster, helm-installs Argo CD with the
-ksops repo-server patch, and applies `root-app.yaml`; from then on
-`clusters/` deploys by merge, no dispatches.
+**Prerequisite (one-time, GitHub side):** the read-only **deploy key**'s
+public half must be added to the repo (Settings → Deploy keys, write access
+unchecked) before dispatching — the `argocd_secrets` role injects its
+private half as the in-cluster Argo repository credential. See §1.2.6 /
+`docs/bootstrap.md`.
 
-> **Status caveat:** Phase 4 is mid-flight. The trust-root secret creation
-> (PR4), the self-manage Application (PR5) and `docs/bootstrap.md` (PR6)
-> are not merged yet — until they are, the `argocd` role fails loudly at
-> its trust-root assert by design. When PR6 lands, `docs/bootstrap.md`
-> owns this stage's detail (deploy key upload included); this section
-> stays a pointer.
+**Run it exactly once**, at the end of provisioning: dispatch
+`ansible-apply.yml` → **`argocd-bootstrap`** → approve. In one gated run it
+creates the two trust-root secrets in-cluster (`sops-age-key`, the Argo
+repository credential), helm-installs Argo CD with the ksops repo-server
+patch, and applies `root-app.yaml`. `root-app` then reconciles
+`clusters/lab/platform/`, which includes the self-manage `Application`
+(`argo-cd.yaml`) — from that point Argo owns its own release and `clusters/`
+deploys by merge.
+
+**Why this is a one-time dispatch and *not* part of `site.yml`.** Once the
+self-manage Application is reconciling, the bootstrap's `helm upgrade
+--install` + `kubectl apply root-app.yaml` would **fight Argo for ownership
+of the same release** if replayed on every converge. So `argocd-bootstrap`
+is deliberately excluded from the steady-state `site.yml` auto-converge
+(its header documents this) and lives only as an operator-picked
+`workflow_dispatch`. You do **not** re-run it as maintenance.
+
+**Re-dispatch is safe only for a failed/partial bootstrap.** The role is
+built on the existence-check idiom (read state → act only if needed →
+read-back assert), so re-dispatching to finish an interrupted first run is
+idempotent and safe. That is the *only* reason to run it a second time — not
+to reconcile drift (Argo does that) and not to bump the chart (a Renovate PR
+to `argocd_chart_version` + `argo-cd.yaml`'s `targetRevision` rolls out via
+Argo's self-managed sync, never via this dispatch).
+
+> `docs/bootstrap.md` (Phase 4 PR6, not yet merged) will own the full
+> step-by-step for this stage — deploy-key upload, verification
+> (`argocd app list` Synced/Healthy), and rollback. Until it lands, this
+> section is the authoritative pointer; the `argocd`/`argocd_secrets` roles
+> already fail loudly at a missing-trust-root assert rather than
+> misconfigure.
 
 ---
 
