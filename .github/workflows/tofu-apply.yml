@@ -300,8 +300,17 @@ jobs:
       # workflow, so branch protection there is irrelevant here). When the
       # PR is squash-merged, this commit and the human's commits land on
       # master as one commit: no separate bot commit or bot PR ever shows
-      # up in master's history. [skip ci] avoids re-triggering this
-      # workflow (and ci.yml) on our own commit, which would otherwise loop.
+      # up in master's history.
+      #
+      # Deliberately no [skip ci] here: GitHub's skip-ci is a repo-wide
+      # substring match on the commit message, not scoped to this workflow -
+      # it would also skip ci.yml's required checks on this exact commit,
+      # leaving the PR permanently unmergeable (branch protection waits
+      # forever for status that will never post). The re-trigger this commit
+      # causes is self-limiting instead: the next `plan` sees state that
+      # already matches what was just applied, so `apply` re-runs as a
+      # zero-diff no-op (one extra required-reviewer click), and this same
+      # step's git-diff guard above means it pushes nothing further.
       - name: Push updated state to PR branch
         run: |
           git config user.name "github-actions[bot]"
@@ -311,5 +320,5 @@ jobs:
             echo "terraform.tfstate unchanged, nothing to commit"
             exit 0
           fi
-          git commit -m "chore(tofu): update terraform.tfstate [skip ci]"
+          git commit -m "chore(tofu): update terraform.tfstate"
           git push origin "HEAD:${GITHUB_HEAD_REF}"
