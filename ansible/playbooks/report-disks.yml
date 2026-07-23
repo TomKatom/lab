@@ -1,0 +1,51 @@
+---
+# Read-only hardware discovery for a new or replacement server. Prints every
+# whole-disk block device (size, rotational flag, model, serial), the stable
+# /dev/disk/by-id paths, and current zpool membership — everything needed to
+# fill inventory/host_vars/server.yml's zfs_tank_pool_disks (and sanity-check
+# terraform.tfvars' storage pool names) from a CI job summary instead of an
+# interactive SSH session. Changes nothing on the host.
+- name: Report host block devices for zfs_tank configuration
+  hosts: proxmox_host
+  gather_facts: false
+  tasks:
+    - name: List whole-disk block devices
+      ansible.builtin.command:
+        cmd: lsblk -d -o NAME,SIZE,ROTA,TYPE,MODEL,SERIAL
+      register: report_disks_lsblk
+      changed_when: false
+
+    - name: List stable by-id paths
+      ansible.builtin.command:
+        cmd: ls -l /dev/disk/by-id/
+      register: report_disks_by_id
+      changed_when: false
+
+    - name: List current zpool membership
+      # -P prints full /dev paths so pool members are matchable against the
+      # by-id listing above. Non-zero exit (no pools at all) is a valid
+      # answer on a fresh host, not a failure.
+      ansible.builtin.command:
+        cmd: zpool status -P
+      register: report_disks_zpool
+      failed_when: false
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: |
+          Whole-disk devices (ROTA=1 means spinning disk — the tank stripe
+          wants the two 2TB HDDs; pick their ata-* by-id paths, never
+          /dev/sdX, and never a disk already in a zpool below):
+
+          {{ report_disks_lsblk.stdout }}
+
+          /dev/disk/by-id (ignore -partN entries; wwn-* and ata-* alias the
+          same disk — inventory/host_vars/server.yml uses ata-*):
+
+          {{ report_disks_by_id.stdout }}
+
+          Current zpool membership (disks listed here are TAKEN — rpool is
+          the NVMe root mirror):
+
+          {{ report_disks_zpool.stdout | default('(no pools)', true) }}

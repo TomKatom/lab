@@ -2,5 +2,53 @@
 # Role-private vars, prefixed pve_permissions_* so they can't collide with
 # another role's defaults.
 pve_permissions_terraform_role: Terraform
-pve_permissions_grant_privs:
+pve_permissions_terraform_user: terraform@pve
+# Token id infra/tofu authenticates with (proxmox_api_token is
+# "terraform@pve!<tokenid>=<uuid>" in secrets.sops.tfvars.json). The PVE API
+# reveals a token's secret exactly once, at creation, so this role never
+# creates it — that's scripts/mint-pve-token.sh, run once by the operator
+# (see tasks/main.yml for why CI must not mint it).
+pve_permissions_terraform_token: tofu
+
+# Base privileges the bpg/proxmox provider needs for everything infra/tofu
+# manages: VM lifecycle + cloud-init, cloud-image download into a datastore,
+# the vmbr1 bridge and PVE firewall (both via Sys.Modify), and the virtiofs
+# directory mapping (Mapping.*). Mirrors the provider's documented role
+# recommendation plus the Mapping.* set storage-virtiofs.tf needs. Grants
+# are append-only: this role only ever adds privileges, never revokes —
+# narrowing the role is an operator decision, not a converge side effect.
+pve_permissions_role_privs:
+  - Datastore.Allocate
+  - Datastore.AllocateSpace
+  - Datastore.AllocateTemplate
+  - Datastore.Audit
+  - Mapping.Audit
+  - Mapping.Modify
+  - Mapping.Use
+  - Pool.Allocate
+  - SDN.Use
+  - Sys.Audit
+  - Sys.Console
+  - Sys.Modify
+  - User.Modify
+  - VM.Allocate
+  - VM.Audit
+  - VM.Clone
+  - VM.Config.CDROM
+  - VM.Config.Cloudinit
+  - VM.Config.CPU
+  - VM.Config.Disk
+  - VM.Config.HWType
+  - VM.Config.Memory
+  - VM.Config.Network
+  - VM.Config.Options
+  - VM.Migrate
+  - VM.Monitor
+  - VM.PowerMgmt
+
+# Granted separately from the base list, and only once every running guest's
+# qemu-guest-agent actually responds — see tasks/main.yml.
+# VM.GuestAgent.Unrestricted is deliberately never granted (read-only agent
+# access is all Tofu needs).
+pve_permissions_agent_privs:
   - VM.GuestAgent.Audit

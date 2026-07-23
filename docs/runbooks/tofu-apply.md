@@ -19,10 +19,18 @@ round-trip. Everything below is written around that constraint.
   and disk import over SSH (`ssh { agent = true }` in `providers.tf`). See
   [`docs/ssh-keys.md`](../ssh-keys.md) for what this key is (and isn't) and
   how to load it into a scoped agent for a local run.
-- A Proxmox API token (`Sys.Audit`/`Sys.Modify`/`Datastore.AllocateTemplate`
-  on the target datastore, plus VM/firewall management privileges) and a
-  Cloudflare API token (`Zone:DNS:Edit` + `Zone:Read` on the `tomkatom.com`
-  zone).
+- A Proxmox API token. The `Terraform` PVE role, the `terraform@pve` user
+  and their root ACL are created by Ansible
+  (`ansible/roles/pve_permissions`, part of `playbooks/proxmox-host.yml`);
+  the token itself is minted once by the operator with
+  [`scripts/mint-pve-token.sh`](../../scripts/mint-pve-token.sh), which
+  writes it straight into `secrets.sops.tfvars.json` — see
+  [`docs/runbooks/provision-new-server.md`](provision-new-server.md) for
+  where this lands in a from-scratch build.
+- A Cloudflare API token (`Zone:DNS:Edit` + `Zone:Read` on the
+  `tomkatom.com` zone). Only exercised against the zone once `manage_dns`
+  is flipped at cutover, but `plan` needs the variable populated from day
+  one.
 
 ## 1. Populate the tfvars/env files
 
