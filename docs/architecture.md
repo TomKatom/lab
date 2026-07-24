@@ -136,7 +136,20 @@ dependency.
 WireGuard listens on public `51820/udp`. SSH(22), Proxmox UI/API(8006), and
 the k8s API(6443) are **not** in the public accept list — reachable only
 over the WG interface. WG peers are routed into `vmbr1`, so a laptop peer
-reaches both host and VM management over the tunnel.
+reaches both host and VM management over the tunnel. Each peer is scoped to
+its own `/32` on the host side (that field is the anti-spoof source filter,
+not the peer's route list — see
+[`docs/networking.md`](networking.md#wireguard-management-plane)), with an
+optional preshared key on top of the handshake.
+
+Those endpoints are addressable by name — `pve.lab.tomkatom.com`,
+`k3s.lab.tomkatom.com` — via grey-cloud Cloudflare records whose targets are
+the internal addresses. Public records, private targets, no split-horizon
+resolver to keep alive; see
+[`docs/networking.md#name-resolution`](networking.md#name-resolution) for
+the trade-offs, and
+[`docs/runbooks/wireguard-peer.md`](runbooks/wireguard-peer.md) for the
+client side.
 
 **Bootstrap ordering — never self-strand:** the first Ansible run brings up
 WireGuard over the *existing* public SSH, verifies the tunnel end-to-end,
