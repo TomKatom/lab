@@ -269,10 +269,14 @@ Quirks to expect on a fresh box:
 
 ## 6. Stage D — WireGuard verify and the flip
 
-1. Generate a WG keypair locally; PR your peer's public key + AllowedIPs
-   into `wireguard_peers` (`ansible/inventory/group_vars/all.yml`); merge;
-   approve the converge (re-renders `wg0` with your peer). Grab the host's
-   WG public key from the converge output.
+1. Generate a WG keypair + preshared key locally; PR your peer's public key
+   and its own `/32` `address` into `wireguard_peers`
+   (`ansible/inventory/group_vars/all.yml`) and the PSK into
+   `wireguard_peer_psks`
+   (`ansible/inventory/group_vars/proxmox_host.sops.yml`); merge; approve
+   the converge (re-renders `wg0` with your peer). Grab the host's WG public
+   key from the converge output. Full peer procedure:
+   [`wireguard-peer.md`](wireguard-peer.md).
 2. Bring the tunnel up locally (endpoint `<public-ip>:51820`) and run the
    anti-lockout gate **from your laptop** (it proves *your* tunnel, which
    CI structurally cannot):
