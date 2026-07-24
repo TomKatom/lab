@@ -4,6 +4,25 @@
 # "Read the host private key back" task below for why that's safe despite
 # needing the value to render wg0.conf.
 
+- name: Assert every peer owns exactly one unique /32
+  # Cheap guard for a failure mode WireGuard itself reports nowhere: a
+  # prefix belongs to exactly one peer, so two peers claiming overlapping
+  # AllowedIPs is not an error — the last one configured silently takes the
+  # prefix and the earlier peer stops receiving traffic. A wider-than-/32
+  # entry is the same class of mistake (it's the client's route list pasted
+  # into the server's anti-spoof filter). See group_vars/all.yml.
+  ansible.builtin.assert:
+    that:
+      - wireguard_peers | map(attribute='address') | select('match', '.*/32$') | list | length == wireguard_peers | length
+      - wireguard_peers | map(attribute='address') | unique | length == wireguard_peers | length
+    fail_msg: >-
+      Every entry in wireguard_peers must declare a unique `address` that is
+      a single /32 inside {{ network.wireguard_subnet }} — one host address
+      per peer, no subnets, no duplicates. Got:
+      {{ wireguard_peers | map(attribute='address') | list }}
+    success_msg: Peer addresses are unique /32s.
+  run_once: true
+
 - name: Install wireguard-tools
   ansible.builtin.apt:
     name: wireguard-tools
@@ -68,20 +87,24 @@
       — give this to peers configuring their own client tunnel.
 
 - name: Render wg0.conf
-  # The rendered file embeds the private key — no_log so --diff can't leak it.
+  # The rendered file embeds the private key (and any peer PresharedKey) —
+  # no_log so --diff can't leak either.
   #
-  # The template sets `Table = off`: wireguard_peers' AllowedIPs (group_vars/
-  # all.yml) deliberately includes network.internal_subnet so a peer's own
-  # tunnel routes into vmbr1, but that means wg-quick's default automatic
-  # routing (Table = auto) tries `ip route add <internal_subnet> dev wg0` on
-  # the host too — and that subnet is already directly connected via vmbr1,
-  # so the duplicate route add fails with RTNETLINK "File exists" and takes
-  # the whole wg-quick@wg0 unit down with it. Table = off only disables
-  # wg-quick's own `ip route add` side effects; WireGuard's AllowedIPs-based
-  # crypto-routing and anti-spoof source filtering are set unconditionally
-  # via `wg set` either way, and the wireguard_subnet route still exists for
-  # free from the interface's own Address assignment — so peer connectivity
-  # is unaffected, and traffic to vmbr1 keeps using its pre-existing route.
+  # The template sets `Table = off`. What originally forced that: peers used
+  # to carry the *client's* route list (wireguard_subnet + internal_subnet)
+  # as their server-side AllowedIPs, and wg-quick's default automatic routing
+  # (Table = auto) turns every AllowedIPs entry into an `ip route add ... dev
+  # wg0` — including one for internal_subnet, already directly connected via
+  # vmbr1, which fails with RTNETLINK "File exists" and takes the whole
+  # wg-quick@wg0 unit down with it. Peers are now scoped to their own /32
+  # (group_vars/all.yml), so that collision is gone and Table = auto would
+  # work — but this stays off deliberately: nothing needs it (the
+  # wireguard_subnet route comes free from the interface's own Address, and
+  # every peer /32 falls inside it), and on a box with no console, fewer
+  # route mutations per restart is the safer default. Table = off only
+  # disables wg-quick's own `ip route add` side effects; WireGuard's
+  # AllowedIPs-based crypto-routing and anti-spoof source filtering are set
+  # unconditionally via `wg set` either way.
   ansible.builtin.template:
     src: wg0.conf.j2
     dest: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.conf"
