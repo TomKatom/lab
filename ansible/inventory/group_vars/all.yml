@@ -24,11 +24,32 @@ argocd_namespace: argocd
 # single name so neither has to redeclare it.
 wireguard_interface: wg0
 
-# Operator WireGuard peers: public keys and AllowedIPs only, never private
-# key material (each peer generates and holds its own private key — see
-# docs/ssh-keys.md's custody model for the same principle applied to SSH).
-# Empty until an operator peer exists; roles/wireguard renders an interface
-# with zero peers rather than failing when this list is empty.
+# Operator WireGuard peers: public key + the address that peer owns inside
+# network.wireguard_subnet, never private key material (each peer generates
+# and holds its own private key — see docs/ssh-keys.md's custody model for
+# the same principle applied to SSH). Empty until an operator peer exists;
+# roles/wireguard renders an interface with zero peers rather than failing
+# when this list is empty.
+#
+# `address` is a single /32 and it is what the host renders as that peer's
+# `AllowedIPs`. Server-side AllowedIPs is NOT the client's route list, even
+# though both are spelled `AllowedIPs`: on the host it is cryptokey routing
+# plus the anti-spoof source filter — the set of source addresses this peer
+# is permitted to send from, and the only destinations the host will encrypt
+# back to it. This file used to put the whole wireguard_subnet +
+# internal_subnet here (a copy of the *client* side), which meant:
+#   - the peer could forge a source inside internal_subnet, i.e. impersonate
+#     a VM to firewall rules that authorize by source CIDR (the `+mgmt`
+#     ipset, infra/tofu/firewall.tf), and
+#   - a second peer was impossible: a prefix belongs to exactly one peer, so
+#     whichever was configured last silently stole it from the first.
+# Keep one /32 per peer, unique across this list (roles/wireguard asserts
+# both before rendering).
+#
+# The client side is the mirror image and is deliberately not configured
+# from here — a peer's own config routes wireguard_subnet + internal_subnet
+# into the tunnel and leaves everything else on its local link (split
+# tunnel). See docs/runbooks/wireguard-peer.md for the full client config.
 #
 # Add a peer once you've generated a keypair locally (`wg genkey | tee
 # privatekey | wg pubkey > publickey` — keep privatekey off this repo
@@ -36,12 +57,11 @@ wireguard_interface: wg0
 #   wireguard_peers:
 #     - name: my-laptop
 #       public_key: "<contents of publickey>"
-#       allowed_ips:
-#         - "{{ network.wireguard_subnet }}"
-#         - "{{ network.internal_subnet }}"
+#       address: 10.10.20.3/32
+# An optional per-peer PresharedKey is looked up by `name` from
+# wireguard_peer_psks (group_vars/proxmox_host.sops.yml) — secret, so it
+# never appears in this plaintext file.
 wireguard_peers:
   - name: toms-macbook
     public_key: "nLi+BSIB6VIf99D1cLlIsbqZ3AU8jp+z2rp/n0LB/TQ="
-    allowed_ips:
-      - "{{ network.wireguard_subnet }}"
-      - "{{ network.internal_subnet }}"
+    address: 10.10.20.2/32

@@ -62,14 +62,24 @@ tunnel itself is:
 - **Subnet:** `network.wireguard_subnet` (`10.10.20.0/24`), host address
   `network.wireguard_host_address` (`10.10.20.1/24`).
 - **Peers:** declared in `ansible/inventory/group_vars/all.yml`'s
-  `wireguard_peers` — public key + `allowed_ips` only, never private key
-  material (each peer generates and holds its own private key, the same
-  custody principle used for SSH keys — see
-  [`docs/ssh-keys.md`](ssh-keys.md)).
-- **Routing:** peers are routed into `vmbr1`
-  (`network.internal_subnet`, `10.10.10.0/24`) as well as the WireGuard
-  subnet itself, so a connected peer reaches both host and VM management
-  surfaces over the one tunnel.
+  `wireguard_peers` — public key + the peer's own `/32` (`address`) only,
+  never private key material (each peer generates and holds its own private
+  key, the same custody principle used for SSH keys — see
+  [`docs/ssh-keys.md`](ssh-keys.md)). An optional per-peer `PresharedKey`
+  comes from `wireguard_peer_psks` in the SOPS-encrypted
+  `group_vars/proxmox_host.sops.yml`.
+- **Peer scoping:** a peer's server-side `AllowedIPs` is its `/32` and
+  nothing wider. On the host that field is cryptokey routing *plus* the
+  anti-spoof source filter, so a wider value would let a peer forge a source
+  inside `internal_subnet` — exactly what the `+mgmt` ipset authorizes by —
+  and would collide with any second peer, since a prefix belongs to one peer
+  only. `roles/wireguard` asserts the shape before rendering.
+- **Routing:** the *client* side is the mirror image: a peer's own config
+  routes `network.wireguard_subnet` + `network.internal_subnet`
+  (`10.10.10.0/24`, i.e. `vmbr1`) into the tunnel and leaves everything else
+  on its local link, so a connected peer reaches both host and VM management
+  surfaces over the one tunnel without becoming a default route. Full client
+  procedure: [`runbooks/wireguard-peer.md`](runbooks/wireguard-peer.md).
 
 **Anti-lockout verify gate.** Because there's no console fallback short of a
 slow reseller round-trip, the tunnel must be proven live *before* anything

@@ -7,7 +7,7 @@
 #
 # Prerequisite: bring up your own WireGuard peer locally first, using a
 # config that matches an entry in group_vars/all.yml's wireguard_peers —
-# see ansible/README.md.
+# see docs/runbooks/wireguard-peer.md.
 
 - name: Confirm the host's WireGuard interface has a live peer handshake
   hosts: proxmox_host

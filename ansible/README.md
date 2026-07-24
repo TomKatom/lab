@@ -107,12 +107,19 @@ execute it against the live server itself).
    place** (it's created with `wg genkey` directly on the host and never
    leaves it — see `roles/wireguard/tasks/main.yml`), and brings up `wg0`.
    Note the printed host public key.
-2. Add your own peer: generate a keypair locally (`wg genkey | tee
-   privatekey | wg pubkey > publickey` — keep `privatekey` off this repo
-   entirely), add an entry to `wireguard_peers` in `inventory/group_vars/all.yml` with
-   your public key, then re-run step 1 so the host picks up the new peer.
+2. Add your own peer: generate a keypair and a preshared key locally (`wg
+   genkey | tee privatekey | wg pubkey > publickey`, `wg genpsk` — keep
+   `privatekey` off this repo entirely), add an entry to `wireguard_peers`
+   in `inventory/group_vars/all.yml` (public key + your own unique `/32`
+   `address`) and the PSK to `wireguard_peer_psks` in the SOPS-encrypted
+   `inventory/group_vars/proxmox_host.sops.yml`, then re-run step 1 so the
+   host picks up the new peer.
 3. Bring up your own local WireGuard interface using the host's public key
-   from step 1 and an endpoint of `<ovh_public_ip>:<ports.wireguard>`.
+   from step 1 and an endpoint of `<ovh_public_ip>:<ports.wireguard>`. Your
+   *client* `AllowedIPs` is the two lab subnets (split tunnel), which is not
+   the same field as the peer's server-side `/32` — see
+   [`docs/runbooks/wireguard-peer.md`](../docs/runbooks/wireguard-peer.md)
+   for the full client config and why the two differ.
 4. `./run.sh playbooks/verify-wireguard.yml` — **must pass** before anyone
    flips `restrict_management` in `infra/tofu/terraform.tfvars`. It checks a
    live peer handshake, that the host is reachable over the tunnel itself,
