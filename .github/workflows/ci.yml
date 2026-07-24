@@ -137,6 +137,18 @@ jobs:
           curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar xz
           curl -sL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz kubeconform
           sudo mv kustomize kubeconform /usr/local/bin/
+      # yq (mikefarah/yq, the Go binary, not the Python wrapper) parses the
+      # platform Application manifests below. Its release "checksums" file
+      # is impractically large and 504s on plain curl (a known upstream
+      # issue), so - like kustomize/kubeconform above - this pins an exact,
+      # immutable GitHub Releases URL rather than verifying a checksum.
+      - name: install yq
+        env:
+          YQ_VERSION: "4.53.3"
+        run: |
+          curl -sL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
       - name: helm template charts
         shell: bash
         run: |
@@ -151,15 +163,63 @@ jobs:
             helm template "$c" | kubeconform -strict -ignore-missing-schemas -summary
           done
           $found || echo "no Helm charts yet, skipping"
+      # Starting Phase 5 PR2, each clusters/lab/platform/<component>.yaml is
+      # a single-source Application referencing a remote Helm chart with
+      # inline helm.valuesObject (repoURL/chart/targetRevision + values,
+      # not a local Chart.yaml dir) - the "helm template charts" step above
+      # only renders local charts and silently skips these. This step
+      # renders them the same way Argo would: `helm template --repo`, no
+      # `helm repo add` bookkeeping needed.
+      - name: helm template remote-chart platform Applications
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          found=false
+          for app in clusters/lab/platform/*.yaml; do
+            [ -f "$app" ] || continue
+            kind=$(yq eval '.kind // ""' "$app")
+            [ "$kind" = "Application" ] || continue
+            chart=$(yq eval '.spec.source.chart // ""' "$app")
+            [ -n "$chart" ] || continue
+            found=true
+
+            name=$(yq eval '.metadata.name' "$app")
+            repoURL=$(yq eval '.spec.source.repoURL' "$app")
+            targetRevision=$(yq eval '.spec.source.targetRevision' "$app")
+            namespace=$(yq eval '.spec.destination.namespace' "$app")
+            releaseName=$(yq eval '.spec.source.helm.releaseName // .metadata.name' "$app")
+
+            valuesFile=$(mktemp)
+            yq eval '.spec.source.helm.valuesObject // {}' "$app" >"$valuesFile"
+
+            echo "== helm template ${app} (name=${name} chart=${chart} version=${targetRevision}) =="
+            helm template "$releaseName" "$chart" --repo "$repoURL" --version "$targetRevision" \
+              --namespace "$namespace" -f "$valuesFile" | kubeconform -strict -ignore-missing-schemas -summary
+            rm -f "$valuesFile"
+          done
+          $found || echo "no remote-chart platform Applications yet, skipping"
+      # ksops SecretGenerator overlays (kind: ksops, apiVersion: viaduct.ai/v1)
+      # decrypt a *.sops.yaml Secret - `kustomize build` can't decrypt them in
+      # this GitHub-hosted, keyless job (no SOPS_AGE_KEY here; the age key
+      # only ever reaches the self-hosted runner already used by
+      # tofu-apply.yml/ansible-apply.yml). They render only in-cluster via
+      # the ksops-patched Argo repo-server (Phase 4). A ksops-generated
+      # v1/Secret is structurally valid by construction, so there's nothing
+      # meaningful for kubeconform to check here anyway - skip, don't build.
       - name: kustomize build secret overlays
         shell: bash
         run: |
           set -euo pipefail
           found=false
           while IFS= read -r -d '' k; do
-            found=true
             dir=$(dirname "$k")
+            if grep -rq 'kind: *ksops' "$dir" 2>/dev/null; then
+              echo "== skipping ${dir} (ksops SecretGenerator - decrypts only in-cluster via the ksops-patched Argo repo-server; a ksops-generated Secret is structurally valid by construction, nothing for kubeconform to check here) =="
+              continue
+            fi
+            found=true
             echo "== kustomize build ${dir} =="
             kustomize build "$dir" | kubeconform -strict -ignore-missing-schemas -summary
           done < <(find clusters -name kustomization.yaml -print0)
-          $found || echo "no Kustomize overlays yet, skipping"
+          $found || echo "no non-ksops Kustomize overlays yet, skipping"
