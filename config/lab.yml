@@ -10,6 +10,26 @@ network:
   wireguard_host_address: 10.10.20.1/24  # host side of wg0 (Ansible wireguard role)
   vm_ip_address: 10.10.10.10  # k3s-node static internal IP (Tofu cloud-init, Ansible DNAT)
   runner_address: 10.10.10.20  # self-hosted GitHub Actions runner VM static internal IP (Tofu cloud-init)
+# Management endpoints addressable by name instead of by hardcoded internal
+# IP — `ssh pve.lab.tomkatom.com`, `https://pve.lab.tomkatom.com:8006`.
+# Consumed by Tofu (infra/tofu/cloudflare.tf) as grey-cloud A records whose
+# targets are the RFC1918 addresses declared above, so the names resolve for
+# anyone but only *answer* over WireGuard or from vmbr1. Naming these is also
+# what makes a real TLS cert possible later — an IP literal can never hold
+# one.
+#
+# The dedicated `lab.` label keeps them clear of `*.domain` (a wildcard
+# matches exactly one label) and of external-dns' per-service records.
+# `address` is a key into `network:` above, never a raw IP, so renumbering a
+# host stays a one-line edit there.
+management_subdomain: lab
+management_hosts:
+  - name: pve  # Proxmox host — SSH + UI/API, via its vmbr1 address
+    address: vmbr1_host_address
+  - name: k3s  # k3s-node VM — SSH + k8s API
+    address: vm_ip_address
+  - name: runner  # self-hosted CI runner VM — SSH
+    address: runner_address
 ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
   https: 443
   plex: 32400

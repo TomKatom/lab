@@ -99,6 +99,46 @@ for the full anti-lockout mechanism, including the firewall-ordering half of
 it (why a correct rule set alone doesn't guarantee safe ordering against the
 default-DROP policy).
 
+## Name resolution
+
+Management endpoints are addressable by name, not just by internal IP:
+
+| Name | Resolves to | Reachable from |
+|---|---|---|
+| `pve.lab.tomkatom.com` | `10.10.10.1` (host, vmbr1) | WireGuard peer, or vmbr1 |
+| `k3s.lab.tomkatom.com` | `10.10.10.10` (k3s-node) | same |
+| `runner.lab.tomkatom.com` | `10.10.10.20` (ci-runner) | same |
+| `vpn.lab.tomkatom.com` | the OVH public IP | anywhere — it's the tunnel endpoint |
+
+Declared once in `config/lab.yml` (`management_subdomain`,
+`management_hosts`, whose `address` is a key into the same `network:` block
+the rest of the repo uses) and rendered by
+[`infra/tofu/cloudflare.tf`](../infra/tofu/cloudflare.tf) as grey-cloud
+(DNS-only) A records.
+
+**These are public records with private targets.** No split-horizon resolver
+runs anywhere in this lab — there is nothing to keep alive, and the names
+work identically on a connected laptop, a phone, or CI. The trade-offs
+accepted for that simplicity:
+
+- the internal layout is public information (RFC1918 addresses, useless
+  without a tunnel);
+- a resolver with DNS-rebinding protection (some pi-hole/dnsmasq setups, the
+  occasional ISP resolver) may strip the private answer, making these names
+  fail on that network specifically while the raw IPs still work.
+
+If either becomes a real problem, the upgrade is a resolver bound to the
+WireGuard/vmbr1 addresses only, published to peers as `DNS = 10.10.20.1,
+lab.tomkatom.com` — WireGuard treats the non-IP entry as a match domain, so
+only `lab.tomkatom.com` lookups would traverse the tunnel. Not built, and
+not needed while the above holds.
+
+Everything *else* — `plex.`, `sonarr.`, `auth.`, … — keeps resolving to the
+public IP and arrives via the DNAT path above, whether or not a tunnel is
+up. Those records are external-dns' job (Phase 5); the `lab.` label exists
+partly so the two sets can never collide (a `*.tomkatom.com` wildcard
+matches exactly one label).
+
 ## Port map
 
 From `config/lab.yml`'s `ports:` block — the single place these numbers are

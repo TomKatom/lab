@@ -40,6 +40,11 @@ output "vmbr1_cidr" {
   value       = local.lab.network.vmbr1_host_address
 }
 
+output "management_hostnames" {
+  description = "Management endpoints addressable by name (see config/lab.yml management_hosts), mapped to the address each resolves to."
+  value       = { for key, record in local.dns_mgmt_records : record.name => record.content }
+}
+
 output "restrict_management" {
   description = "Whether management ports (SSH/Proxmox API/k8s API) are currently restricted to management_sources. False until Phase 3 verifies WireGuard end-to-end."
   value       = var.restrict_management
