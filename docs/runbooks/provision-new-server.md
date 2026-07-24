@@ -115,7 +115,7 @@ ansible/requirements.yml -p ~/.ansible/collections`), `wireguard-tools`,
    cancel any queued runs it stranded.
 5. Renovate app installed on the repo.
 6. (Stage E prerequisite, can wait) Read-only **deploy key** for Argo —
-   see Phase 4 / `docs/bootstrap.md`.
+   see [`docs/bootstrap.md`](../bootstrap.md#the-one-manual-github-step-the-argo-deploy-key).
 
 ### 1.3 Proxmox install (the one truly out-of-band step)
 
@@ -328,12 +328,12 @@ to reconcile drift (Argo does that) and not to bump the chart (a Renovate PR
 to `argocd_chart_version` + `argo-cd.yaml`'s `targetRevision` rolls out via
 Argo's self-managed sync, never via this dispatch).
 
-> `docs/bootstrap.md` (Phase 4 PR6, not yet merged) will own the full
-> step-by-step for this stage — deploy-key upload, verification
-> (`argocd app list` Synced/Healthy), and rollback. Until it lands, this
-> section is the authoritative pointer; the `argocd`/`argocd_secrets` roles
-> already fail loudly at a missing-trust-root assert rather than
-> misconfigure.
+> [`docs/bootstrap.md`](../bootstrap.md) owns the full step-by-step for this
+> stage — deploy-key upload, the dispatch, verification (`argocd app list`
+> Synced/Healthy + the ksops smoke test), and re-dispatch/upgrade caveats.
+> This section stays the authoritative pointer into it; the
+> `argocd`/`argocd_secrets` roles already fail loudly at a missing-trust-root
+> assert rather than misconfigure.
 
 ---
 
