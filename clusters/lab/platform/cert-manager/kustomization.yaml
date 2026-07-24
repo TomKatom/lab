@@ -1,0 +1,16 @@
+# Rendered by the ksops-patched Argo repo-server (Phase 4) — `kustomize build`
+# here needs `--enable-alpha-plugins --enable-exec` plus the age key, which is
+# why CI skips this directory (see ../README.md "Pre-merge review").
+#
+# No `namespace:` transformer on purpose: it would stamp a namespace onto the
+# cluster-scoped ClusterIssuers too. Namespaced resources carry their own.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators:
+  - secret-generator.yaml
+
+resources:
+  - clusterissuer-staging.yaml
+  - clusterissuer-prod.yaml
+  - smoke-staging-certificate.yaml

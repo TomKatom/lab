@@ -1,0 +1,29 @@
+# cert-manager — the config half: the Cloudflare API token Secret (ksops) and
+# the ACME ClusterIssuers that consume it. Wave 1, so the chart Application
+# above is Healthy (CRDs established, webhook serving) before any CR here is
+# applied.
+#
+# destination.namespace is `cert-manager` because that is cert-manager's
+# *cluster resource namespace* — where a ClusterIssuer's
+# `apiTokenSecretRef` is resolved from, regardless of which namespace the
+# Certificate that uses it lives in.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/cert-manager
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

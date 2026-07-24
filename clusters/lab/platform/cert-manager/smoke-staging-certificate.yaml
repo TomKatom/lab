@@ -1,0 +1,27 @@
+# Throwaway proof that the Cloudflare DNS-01 solver works end to end, before
+# PR3 spends the single production issuance on the real wildcard.
+#
+# Same dnsNames as the prod cert on purpose: a wildcard is validated via a
+# TXT record at _acme-challenge.tomkatom.com, so this exercises the exact
+# record path prod will use. cert-manager creates that TXT, waits for
+# propagation, then deletes it by record ID — the old server's own ACME
+# client does the same on the same zone and the two coexist as separate TXT
+# values. Nothing else in the zone is touched.
+#
+# Delete this file once `letsencrypt-prod` has issued successfully (PR3);
+# prune is on, so removing it removes the Certificate and its Secret.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: smoke-staging
+  namespace: cert-manager
+  annotations:
+    # After the ClusterIssuer + token Secret in this same Application.
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  secretName: smoke-staging-tls
+  issuerRef:
+    name: letsencrypt-staging
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.tomkatom.com"

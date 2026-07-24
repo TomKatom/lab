@@ -1,0 +1,32 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# The encrypted value below is the literal string
+# REPLACE_ME_BEFORE_MERGE, not a real credential. Before merging:
+#   sops clusters/lab/platform/cert-manager/cloudflare-api-token.sops.yaml
+# and replace it with a dedicated Cloudflare API token scoped to
+# Zone:DNS:Edit + Zone:Read on the tomkatom.com zone. Then delete these
+# comment lines. The same token value is encrypted again for the
+# external-dns namespace in PR5 — one token, two Secrets, since a
+# Secret cannot be read across namespaces.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: cloudflare-api-token
+    namespace: cert-manager
+type: Opaque
+stringData:
+    api-token: ENC[AES256_GCM,data:LTR775K9Wfi3/x97WaHf+DScrE0I900=,iv:RLlgb4pAJ9lNvWTFnvHcYn06lCHUcj/96etfIO8mxEk=,tag:uKnpC4mF0ejL+E/vKQIJQw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzZUlxcUs2SU5heVVaZzhy
+            Rkpya3E4eTRZLytSSDE0ZGNqdXFKSUtqNDMwCnp0SE9ROG1ydzYzUEFNZ3NVd0xj
+            cDd0Y3FTb0tRNU90ZEdyeE1pV0ZKRmsKLS0tIEpNWUVML3ZxNHdrRC9OWFlxdFNF
+            ZDZwekVRZ252eUhsNm5LZXkvWnY5MDAKN37Jetg8absjE7FIK1lcO8cxEQSMzfI+
+            +VW69i/7W6Q3lFqw1burRgMezQRKUaepAsu2ynV3lyr6+rUGz0jPDg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-24T23:41:34Z"
+    mac: ENC[AES256_GCM,data:O8AP03I2AQ00LKsw3WsObPlZXEauEKjp/Q07OgI4MRd1YulJfsQIbbhCQqI2IsESei1OqGv/7v9lQYtUjVucHuA09vNE+yQ3YMhrnhN3casf7yiAwpngpS5gh522eU3yKDT9Jsq1a/HY1cqZ9IFKTd4VYRY6rTuADr5L3jB/HdQ=,iv:BA8oP2wT3f8HHQl4h4/TIEQ1cFn4i59P05S476lbDWc=,tag:eeUPrT4/QSOVfFZSPV3iJw==,type:str]
+    version: 3.13.2

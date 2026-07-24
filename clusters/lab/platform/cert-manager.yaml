@@ -1,0 +1,39 @@
+# cert-manager — the chart half of the component (see README.md "Component
+# layout"). Its CRs (ClusterIssuers, Certificates) live in the sibling
+# cert-manager-config.yaml → ./cert-manager/, one sync-wave later so the
+# webhook is up and admitting before any Issuer is applied.
+#
+# ServerSideApply because the cert-manager CRDs carry structural schemas far
+# past the 262kB last-applied-configuration annotation limit that client-side
+# apply would try to write.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.0
+    helm:
+      valuesObject:
+        # The modern key — `installCRDs` is deprecated and means the same as
+        # enabled+keep. `keep: true` (chart default) leaves the CRDs behind if
+        # the release is ever uninstalled, so an accidental prune of this
+        # Application can't garbage-collect every Certificate in the cluster.
+        crds:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
