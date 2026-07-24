@@ -12,7 +12,10 @@
   recursively syncs everything under `clusters/lab/platform/`.
 
 These manifests are static — applying them live (`helm upgrade --install` +
-`kubectl apply -f root-app.yaml`) is the Ansible `argocd` role's job, not
-yet built. The two Secrets the values above depend on (`sops-age-key`, the
-Argo repository credential) don't exist yet either. Procedure will be
-documented in `docs/bootstrap.md` once the role lands.
+`kubectl apply -f root-app.yaml`) is the Ansible `argocd` role's job, run
+once via the gated `argocd-bootstrap` dispatch. The two Secrets the values
+above depend on (`sops-age-key` and the `repo-lab` Argo repository
+credential) are planted in the same run by the `argocd_secrets` role. The
+full step-by-step — deploy-key prerequisite, dispatch, verification, and
+re-dispatch/upgrade caveats — lives in
+[`docs/bootstrap.md`](../../../docs/bootstrap.md).
