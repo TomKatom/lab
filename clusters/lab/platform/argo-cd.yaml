@@ -1,0 +1,54 @@
+# Argo CD self-management. Discovered by root-app.yaml recursing
+# clusters/lab/platform/; on first sync Argo *adopts* the helm release the
+# Ansible `argocd` role installed at bootstrap (release name `argo-cd`, hence
+# the `argo-cd-argocd-*` resource names) rather than creating a second one.
+#
+# Multi-source so the chart and its values stay a single source of truth:
+#   - source 1 pulls the argo-cd chart from the argo-helm repo;
+#   - source 2 is this git repo, referenced as `$values`, contributing the
+#     exact same clusters/lab/bootstrap/argocd-values.yaml the bootstrap
+#     install used — no duplicated values, no drift between installed and
+#     self-managed.
+#
+# helm.releaseName is pinned to `argo-cd` so Argo renders identical resource
+# names to the live release and adopts it cleanly. Expect a one-time
+# label/annotation diff on the first self-manage sync as Argo takes ownership
+# of the helm-installed objects; selfHeal + ServerSideApply resolve it.
+#
+# No finalizer on purpose: deleting this Application must not cascade-prune
+# Argo CD out from under itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-cd
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://argoproj.github.io/argo-helm
+      chart: argo-cd
+      # Must match ansible/roles/argocd/defaults/main.yml's
+      # argocd_chart_version — same chart the bootstrap install pinned, so
+      # self-management adopts the release instead of rolling it to a
+      # different version on first sync. Renovate's dedicated `argocd`
+      # manager (enabled in renovate.json) reads this targetRevision as a
+      # helm chart version; it and the role default both resolve to
+      # depName=argo-cd/datasource=helm, so the "helm charts" packageRule
+      # groups their bumps into one PR — no hand-sync drift.
+      targetRevision: "10.1.4"
+      helm:
+        releaseName: argo-cd
+        valueFiles:
+          - $values/clusters/lab/bootstrap/argocd-values.yaml
+    - repoURL: git@github.com:TomKatom/lab.git
+      targetRevision: master
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
