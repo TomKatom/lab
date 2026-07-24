@@ -1,0 +1,21 @@
+# Let's Encrypt *production*. Deliberately unused until the DNS-01 path is
+# proven on staging — the first and only thing pointed at it is the wildcard
+# Certificate that ships with Traefik (Phase 5 PR3). Prod rate limits are a
+# per-registered-domain bucket shared with the old server that still serves
+# tomkatom.com, so re-issue storms here are not free.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: tomcengich@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
