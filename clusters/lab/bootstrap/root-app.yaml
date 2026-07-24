@@ -14,8 +14,17 @@ spec:
     repoURL: git@github.com:TomKatom/lab.git
     targetRevision: master
     path: clusters/lab/platform
+    # false (Phase 5+): each component's non-Application content (kustomize
+    # overlays, ksops-encrypted Secrets, plain CRs) lives in a same-named
+    # subdirectory (clusters/lab/platform/<component>/), discovered by that
+    # component's own <component>-config.yaml kustomize-source Application —
+    # not by root-app scanning subdirectories. recurse:true would make
+    # root-app raw-apply everything under those subdirectories (a
+    # kustomization.yaml, an encrypted Secret file, ...) as top-level
+    # manifests, which is wrong. false restricts root-app to applying only
+    # the top-level platform/*.yaml Application manifests.
     directory:
-      recurse: true
+      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

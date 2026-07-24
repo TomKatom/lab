@@ -101,9 +101,24 @@
     dest: "{{ argocd_bootstrap_remote_dir }}/root-app.yaml"
     mode: "0644"
 
+- name: Check whether Argo CD already self-manages its own helm release
+  ansible.builtin.command:
+    cmd: "k3s kubectl -n {{ argocd_namespace }} get application argo-cd -o name"
+  register: argocd_self_managed_check
+  changed_when: false
+  failed_when: false
+
 - name: Install/upgrade the argo-cd helm release
-  # helm upgrade --install is itself idempotent (create-or-update) — no
-  # separate check-then-act wrapper needed.
+  # helm upgrade --install is itself idempotent (create-or-update) on a
+  # fresh cluster, but NOT once clusters/lab/platform/argo-cd.yaml's
+  # `argo-cd` Application has adopted the release: that Application syncs
+  # with ServerSideApply=true under field-manager "argocd-controller", and
+  # Helm v4 also applies via SSA by default. Two field managers reapplying
+  # the same release fight over field ownership — `helm upgrade` then fails
+  # with "conflict occurred while applying object ...: conflict with
+  # \"argocd-controller\"" instead of a clean no-op. Once self-management
+  # exists, GitOps owns this release exclusively; skip so Ansible never
+  # recontests it.
   ansible.builtin.command:
     cmd: >-
       helm upgrade --install argo-cd {{ argocd_helm_repo_name }}/argo-cd
@@ -114,6 +129,7 @@
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
   changed_when: true
+  when: argocd_self_managed_check.rc != 0
 
 - name: Apply the root-app app-of-apps manifest
   # Server-side apply semantics make `k3s kubectl apply` naturally
