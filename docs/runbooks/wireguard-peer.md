@@ -109,10 +109,18 @@ Address    = 10.10.20.3/32
 # lab — OVH / Proxmox host
 PublicKey    = <host public key, printed by the wireguard role>
 PresharedKey = <the wg genpsk value from §2>
-Endpoint     = 145.239.3.55:51820
+Endpoint     = vpn.lab.tomkatom.com:51820
 AllowedIPs   = 10.10.20.0/24, 10.10.10.0/24
 PersistentKeepalive = 25
 ```
+
+- **`Endpoint` by name** — `vpn.lab.tomkatom.com` is a Tofu-managed record
+  (`infra/tofu/cloudflare.tf`) pointing at the OVH public IP, so a change of
+  public address doesn't mean re-issuing every peer config. WireGuard
+  resolves it when the tunnel comes up, not continuously: after an IP change
+  the client needs a reconnect, not an edit. The raw
+  `145.239.3.55:51820` still works if you ever need to bypass DNS to
+  diagnose something.
 
 - **Host public key** — printed by the converge ("Show the host's WireGuard
   public key"). The host's private key is generated in place on the server
@@ -146,6 +154,47 @@ cd ansible && ./run.sh playbooks/verify-wireguard.yml
 
 All four checks must pass before anyone flips `restrict_management` (see
 [`restrict-management-flip.md`](restrict-management-flip.md)).
+
+---
+
+## 5a. Use the names, not the IPs
+
+With the tunnel up:
+
+| | |
+|---|---|
+| `ssh root@pve.lab.tomkatom.com` | Proxmox host |
+| `https://pve.lab.tomkatom.com:8006` | Proxmox UI |
+| `ssh debian@k3s.lab.tomkatom.com` | k3s-node VM |
+| `ssh debian@runner.lab.tomkatom.com` | CI runner VM |
+
+These are ordinary public DNS records pointing at internal addresses
+(`config/lab.yml` → `infra/tofu/cloudflare.tf`), so they resolve whether or
+not you're connected — they simply don't answer without a tunnel. See
+[`docs/networking.md#name-resolution`](../networking.md#name-resolution).
+
+Worth putting in `~/.ssh/config` so the names are shorter still:
+
+```
+Host pve
+  HostName pve.lab.tomkatom.com
+  User root
+
+Host k3s
+  HostName k3s.lab.tomkatom.com
+  User debian
+```
+
+Two things that are *not* fixed by having a name:
+
+- **The Proxmox UI certificate.** It's still the node's self-signed cert, so
+  the browser still warns. A name is the prerequisite for fixing that
+  (Proxmox's built-in ACME with the Cloudflare DNS-01 plugin can issue for
+  `pve.lab.tomkatom.com`; an IP literal can never hold a certificate at
+  all) — but that's a separate change, not done here.
+- **`known_hosts`.** SSH keys hosts by the name you typed, so the first
+  connection by hostname prompts to trust the same key you already accepted
+  by IP. Expected, not a warning sign — but read the fingerprint anyway.
 
 ---
 
