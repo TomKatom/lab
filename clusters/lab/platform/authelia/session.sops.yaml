@@ -1,13 +1,7 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
-# not a real secret. Before merging, generate a random secret (Authelia
-# docs recommend >= 64 chars, e.g. `openssl rand -hex 32`), then:
-#   sops clusters/lab/platform/authelia/session.sops.yaml
-# replace the value, delete this comment block, commit. This is Authelia's
-# session cookie signing/encryption secret (config key `session.secret`,
-# chart-values name `session.encryption_key` — see ../authelia.yaml).
-# Rotating it invalidates every live session — it does not need to change
-# again once set for real.
+# Authelia's session cookie signing/encryption secret (config key
+# `session.secret`, chart-values name `session.encryption_key` — see
+# ../authelia.yaml). Rotating it invalidates every live session — it does
+# not need to change again once set for real.
 apiVersion: v1
 kind: Secret
 metadata:

@@ -2,6 +2,16 @@
 # configMap.extraConfigs comment for why this exists instead of a
 # configMap.session.cookies valuesObject entry. Nothing here is sensitive:
 # just the public domain and portal URL.
+#
+# No default_redirection_url: it's optional, and Authelia's validator
+# hard-rejects setting it equal to authelia_url ("effectively equal to
+# option 'authelia_url' which is not permitted" — confirmed live, this is
+# what actually crashlooped the pod after PR4 merged). There's no "default
+# app" in this lab yet for an unsolicited portal visit to land on post-login
+# — every protected app is reached via its own Ingress redirect carrying an
+# `rd` param, which takes precedence over this setting anyway. Leaving it
+# unset falls back to Authelia's own default landing page. Revisit only if
+# a real default-redirect target exists.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,4 +23,3 @@ data:
       cookies:
         - domain: tomkatom.com
           authelia_url: https://auth.tomkatom.com
-          default_redirection_url: https://auth.tomkatom.com
