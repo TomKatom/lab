@@ -1,0 +1,41 @@
+# App-of-apps entrypoint for the media stack, mirroring root-app's own
+# shape one layer down: root-app (../bootstrap/root-app.yaml) is already
+# live and watches this directory (`platform/`) with `directory.recurse:
+# false`, so this file lands and syncs with no operator re-apply. From
+# here it does for `clusters/lab/apps` exactly what root-app does for
+# `clusters/lab/platform` — apply only the top-level `apps/*.yaml`
+# Application manifests, not the content of any subdirectory.
+#
+# recurse: false for the same reason as root-app: each app's own
+# non-Application content (a kustomize overlay, a ksops-encrypted Secret)
+# lives in a same-named subdirectory (clusters/lab/apps/<component>/),
+# discovered only by that component's own <component>-config.yaml
+# kustomize-source Application — never by this Application scanning
+# subdirectories. recurse:true would make it raw-apply everything under
+# those subdirectories (a kustomization.yaml, an encrypted Secret file,
+# ...) as top-level manifests, which is wrong.
+#
+# Sync-wave 3, after every platform wave (0-2): the media apps assume
+# Traefik/Authelia/cert-manager/external-dns already exist.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
