@@ -1,16 +1,5 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# The encrypted value below embeds the literal string
-# REPLACE_ME_BEFORE_MERGE as the password hash, not a real one. Before
-# merging, generate an argon2id hash (matches chart 0.11.6's password
-# defaults — algorithm argon2, variant argon2id, iterations 3, memory
-# 65536, parallelism 4):
-#   docker run --rm authelia/authelia:4.39.20 authelia crypto hash generate argon2 --password '<your password>'
-# (or `authelia crypto hash generate argon2` with no --password to be
-# prompted interactively, keeping it out of shell history), then:
-#   sops clusters/lab/platform/authelia/users-database.sops.yaml
-# paste the hash in place of the placeholder, delete this comment block,
-# commit. TOTP is *not* pre-provisioned — enroll it via QR scan at first
-# portal login; the secret then lives in the SQLite DB, itself protected by
+# TOTP is *not* pre-provisioned — enroll it via QR scan at first portal
+# login; the secret then lives in the SQLite DB, itself protected by
 # storage.encryption.key (../storage-encryption.sops.yaml).
 #
 # To add or change a user later: `sops` this file → edit → save

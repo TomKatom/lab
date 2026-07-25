@@ -1,12 +1,6 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
-# not a real secret. Before merging, generate a random secret (e.g.
-# `openssl rand -hex 32`), then:
-#   sops clusters/lab/platform/authelia/jwt.sops.yaml
-# replace the value, delete this comment block, commit. Signs the
-# password-reset JWT (config key `identity_validation.reset_password.jwt_secret`
-# — see ../authelia.yaml). Free to rotate any time; only invalidates
-# in-flight reset links.
+# Signs the password-reset JWT (config key
+# `identity_validation.reset_password.jwt_secret` — see ../authelia.yaml).
+# Free to rotate any time; only invalidates in-flight reset links.
 apiVersion: v1
 kind: Secret
 metadata:

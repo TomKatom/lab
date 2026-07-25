@@ -1,12 +1,7 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
-# not a real secret. Before merging, generate a random secret >= 20 chars
-# (Authelia rejects shorter — e.g. `openssl rand -hex 32`), then:
-#   sops clusters/lab/platform/authelia/storage-encryption.sops.yaml
-# replace the value, delete this comment block, commit. This encrypts the
-# SQLite storage at rest (TOTP secrets, WebAuthn credentials, etc). Once
-# real data has been written, changing this key locks Authelia out of its
-# own database — treat it like the session key: set once, don't rotate.
+# Encrypts the SQLite storage at rest (TOTP secrets, WebAuthn credentials,
+# etc). Once real data has been written, changing this key locks Authelia
+# out of its own database — treat it like the session key: set once,
+# don't rotate.
 apiVersion: v1
 kind: Secret
 metadata:
