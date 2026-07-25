@@ -1,0 +1,83 @@
+# Traefik — the chart half of the component (see README.md "Component
+# layout"). Its CRs (the wildcard Certificate) live in the sibling
+# traefik-config.yaml → ./traefik/.
+#
+# ServerSideApply, as everywhere else here: the chart ships 25 CRDs and the
+# biggest (TraefikService, Middleware) are ~100kB of structural schema each —
+# not over client-side apply's 262kB annotation ceiling the way cert-manager's
+# are, but close enough that an upstream bump shouldn't be able to cross it.
+# Fifteen of those CRDs are `hub.traefik.io` (Traefik Hub, a product this lab
+# does not use); Helm has no way to install a subset, and Argo's skipCrds is
+# all-or-nothing, so they come along inert.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    targetRevision: 41.0.2
+    helm:
+      valuesObject:
+        ports:
+          web:
+            expose:
+              # Keep :80 off the Service, and therefore off the node: every
+              # LoadBalancer port klipper sees becomes a hostPort, and only
+              # :443 is DNAT'd from the public IP. HTTP→HTTPS redirection is
+              # not this cluster's job — there is no reachable plaintext
+              # port to redirect from.
+              #
+              # `ports.web: null` would drop the entrypoint outright and is
+              # what the chart's own docs suggest, but Argo CD strips null
+              # values out of valuesObject before Helm ever sees them
+              # (argoproj/argo-cd#16312) — it renders correctly in CI and
+              # silently does nothing live. This does not rely on nulls.
+              # The container keeps an unexposed :8000 listener; nothing
+              # routes to it.
+              default: false
+        service:
+          spec:
+            # The chart's own default, restated because it is load-bearing
+            # and Renovate bumps this chart unattended: k3s ships klipper
+            # servicelb (only `traefik` is in k3s_disable_components), which
+            # answers a LoadBalancer Service by binding its ports on the
+            # node — that is what puts Traefik behind the existing
+            # :443 DNAT at 10.10.10.10.
+            type: LoadBalancer
+        ingressClass:
+          # Also a chart default, restated for the same reason: Phase 6 app
+          # Ingresses omit ingressClassName and rely on being defaulted here.
+          isDefaultClass: true
+        providers:
+          kubernetesCRD:
+            # Lets an Ingress/IngressRoute in any namespace reference a
+            # Middleware in another — specifically Phase 6's *arr apps
+            # pointing at authelia-forwardauth@kubernetescrd. Traefik v3
+            # denies cross-namespace references by default.
+            allowCrossNamespace: true
+        tlsStore:
+          default:
+            defaultCertificate:
+              # Served for every host that doesn't request its own cert, so
+              # a *.tomkatom.com Ingress needs no TLS block of its own. The
+              # Secret is written by ./traefik/wildcard-certificate.yaml two
+              # sync-waves later; until that first issuance completes
+              # Traefik logs the missing Secret and falls back to its
+              # built-in self-signed cert.
+              secretName: wildcard-tomkatom-tls
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

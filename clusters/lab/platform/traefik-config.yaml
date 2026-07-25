@@ -1,0 +1,29 @@
+# Traefik — the config half: the real Let's Encrypt wildcard Certificate.
+#
+# Wave 2, after both charts (wave 0) and the ClusterIssuers (wave 1) — the
+# Certificate needs cert-manager admitting CRs and `letsencrypt-prod`
+# resolvable before it can be created.
+#
+# destination.namespace is `traefik` because cert-manager writes the issued
+# Secret into the Certificate's own namespace, and Traefik's default
+# TLSStore can only read a Secret from its own. See ../README.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/traefik
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

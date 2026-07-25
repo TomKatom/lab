@@ -12,9 +12,11 @@ Cluster platform services, synced before any media app depends on them:
   (`letsencrypt-staging`, `letsencrypt-prod`) share one API-token Secret.
   **Implemented (Phase 5).** See "Issuing a certificate" below.
 - `external-dns` — Cloudflare records follow Ingress objects.
-- `traefik` — ingress controller on `:443` (klipper servicelb, no MetalLB).
-  Owns the real `*.tomkatom.com` wildcard `Certificate`, because Traefik's
-  default `TLSStore` can only read a Secret from its own namespace.
+- `traefik.yaml` + `traefik-config.yaml` + `traefik/` — ingress controller on
+  `:443` (klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
+  wildcard `Certificate`, because Traefik's default `TLSStore` can only read
+  a Secret from its own namespace. **Implemented (Phase 5).** See "Exposing a
+  service" below.
 - `authelia` — forward-auth (file users + TOTP, SQLite) in front of the
   *arr/Deluge UIs.
 - `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
@@ -66,6 +68,37 @@ cert-manager's *cluster resource namespace* — where a `ClusterIssuer`'s
 `apiTokenSecretRef` is resolved from, wherever the `Certificate` lives.
 Rotating it is the usual SOPS loop: `sops <that file>` → edit → commit →
 merge.
+
+## Exposing a service
+
+A plain `Ingress` with a `*.tomkatom.com` host is enough — no
+`ingressClassName`, no `tls:` block:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sonarr
+spec:
+  rules:
+    - host: sonarr.tomkatom.com
+      http:
+        paths: [...]
+```
+
+Traefik's `IngressClass` is the cluster default, and its `default` `TLSStore`
+serves `wildcard-tomkatom-tls` (issued by `traefik/wildcard-certificate.yaml`
+into the `traefik` namespace) for any host that doesn't ask for its own
+certificate. Two consequences worth knowing:
+
+- **There is no `:80`.** Only the `websecure` entrypoint is published on the
+  Service, so klipper binds `:443` on the node and nothing else — matching
+  the DNAT rules, which forward `443` and not `80`. Nothing redirects
+  plaintext HTTP because nothing can reach it.
+- **Cross-namespace `Middleware` references work** (`allowCrossNamespace`),
+  which is how an app opts into Authelia forward-auth:
+  `traefik.ingress.kubernetes.io/router.middlewares:
+  authelia-forwardauth@kubernetescrd`.
 
 ## Pre-merge review
 

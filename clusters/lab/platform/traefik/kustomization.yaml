@@ -1,0 +1,10 @@
+# Plain CRs only — no ksops generator here, so CI's `kustomize build` step
+# renders this directory for real (see ../README.md "Pre-merge review").
+#
+# No `namespace:` transformer: the Certificate carries its own, and stamping
+# one here would be wrong the moment a cluster-scoped resource joins it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - wildcard-certificate.yaml

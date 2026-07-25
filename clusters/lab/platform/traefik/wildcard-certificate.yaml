@@ -1,0 +1,24 @@
+# The one production Let's Encrypt certificate this cluster issues.
+#
+# Namespace `traefik`, not `cert-manager`: cert-manager writes the issued
+# Secret alongside the Certificate, and Traefik's default TLSStore
+# (../traefik.yaml, `tlsStore.default`) reads `wildcard-tomkatom-tls` from
+# its own namespace. Secrets don't cross namespaces.
+#
+# `*.tomkatom.com` only — no apex SAN. The apex is still served by the old
+# server, which draws its own certs from the same per-registered-domain
+# production rate-limit bucket, so issuance here stays deliberately rare:
+# the DNS-01 path was already proven end to end on the staging issuer
+# (../cert-manager/smoke-staging-certificate.yaml) before this file existed.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-tomkatom
+  namespace: traefik
+spec:
+  secretName: wildcard-tomkatom-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.tomkatom.com"
