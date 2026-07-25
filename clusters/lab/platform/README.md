@@ -11,7 +11,10 @@ Cluster platform services, synced before any media app depends on them:
   via the Cloudflare DNS-01 solver. Two `ClusterIssuer`s
   (`letsencrypt-staging`, `letsencrypt-prod`) share one API-token Secret.
   **Implemented (Phase 5).** See "Issuing a certificate" below.
-- `external-dns` — Cloudflare records follow Ingress objects.
+- `external-dns.yaml` + `external-dns-config.yaml` + `external-dns/` —
+  Cloudflare records follow Ingress objects. **Implemented (Phase 5), and
+  deliberately inert** — it runs with `--dry-run` until the DNS cutover. See
+  "DNS records from Ingresses (inert)" below.
 - `traefik.yaml` + `traefik-config.yaml` + `traefik/` — ingress controller on
   `:443` (klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
   wildcard `Certificate`, because Traefik's default `TLSStore` can only read
@@ -24,7 +27,9 @@ Cluster platform services, synced before any media app depends on them:
 - `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
   here later (Phase 7).
 
-Everything not marked implemented above is still being built in Phase 5.
+Every platform component Phase 5 set out to build is now in place;
+`monitoring/` is the only entry above still a placeholder, and it belongs to
+Phase 7.
 
 ## Component layout
 
@@ -127,6 +132,75 @@ protected the moment the annotation lands. Two things worth knowing:
   no CRD/webhook here to wait for; instead the Pod needs its PVC and secret
   files to already exist the instant it starts, so the config half must
   land first and therefore also carries `CreateNamespace=true`.
+
+## DNS records from Ingresses (inert)
+
+external-dns watches `Ingress` objects and would publish an A record per
+host into the `tomkatom.com` Cloudflare zone. **It currently publishes
+nothing.** `extraArgs: ["--dry-run"]` in `external-dns.yaml` makes it
+authenticate, read the zone, and log every record it *would* write, then
+return before touching anything.
+
+That is not a soft default, but it guards a narrower thing than it looks
+like. Worth being precise about, because the cutover depends on it:
+
+- **It cannot take a hostname away from the old server.** Every name that
+  server actually serves has an *explicit* record — `sonarr`, `radarr`,
+  `prowlarr` and `deluge` are each a `CNAME` to the apex, verified by `dig`;
+  a random name under the zone returns `NXDOMAIN`, so **there is no
+  wildcard DNS record** (the old server has a wildcard *certificate*, which
+  is a different thing). A name that already has a record external-dns does
+  not own is unreachable to it — see `policy: sync` below.
+- **What it does guard is the one unconditional write: creating a name the
+  zone does not have yet.** `auth.tomkatom.com` and `plex.tomkatom.com`
+  resolve to nothing today, so those are real creates.
+- **And today every such create would point at `10.10.10.10`** — RFC1918
+  space in a public zone. See the `sources` bullet below for why.
+
+So the flag comes off exactly once, as a deliberate step in the cutover —
+`docs/runbooks/dns-cutover.md` (Phase 5, PR6) — alongside flipping
+`manage_dns=true` in Tofu **and fixing the published target**. Never as a
+drive-by edit.
+
+Three settings worth knowing before that day:
+
+- **`txtOwnerId: lab-k3s`** is stamped into an ownership TXT record beside
+  everything external-dns creates. Two servers share this zone; the owner ID
+  is how external-dns tells its own records from the ones it must not touch.
+- **`policy: sync`**, not the chart default `upsert-only`. `upsert-only`
+  never issues a delete at all, so every retired Ingress would strand a
+  permanent A + TXT pair on a shared zone that nothing in git accounts for.
+  `sync` is safe here because reach is scoped by *ownership*, not by policy,
+  at two independent layers in v0.21.0:
+
+  1. `plan.calculateChanges` filters `Delete`/`UpdateOld`/`UpdateNew` through
+     `FilterEndpointsByOwnerID`, and `appendTakenDNSNameChanges` drops a
+     `Create` outright unless *every* record already at that name is owned by
+     us ([`plan/plan.go`](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/plan/plan.go#L230)).
+  2. `TXTRegistry.ApplyChanges` re-filters the same three
+     ([`registry/txt/registry.go`](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/registry/txt/registry.go#L335)).
+
+  An endpoint with no owner label fails both, and the old server's records
+  and Tofu's `manage_dns` apex/`vpn.` records have no ownership TXT. Delete
+  an owner TXT by hand and external-dns forgets the record instead of
+  cleaning it up — so remove the Ingress, not the TXT.
+- **`sources: [ingress]`**, narrowed from the chart's `[service, ingress]`,
+  to keep external-dns off Services it has no business publishing. ⚠ **It
+  does not avoid the `10.10.10.10` problem, despite how it was originally
+  justified.** The Traefik chart renders
+  `--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik`,
+  so Traefik copies its LoadBalancer status onto every Ingress, and
+  external-dns reads the target from there — the same internal address
+  `sources: [service]` would have given, since klipper binds the node IP.
+  Before dry-run comes off, the target has to be overridden: external-dns
+  `--default-targets`, a per-Ingress
+  `external-dns.alpha.kubernetes.io/target` annotation, or Traefik's
+  `ingressEndpoint.ip`. Tracked as a cutover-runbook prerequisite.
+
+The Cloudflare token is the same one cert-manager uses, encrypted a second
+time into the `external-dns` namespace (`external-dns/cloudflare-api-token.sops.yaml`),
+because Secrets don't cross namespaces. **Rotating it means editing both
+files in one commit.**
 
 ## Pre-merge review
 

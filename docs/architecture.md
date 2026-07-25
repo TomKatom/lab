@@ -100,7 +100,7 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
 | Packaging | **Helm** (`bjw-s/app-template`) + **Kustomize** (secrets only) | DRY across near-identical apps; ksops needs Kustomize |
 | Secrets | **SOPS + age** + **ksops** | One key for k8s + Tofu + Ansible |
 | Ingress/TLS | **Traefik** + **cert-manager** (LE DNS-01 Cloudflare, `*.tomkatom.com`) | Wildcard cert, no open :80 |
-| DNS | **external-dns** (Cloudflare), `upsert-only` | Records follow Ingresses; never touches the Tofu-owned apex/wildcard/vpn records |
+| DNS | **external-dns** (Cloudflare), `policy: sync` + txt registry (`txtOwnerId: lab-k3s`) | Records follow Ingresses, retired ones are cleaned up; ownership TXTs scope deletes to its own records, so it never touches the Tofu-owned apex/wildcard/vpn records or the old server's |
 | AuthN/Z | **Authelia** (forward-auth, file users + TOTP, SQLite) | Protects *arr/deluge UIs |
 | Dep updates | **Renovate** | Automated chart/image bump PRs |
 | CI guards | **GitHub Actions** + **gitleaks** | Validate + block plaintext secrets |
