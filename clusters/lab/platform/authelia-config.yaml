@@ -1,0 +1,31 @@
+# Authelia — the config half: the SQLite PVC, the four ksops secrets, the
+# forwardAuth Middleware, and the unprotected auth.tomkatom.com Ingress.
+#
+# Wave 1, *before* the chart Application (wave 2) — the reverse of
+# cert-manager/Traefik. There's no webhook to wait for here; instead the
+# Pod the chart creates needs the PVC and secret Files to already exist the
+# moment it starts, so this half must land first. CreateNamespace lives
+# here (not on authelia.yaml) because this is now the first Application to
+# touch the `authelia` namespace.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: authelia-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/authelia
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: authelia
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

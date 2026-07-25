@@ -1,0 +1,127 @@
+# Authelia — the chart half of the component (see README.md "Component
+# layout"). Its config (PVC, ksops secrets, forwardAuth Middleware, Ingress)
+# lives in the sibling authelia-config.yaml → ./authelia/, one sync-wave
+# *earlier* — the opposite order from cert-manager/Traefik. There's no CRD
+# here for a webhook to warm up; instead the Pod needs the PVC and the four
+# secret Files already mounted-and-ready the moment it starts, so the config
+# half creates the namespace and lands first.
+#
+# No CRDs, no ServerSideApply need (unlike cert-manager/traefik).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: authelia
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.authelia.com
+    chart: authelia
+    targetRevision: 0.11.6
+    helm:
+      valuesObject:
+        # DaemonSet is the chart default — wrong here, since the SQLite PVC
+        # is ReadWriteOnce and only one replica should ever mount it.
+        pod:
+          kind: Deployment
+          extraVolumes:
+            - name: users-database
+              secret:
+                secretName: authelia-users-database
+            - name: session-extra-config
+              configMap:
+                name: authelia-session-extra-config
+          extraVolumeMounts:
+            - name: users-database
+              # Nests inside the PVC's own /config mount below — Kubernetes
+              # allows a second volumeMount at a file path under an already
+              # -mounted directory.
+              mountPath: /config/users_database.yml
+              subPath: users_database.yml
+              readOnly: true
+            - name: session-extra-config
+              mountPath: /extra-config/session.yaml
+              subPath: session.yaml
+              readOnly: true
+
+        # Named for the forwardAuth Middleware's address
+        # (./authelia/middleware-forwardauth.yaml) — restated explicitly so
+        # the two never drift out of sync silently on a chart bump.
+        service:
+          port: 9091
+
+        # Three secrets the chart's *own* auto-generated Secret would
+        # otherwise fill with a fresh `randAlphaNum` on every render (fatal
+        # under GitOps: every Argo sync would mint new keys and invalidate
+        # every live session + the SQLite encryption). Pointing secret_name
+        # at our own ksops Secrets below opts each one out of that
+        # generator. additionalSecrets mounts them at /secrets/<key>/.
+        secret:
+          additionalSecrets:
+            authelia-session: {}
+            authelia-storage-encryption: {}
+            authelia-jwt: {}
+
+        # The chart provisions its own PVC only when existingClaim is unset
+        # — ours is the hand-written ./authelia/pvc.yaml so it can be
+        # colocated with the rest of the config half and sized/classed
+        # explicitly (local-path, matching every other app's config/DB
+        # storage in this cluster).
+        persistence:
+          enabled: true
+          existingClaim: authelia
+
+        configMap:
+          # session.cookies[].authelia_url is a real Authelia v4.39 config
+          # key (required whenever a non-legacy cookie domain is set) that
+          # chart 0.11.6's own values.schema.json doesn't model yet —
+          # setting it under configMap.session directly fails Helm's schema
+          # validation (`additional properties 'authelia_url' not allowed`,
+          # verified at authoring time). extraConfigs is the chart's own
+          # escape hatch: a second config file, merged on top of the
+          # generated one, for exactly this kind of gap.
+          extraConfigs:
+            - /extra-config/session.yaml
+
+          identity_validation:
+            reset_password:
+              secret:
+                secret_name: authelia-jwt
+
+          authentication_backend:
+            file:
+              enabled: true
+
+          # Everything under *.tomkatom.com is forward-auth protected by
+          # default; apps opt in per-Ingress via the Middleware, not here.
+          access_control:
+            default_policy: deny
+            rules:
+              - domain: "*.tomkatom.com"
+                policy: two_factor
+
+          session:
+            encryption_key:
+              secret_name: authelia-session
+
+          storage:
+            encryption_key:
+              secret_name: authelia-storage-encryption
+            local:
+              enabled: true
+
+          notifier:
+            # No SMTP in the lab — password-reset/notification mail lands
+            # in a file on the PVC instead. Nobody automated reads it; it's
+            # there so the reset-password flow doesn't hard-fail.
+            filesystem:
+              enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: authelia
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

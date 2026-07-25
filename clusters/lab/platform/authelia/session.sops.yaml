@@ -1,0 +1,33 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
+# not a real secret. Before merging, generate a random secret (Authelia
+# docs recommend >= 64 chars, e.g. `openssl rand -hex 32`), then:
+#   sops clusters/lab/platform/authelia/session.sops.yaml
+# replace the value, delete this comment block, commit. This is Authelia's
+# session cookie signing/encryption secret (config key `session.secret`,
+# chart-values name `session.encryption_key` — see ../authelia.yaml).
+# Rotating it invalidates every live session — it does not need to change
+# again once set for real.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: authelia-session
+    namespace: authelia
+type: Opaque
+stringData:
+    session.encryption.key: ENC[AES256_GCM,data:LPFI/Mh0W/1wExOzLAy18uvH+JoBhbQZzA5dpE5lqyGrJJjAhm6qNEbUJ9AFRKLy7JiDpgDuSXLCp8Z5OX+AdQ==,iv:CYcVJ44EMIlf+t6b+4AsDmsredqpqEVG3EUFR25fvDE=,tag:ffZ8ktWfMYg02q7aA7CRQw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBoVDBWT1NiRzgvaWtmZk1H
+            R1Y0VXhJK21UN1V3eEd2YWFhOGcreWUzT2lzCnZmNEowNllMOUUzcDNGU0VzUStF
+            a2R4TlZTWEVZT3pyQS9ydkhoT3NlcDgKLS0tIHBWaVA3QWpqUElOdk9YM215Y2FD
+            WWhTQy9pVHNhS0hUSDFVMWJjZDFMdzAK6dR8FDxpDcleSTqHRPZvLY5e6SC/U8IZ
+            wV9XwEx9aNN1Z/hiRge8ePKpHZjtU9Qtce496wBSWGQxw5lzBapJBg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T12:22:55Z"
+    mac: ENC[AES256_GCM,data:DCpJxsvkhMnBFtHSppwM07asgddSLn28xQoIkvpEDnfM9UVD8MKUBzoPV89rmqktb3s04Pj4iFrM9eCWONZVXsmqSVBUrFBSXzAQ9eADePRt6Vwd9z+mJFAzkDn6nHDkZnLTMDK37ot8r0RXs8J3aStFhDajIRwE0/H2uCwbuvI=,iv:2T1TgI7coKmXf76s4k2GPDNiM/+HI9AtfHuglkT0rm8=,tag:8K02G573UvyJP6yk4BOy2Q==,type:str]
+    version: 3.13.2

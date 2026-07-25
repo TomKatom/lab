@@ -1,0 +1,41 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# The encrypted value below embeds the literal string
+# REPLACE_ME_BEFORE_MERGE as the password hash, not a real one. Before
+# merging, generate an argon2id hash (matches chart 0.11.6's password
+# defaults — algorithm argon2, variant argon2id, iterations 3, memory
+# 65536, parallelism 4):
+#   docker run --rm authelia/authelia:4.39.20 authelia crypto hash generate argon2 --password '<your password>'
+# (or `authelia crypto hash generate argon2` with no --password to be
+# prompted interactively, keeping it out of shell history), then:
+#   sops clusters/lab/platform/authelia/users-database.sops.yaml
+# paste the hash in place of the placeholder, delete this comment block,
+# commit. TOTP is *not* pre-provisioned — enroll it via QR scan at first
+# portal login; the secret then lives in the SQLite DB, itself protected by
+# storage.encryption.key (../storage-encryption.sops.yaml).
+#
+# To add or change a user later: `sops` this file → edit → save
+# (re-encrypts) → commit → merge. Argo updates the Secret and Authelia
+# reloads — no redeploy needed.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: authelia-users-database
+    namespace: authelia
+type: Opaque
+stringData:
+    users_database.yml: ENC[AES256_GCM,data:Jfjfmn0wzK3eQKCoEBWSgIZODN7RLdD8oevuulwg5BAtfmlDbj/5XPj0hiP3BvqDGItHqH3yMHZrRQ2iYPDIwcbjy6mqV4+ZNNF4206bQ5i9CdBypK8LaFlWpKxmehLHJM02+eTiZ5i3uaK4GrP8cdL/l4AU8vPjw16DyeK77PU9SmroOFkOhIZKzkrXXZ4FRqk8/ulC8R07iK9mU+ByN7NvScN0BjxYjKp4t9EW34js4WUaAR8fCp++FiV2fRnMDUdrzHGO38u0nAxg+s/BtfNarmRg6x84rTm0GETPdea1bm2ia+mmGWZS8rIPsxxz,iv:zyFkUs3b5+OVKR6vfmCbyMHLQEMZFnvoSM+OGWeeFmw=,tag:w2p0q2CLMY5HNc1eXsy9Yw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBLRGpZRVQ0Z1p6ZEpvcFJh
+            TkNySmJNcTlnNDNKejllYmh3b1k2YS9RY3hrCmpyNy80SWEvc2NRdDFVMkxqei9n
+            MC9oVWpyUXRHWXgxd1Q4dkkxaTQ5OTAKLS0tIFp1bElmRkw5VzJVOHZVTU9JdlVo
+            Y3B1aFI5OHAwdzBnM2x3dXZBcEpZdmMK9SWcmMZftixodJO+WNmzZ4X3dZHBlnnw
+            jfOfxwWBE3bvmssYJ0UEe0q8In2wQVZOBS9nhgp5pFrcnnt7oyl8eQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T12:38:23Z"
+    mac: ENC[AES256_GCM,data:R6jOBOqWBvZx/XzCbGXLwP/iUR1570FCJ8ReaaHWabVinAHP+Go9IBxUl/ISDRa978bqpSeZY5/1/ONzp3EJbSr4yO5WzQmxCvdUwkrVzUxsD+ejdlUGbtsKAfdIwEudxZ1JDKRYoJnjlTUG/FvcNiQ+N5LXrEUT6P63FmMn1LA=,iv:FJcC6R3kflEfKX7ft/ci6I4+v8WLt61bTo13K6ftERY=,tag:SWMsrKogWaf+CzqIBzci/A==,type:str]
+    version: 3.13.2

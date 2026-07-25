@@ -1,0 +1,32 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
+# not a real secret. Before merging, generate a random secret >= 20 chars
+# (Authelia rejects shorter — e.g. `openssl rand -hex 32`), then:
+#   sops clusters/lab/platform/authelia/storage-encryption.sops.yaml
+# replace the value, delete this comment block, commit. This encrypts the
+# SQLite storage at rest (TOTP secrets, WebAuthn credentials, etc). Once
+# real data has been written, changing this key locks Authelia out of its
+# own database — treat it like the session key: set once, don't rotate.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: authelia-storage-encryption
+    namespace: authelia
+type: Opaque
+stringData:
+    storage.encryption.key: ENC[AES256_GCM,data:t9zzaRtuC0eKv8oiD8ZZyBz2qAR22kqcouJNpQ2gUYPtJSaBmEi3VFQqMpBzjhRuSj3PD/YvSlfb2Li67DJKZA==,iv:DXSX+0c8I3lfCjY9/beqlcgjyJx1wekZNBKcNqcNqL0=,tag:LYbAQjVZpZ2RGlTJY1sRfg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBFbERiT0lRQjhQbWVSUCtR
+            UWlHR3RERERHSENzejJydngvckxCL09XTjNzCitPQ2wrU2V1ZW9NS2FkNFYySk82
+            b3ZmY1FxV2tteTk5NmQzbW91ZTBnQjQKLS0tIEZ2K0hyMXBNbTVhSGVOTS9vNlNZ
+            SlZSMEkvbzNoOW5rRVJ0L1pjUVNpN0UK3mQkFMtLSVqjMspNCZbaOzt5YiBxnrnM
+            FpO6h+9q55SdKF32ByxQ9sWWY3C3vrEPZeLqaCsKoRE6XUz2+Jjhvg==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T12:23:58Z"
+    mac: ENC[AES256_GCM,data:12oL8kY9+FglvUs+NHjGPVeCrYIJWLSQ4mkkOEG1zVY5n41EYiM4jF0ZVjHLhOI9R5amwXnuOKvMcORm8ZuMoeMd3z2p07SjpE8T3QUP9vauGWb4V+YsrVZdLrlXNJPEV6RoepFjCs0qpfXortOLlTGsSEKHc2lI/WWENCGqTrE=,iv:bVCfxcA548XbiULAS7BGjGexyYm/STGljD0c8AjReP8=,tag:mOke9FHGv06c31BKIr8//Q==,type:str]
+    version: 3.13.2

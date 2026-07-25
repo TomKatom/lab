@@ -1,0 +1,17 @@
+# SQLite storage (db.sqlite3, notification.txt, users_database.yml is
+# mounted separately from the users-database Secret — see ../authelia.yaml)
+# plus WebAuthn/TOTP registration data. Same local-path-provisioner every
+# other app's config/DB volume in this cluster uses (see
+# ../../apps/README.md).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: authelia
+  namespace: authelia
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 512Mi
