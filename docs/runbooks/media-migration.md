@@ -1,0 +1,831 @@
+# Runbook: media state migration (old server → this cluster)
+
+How to move the *state* the old hand-built docker-compose media stack has
+accumulated — media files, `*arr` databases, Plex's identity and watch
+history, Deluge's session and active seeds — onto the Phase 6 apps running
+in the `media` namespace on this cluster. See
+[`docs/architecture.md`](../architecture.md) and
+[`master-plan.md`](../../master-plan.md#phased-implementation-each-phase--its-own-pr)
+for how Phase 6 fits the rest of the build.
+
+This is an **operator-executed** runbook: every command below runs on your
+laptop, on the Proxmox host, or inside the k3s VM — all over WireGuard, per
+[`docs/runbooks/wireguard-peer.md`](wireguard-peer.md). Nothing here is run
+by CI or by an agent.
+
+> **Golden invariant.** The old server (`94.75.211.144`) stays **fully
+> operational** — serving `tomkatom.com` and the `sonarr./radarr./prowlarr./
+> deluge.` CNAMEs — for the entire length of this runbook, up to and
+> including §11's final pipeline cutover. Nothing here changes public DNS.
+> Moving public traffic onto this cluster is a **separate, later** runbook —
+> [`dns-cutover.md`](dns-cutover.md) — out of scope here and not to be
+> executed until an operator deliberately picks it up.
+
+---
+
+## 1. Scope & sequencing map
+
+Each app's restore section depends on that app's Phase 6 PR having merged
+(its Argo `Application` and chart exist in `clusters/lab/apps/`) — see the
+PR table in the phase's planning record. §2 and §3 need nothing and should
+start immediately; the multi-day rsync in §3 is the long pole of the whole
+migration, so start it the same day this runbook is picked up.
+
+| Section | Gated on | When it runs |
+|---|---|---|
+| §2 Old-server inventory | — | now (read-only) |
+| §3 Bulk media rsync | — | now — multi-day, old server stays live |
+| §4 Generic restore procedure | `media-common` merged (PR3) | a template §5–§10 each reference, not a step on its own |
+| §5 Prowlarr | prowlarr merged (PR5) | once §3 is substantially caught up |
+| §6 Sonarr / Radarr | sonarr+radarr merged (PR6) | ″ |
+| §7 Bazarr | bazarr merged (PR7) | ″ |
+| §8 Plex | plex merged (PR8) | ″ |
+| §9 Overseerr / Tautulli / Maintainerr | plex + request-layer merged (PR8, PR9) | ″ |
+| §10 Deluge | deluge merged (PR4) | **executed last** — only as part of §11's cutover |
+| §11 Delta syncs + pipeline cutover | every app above restored once | the final pass; runs §10 |
+| §12 Post-migration hardening | after §11 | cluster is now authoritative for pipeline state |
+| §13 Verification table | after §11/§12 | acceptance |
+
+Two things this runbook deliberately never does: it never touches Cloudflare
+or `external-dns`, and §10 (Deluge) is the one section that is *not*
+independent — it is written to run only as the last act of §11, once the old
+server's `*arr`s and Deluge have already stopped writing.
+
+---
+
+## 2. Old-server inventory (read-only)
+
+Nothing in this section changes anything. It only records values the later
+sections and Phase 6's PR3 (`media-common`) consume verbatim.
+
+### 2.1 Per-app config directories and sizes
+
+The old stack is hand-built docker-compose, not IaC — one directory per app
+under `/srv`, each holding that app's `docker-compose.yml` beside its state
+directory. The layout is **already known** (operator-supplied, 2026-07-25);
+every path in this runbook is written against it:
+
+```
+/srv/<app>/config          # every migrating app except the two below
+/srv/portainer/data        # not migrating
+/srv/traefik/data          # not migrating
+/srv/deluge/config-backup  # a sibling of deluge's config — see §10
+/srv/unpackerr/            # docker-compose.yml only, no state at all
+```
+
+(`old` here is a suggested `~/.ssh/config` alias for `94.75.211.144` — add
+one now, the same convention `wireguard-peer.md` §5a uses for
+`pve`/`k3s`/`runner`. §3's rsync and every `old:` reference below assume it
+exists.)
+
+⚠ **`/srv/overserr` is spelled with one `e`** on the old server — a typo
+baked into the directory name years ago. Every `old:` path for Overseerr in
+this runbook uses `overserr` deliberately; "correcting" it to `overseerr`
+gives you an rsync against a nonexistent source, which succeeds at copying
+nothing.
+
+Confirm the layout still matches and size each config dir — the sizes are
+what the per-app PVC sizes in the Phase 6 reference table were bookkept
+against:
+
+```sh
+ssh old 'ls -1 /srv && du -sh /srv/*/config /srv/*/data'
+```
+
+Cross-check that each container really mounts the directory named after it
+(the mapping is conventional here, not enforced by anything):
+
+```sh
+ssh old '
+  for c in deluge prowlarr sonarr radarr bazarr plex overseerr unpackerr; do
+    echo "== $c"
+    docker inspect "$c" --format "{{json .Mounts}}" | jq -r ".[] | \"\(.Source) -> \(.Destination)\""
+  done
+'
+```
+
+Expect each app to mount `/srv/<app>/config → /config` (Overseerr's
+destination is `/app/config`) and the media apps to additionally mount
+`/data → /data`. That second mount is what makes §6's root-folder check a
+formality rather than a path rewrite.
+
+| App | Config dir (old server) | Size | Notes |
+|---|---|---|---|
+| Deluge | `/srv/deluge/config` | | `config-backup` sibling stays behind — §10 |
+| Prowlarr | `/srv/prowlarr/config` | | |
+| Sonarr | `/srv/sonarr/config` | | |
+| Radarr | `/srv/radarr/config` | | |
+| Bazarr | `/srv/bazarr/config` | | key lives deeper than the others — §2.2 |
+| Plex | `/srv/plex/config` | | app-support subtree only — see §8 |
+| Overseerr | `/srv/overserr/config` | | **one `e`** — see the warning above |
+| Unpackerr | — | — | no state; its config becomes env in PR4 |
+
+**Nothing to migrate for four of the twelve `/srv` directories.** The
+cluster already replaces each, so they are deliberately left behind and
+die with the old server:
+
+| Old `/srv` dir | Replaced by |
+|---|---|
+| `authelia` | the `authelia` namespace (Phase 5) — new file users + fresh TOTP enrolment, no state carried |
+| `traefik` | the `traefik` namespace (Phase 5) — cert-manager issues the wildcard, so `traefik/data`'s acme store is obsolete |
+| `portainer` | Argo CD — the cluster's management surface |
+| `watchtower` | Renovate — image bumps arrive as reviewable PRs, not unattended pulls. See §11.1: stop it *first* at cutover |
+
+### 2.2 The four `*arr` API keys
+
+Prowlarr/Sonarr/Radarr each keep their API key in a `config.xml` at the root
+of their config dir. **Bazarr does not** — it is not a \*arr fork and stores
+its settings under a nested `config/` subdirectory instead, as
+`config.yaml` (v1.4.3+) or `config.ini` (older). Pull the three, then Bazarr
+separately:
+
+```sh
+ssh old '
+  for c in prowlarr sonarr radarr; do
+    printf "%-10s " "$c"
+    grep -oP "(?<=<ApiKey>).*(?=</ApiKey>)" "/srv/$c/config/config.xml"
+  done
+'
+
+ssh old 'ls -1 /srv/bazarr/config/config/ && grep -riA2 "^\[*auth" /srv/bazarr/config/config/config.*'
+```
+
+Bazarr's key is the `apikey` value under the `auth` section, in whichever of
+the two formats that directory turns out to hold. If the `grep` comes back
+empty, read it out of the UI instead (Settings → General → API key) — §7
+re-reads it from the *restored* app anyway, and treats that value as
+authoritative over whatever this step recorded.
+
+These four values become PR3's `clusters/lab/apps/media-common/
+arr-api-keys.sops.yaml` — pinned **as-is**, not rotated, so every existing
+cross-reference (Prowlarr's app-sync, Overseerr, Unpackerr) keeps working
+with zero key surgery after restore:
+
+| SOPS key (`arr-api-keys` Secret) | Value source |
+|---|---|
+| `SONARR_API_KEY` | Sonarr's `config.xml` `<ApiKey>` |
+| `RADARR_API_KEY` | Radarr's `config.xml` `<ApiKey>` |
+| `PROWLARR_API_KEY` | Prowlarr's `config.xml` `<ApiKey>` |
+| `BAZARR_API_KEY` | Bazarr's `apikey` under `auth` in `/srv/bazarr/config/config/config.{yaml,ini}` — see §7's caveat: Bazarr can drift from this value at runtime |
+
+Edit them in with `sops clusters/lab/apps/media-common/
+arr-api-keys.sops.yaml` once PR3 has merged (its placeholder gate says
+exactly this).
+
+### 2.3 Deluge: listen port and path layout — verify, don't assume
+
+```sh
+ssh old 'grep -E "listen_ports|random_port|download_location|move_completed|torrentfiles_location|copy_torrent_file|autoadd_location" \
+  /srv/deluge/config/core.conf'
+```
+
+Record the listen port (expected `51413` — `config/lab.yml`'s
+`ports.torrent`, the port-preserving NAT contract this whole stack depends
+on) and, critically, whether `download_location`/`move_completed_path`
+already point at `/data/torrents/...`/`/data/media/...` (TRaSH-style
+layout). The top-level shape of `/data` (§2.4) says they do, but the shape
+of a directory tree is not proof of what a config file says — **read the
+values, don't infer them.** §10 branches on the answer: if paths already
+match, no rewrite is needed; if not, §10's bencode warning applies.
+
+The extra keys in that `grep` exist because of `/data/torrents-final`
+(§2.4): something on the old server writes `.torrent` files there, and
+`torrentfiles_location` (with `copy_torrent_file` on) is the likeliest
+owner. Record which setting points at it. §3 copies the whole `/data` tree,
+so the directory arrives either way and the setting keeps working
+unchanged after restore — this is only about knowing which knob it is, so
+§10 doesn't accidentally "clean up" a path that is load-bearing.
+
+### 2.4 The `/data` tree: ownership, shape, and size
+
+The old server's `/data` is its own filesystem (it has a `lost+found`), with
+three top-level directories:
+
+```
+/data/media/{movies,tv}   # the Plex libraries
+/data/torrents/…          # completed downloads: category dirs + loose files
+/data/torrents-final/     # .torrent files — see §2.3
+/data/lost+found          # fsck artifact, NOT migrated — §3 excludes it
+```
+
+This matches the TRaSH layout the cluster expects (`docs/architecture.md`'s
+"Single `/data` tree"), so the mount path is identical on both sides and no
+library or download-client path rewrite is needed. Two details worth
+knowing before §3:
+
+- `/data/torrents` mixes category subdirectories (`movies`, `tv`, `music`,
+  `books`, `games`, `programs`) with loose per-release directories and
+  files sitting directly at its root. That's fine — §3 copies the tree
+  wholesale and never enumerates it.
+- At least one entry there is a **symlink** (`smash.7z` → a file in the
+  same directory). `rsync -a` implies `-l`, which recreates symlinks as
+  symlinks rather than following them, and a same-directory relative target
+  lands intact. No special handling needed; just don't add `-L`.
+
+Record ownership and size:
+
+```sh
+ssh old 'stat -c "%u:%g %a %n" /data /data/media /data/torrents /data/torrents-final'
+ssh old 'du -sh /data/*  &&  df -h /data'
+```
+
+The new cluster's convention is **1000:1000** (`debian`, the owner of
+`/data` on the k3s VM — see `clusters/lab/apps/README.md`'s identity
+convention). §3 normalizes to this regardless of what the old server used;
+recording it here just tells you whether that chown is a no-op or a real
+change.
+
+**Capacity pre-flight — do this before starting §3, not after it has run
+for two days.** The destination is the `tank` pool: a **non-redundant
+2-disk stripe over the 2×2 TB HDDs** (`ansible/roles/zfs_tank` asserts
+exactly that shape), so ~3.6 TiB usable, minus ZFS overhead, plus whatever
+`lz4` compression wins back on an already-compressed media library
+(≈ nothing). On the Proxmox host:
+
+```sh
+ssh root@pve.lab.tomkatom.com 'zpool list tank && zfs list tank/data && df -h /tank/data'
+```
+
+If the `du -sh /data/*` total does not fit with room to spare, stop and
+decide what is not coming across — §3 is a multi-day transfer and an
+`ENOSPC` at 90 % is the worst possible time to have that conversation.
+`/data/torrents` is the obvious candidate for pruning, but only for
+torrents that are no longer seeding: deleting one that Deluge still tracks
+means §10 restores a session whose data is gone, and the torrent
+fails its recheck.
+
+### 2.5 Telegram bot (feeds PR3's `telegram` Secret)
+
+1. Message **@BotFather** on Telegram → `/newbot` → follow the prompts →
+   record the bot token.
+2. Add the new bot to the Telegram group the notifications should land in
+   (the phase decision is a **group**, for multiple users — not a DM).
+3. Send any message in that group so it appears in the bot's update queue,
+   then fetch it:
+
+   ```sh
+   curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[].message.chat'
+   ```
+
+   Expect an object with `"type": "group"` (or `"supergroup"`) and an `id`
+   that is **negative** (or `-100`-prefixed for a supergroup) — that's
+   correct, not an error; DM chat ids are positive.
+
+| SOPS key (`telegram` Secret) | Value source |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | BotFather's token, step 1 |
+| `TELEGRAM_CHAT_ID` | The group's `chat.id`, step 3 |
+
+Edit them in with `sops clusters/lab/apps/media-common/telegram.sops.yaml`
+once PR3 has merged.
+
+---
+
+## 3. Bulk media rsync — start immediately, runs days
+
+Run this **on the Proxmox host**, over WireGuard (`ssh
+root@pve.lab.tomkatom.com`), not from the k3s VM: `/tank/data` is a host
+path (`ansible/roles/zfs_tank`), shared into the VM by virtiofs at `/data`
+(`ansible/roles/virtiofs`) — writing directly to the host path avoids an
+extra network hop through the virtiofs boundary for a transfer this size.
+
+The new host's SSH is WireGuard-only by design (no public management
+surface), so a push *from* the old server would need inbound access this
+host will never grant. **Pull, don't push** — the Proxmox host reaches out
+to the old server instead, which is fine because the old server still has
+its own public SSH:
+
+```sh
+tmux new -s media-rsync   # this runs for days; don't let a dropped SSH kill it
+rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+```
+
+The exclusion is anchored (leading `/`) so it drops only the source
+filesystem's own `lost+found` at the root of `/data` — an artifact of the
+old server's fsck, meaningless on a ZFS destination — without matching a
+directory of that name anywhere deeper in the tree. Everything else comes
+across: `media/`, `torrents/`, and `torrents-final/` (§2.3).
+
+**This must be one single whole-tree invocation.** `-H` (preserve
+hardlinks) only detects and re-links hardlinked files *within the files
+rsync sees in that one run* — splitting `torrents/` and `media/` into two
+separate `rsync` calls means rsync never sees both halves of a hardlinked
+pair at once, and every hardlink-imported file silently becomes two
+independent copies on the new server. This is the single most important
+constraint in this whole runbook; there is no partial-then-fix-up path once
+it's been split.
+
+The old server keeps serving throughout — this is a read-only pull against
+it. Once it finishes (expect **days**, not hours, for a multi-TB library):
+
+```sh
+mkdir -p /tank/data/backups
+chown -R 1000:1000 /tank/data
+chmod 2775 /tank/data /tank/data/torrents /tank/data/media /tank/data/torrents-final /tank/data/backups
+```
+
+`2775` (setgid) matches the virtiofs role's `virtiofs_dir_mode` default —
+re-asserting it here guards against rsync's `-a` having carried over
+different permission bits from the old server. Note what each path in that
+list is for:
+
+- `torrents` and `media` are the only two the `virtiofs` role creates
+  itself (`virtiofs_subdirs`), so they may already exist with the right
+  bits before rsync ever runs.
+- `torrents-final` arrives from the old server (§2.4) and the role knows
+  nothing about it — it needs the bits asserted here.
+- `backups` does not exist on either side. It is created here because §6
+  points Sonarr's and Radarr's built-in backups at `/data/backups/<app>`,
+  and that is the local-path `Delete`-reclaim mitigation §12 depends on.
+- `/tank/data` **itself** is in the list deliberately: the `zfs_tank` role
+  creates the dataset but never sets ownership on its mountpoint, so it
+  starts `root:root`. Without this chown, a pod running as 1000 cannot
+  create anything at the root of `/data`.
+
+Deltas (the transfer catching up on what changed since this pass) are §11's
+job, not this one's — this first pass is allowed to be stale by the time it
+finishes.
+
+---
+
+## 4. Generic per-app restore procedure
+
+§5–§10 each say "follow this, with the specifics below" rather than
+repeating it six times. Every restore is: stop Argo from fighting you, stop
+the pod, copy config in, fix ownership, start the pod back up, hand control
+back to Argo.
+
+Reach the Argo CD CLI over WireGuard the same way its UI is reached
+(`docs/bootstrap.md`) — `kubectl port-forward` to the in-cluster service,
+then log in against the forwarded port:
+
+```sh
+kubectl -n argocd port-forward svc/argocd-server 8080:443 &
+argocd login localhost:8080 --insecure   # once per shell session
+```
+
+Then, for `<app>` being restored:
+
+1. **Take the Application out of auto-sync first — before anything else:**
+
+   ```sh
+   argocd app set <app> --sync-policy none
+   ```
+
+   ⚠ **The trap:** if you scale the Deployment down while `selfHeal` is
+   still on, Argo reverts the scale-down on its next reconcile — you end up
+   fighting your own GitOps controller, and the pod flaps back up mid-copy.
+   Disabling sync-policy first is not optional.
+
+2. Scale the Deployment to zero (releases the PVC's writer, and the app's
+   sqlite DBs, so the copy in step 4 lands on a clean, unlocked file):
+
+   ```sh
+   kubectl -n media scale deploy <app> --replicas=0
+   ```
+
+3. Resolve which host directory backs the app's config PVC — never assume
+   the naming pattern, read it back from the objects:
+
+   ```sh
+   kubectl -n media get pvc <app>              # confirm STATUS: Bound
+   PV=$(kubectl -n media get pvc <app> -o jsonpath='{.spec.volumeName}')
+   kubectl get pv "$PV" -o jsonpath='{.spec.hostPath.path}{"\n"}'
+   # e.g. /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>
+   ```
+
+4. From inside the k3s VM (`ssh debian@k3s.lab.tomkatom.com`), pull the old
+   app's config directly from the old server into that path. The VM's
+   egress is masqueraded through the host (`docs/architecture.md`'s
+   single-IP NAT model), so it reaches the old server's public IP directly
+   — no extra hop through the Proxmox host is needed for this smaller,
+   config-sized copy:
+
+   ```sh
+   rsync -a old:/srv/<app>/config/ /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>/
+   ```
+
+   `<app>` is the same word on both sides for every app this template
+   covers, with **one exception: Overseerr's source is
+   `/srv/overserr/config/`** (§2.1's spelling warning). Plex does not use
+   this step at all — §8 copies a subtree, not the whole config dir.
+
+5. Fix ownership — the copy above lands as whatever the old server's uid/gid
+   was (§2.4):
+
+   ```sh
+   chown -R 1000:1000 /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>/
+   ```
+
+6. Scale back up and verify (app-specific checks are in §5–§10; §13 has the
+   final per-app assert):
+
+   ```sh
+   kubectl -n media scale deploy <app> --replicas=1
+   kubectl -n media logs deploy/<app> -f     # watch it come up clean
+   ```
+
+   For any app with an Ingress, verify it over WireGuard the same way every
+   other Phase 5/6 check does — resolve the public hostname at the internal
+   IP, never over public DNS (nothing here is public yet):
+
+   ```sh
+   curl -sI --resolve <app>.tomkatom.com:443:10.10.10.10 https://<app>.tomkatom.com
+   ```
+
+7. Hand control back to Argo:
+
+   ```sh
+   argocd app set <app> --sync-policy automated --auto-prune --self-heal
+   ```
+
+---
+
+## 5. Prowlarr (after PR5)
+
+Follow §4 for `prowlarr`. Specifics:
+
+- The env-pinned `PROWLARR_API_KEY` (from the `arr-api-keys` Secret, PR3)
+  already equals the old key (§2.2) — nothing else needs to move for
+  Prowlarr's own identity.
+- In the restored UI, re-point every **Apps** entry (Settings → Apps) at the
+  cluster DNS names, not the old server's addresses:
+  - Sonarr: `http://sonarr.media.svc.cluster.local:8989`
+  - Radarr: `http://radarr.media.svc.cluster.local:7878`
+- If any indexer used a FlareSolverr proxy, re-point it too:
+  `http://flaresolverr.media.svc.cluster.local:8191`. PR5 marks FlareSolverr
+  optional — if it wasn't deployed, remove the proxy reference from the
+  indexer instead.
+- Verify: Settings → Indexers → **Test All** green; Settings → Apps → each
+  app shows a successful sync test.
+
+---
+
+## 6. Sonarr / Radarr (after PR6)
+
+Near-identical twins — follow §4 once for `sonarr`, once for `radarr`.
+Specifics for both:
+
+- The restored config dir includes the sqlite DB and `config.xml`. **The
+  env override (`SONARR__AUTH__APIKEY` / `RADARR__AUTH__APIKEY`, from PR3's
+  `arr-api-keys` Secret) wins over `config.xml` at startup** — this is
+  exactly why §2.2 pinned the SOPS value to equal the old key: if they
+  diverged, every dependent (Prowlarr's app-sync, Overseerr, Unpackerr)
+  would start authenticating with the wrong key against the migrated app.
+- Re-point the download client (Settings → Download Clients → Deluge):
+  Host `deluge.media.svc.cluster.local`, Port `8112`.
+- Verify root folders are unchanged (Settings → Media Management → Root
+  Folders): **`/data/media/tv` for Sonarr, `/data/media/movies` for
+  Radarr** — the old server's actual layout (§2.4), and identical on the
+  cluster because both mount the same `/data` tree at the same path. This
+  is a check, not an edit, unless §2.1's `docker inspect` turned up a
+  container mount destination other than `/data`.
+- **Delete any Remote Path Mappings** (Settings → Download Clients → Remote
+  Path Mappings). They existed on the old server to translate between
+  Deluge's and the `*arr`'s different container mount paths; on the
+  cluster every app mounts the identical `/data` hostPath, so a mapping now
+  actively breaks the hardlink import instead of fixing anything.
+- Enable the built-in backup (Settings → General → Backups), pointed at
+  `/data/backups/sonarr` (respectively `/data/backups/radarr`) — this is
+  the local-path Delete-reclaim mitigation carried into §12.
+- Verify the Plex Connect notification entry (Settings → Connect) points at
+  `http://plex.media.svc.cluster.local:32400`.
+- Confirm a hardlink import: pick any file already imported into the
+  library and check `stat -c %h` is **≥ 2** for the same file under
+  `/data/torrents/...` and `/data/media/...` — the master-plan's same-inode
+  acceptance, repeated per-app in §13.
+
+---
+
+## 7. Bazarr (after PR7)
+
+Follow §4 for `bazarr`. The one honest gap in this whole runbook:
+
+- **Bazarr's API key lives only in its own config — there is no env
+  override for it**, unlike Sonarr/Radarr/Prowlarr. That means after
+  restore, Bazarr's real key is whatever its restored config says, and the
+  pinned `BAZARR_API_KEY` in `arr-api-keys.sops.yaml` (§2.2) may no longer
+  match it if it ever drifted on the old server. **Align the SOPS value
+  with reality, not the other way round** — read the key back from the
+  restored app (Settings → General → API key, or `grep` the config file
+  directly) and `sops`-edit `arr-api-keys.sops.yaml` to match it if they
+  differ. Nothing consumes `BAZARR_API_KEY` as an env override into Bazarr
+  itself — the Secret only exists so *other* apps (e.g. a future Homepage
+  widget) can read Bazarr's key without a second copy.
+- Re-point Bazarr's own Sonarr/Radarr connections (Settings → Sonarr /
+  Settings → Radarr): `sonarr.media.svc.cluster.local:8989` and
+  `radarr.media.svc.cluster.local:7878`, with `SONARR_API_KEY`/
+  `RADARR_API_KEY` as the API key fields.
+- Verify: the Series/Movies lists populate from Sonarr/Radarr again, and a
+  subtitle search/download succeeds against a title already in the library.
+
+---
+
+## 8. Plex (after PR8)
+
+Plex's restore is ordered differently from §4 because of one hard
+requirement: **stop the old Plex server before copying anything**, so its
+database isn't captured mid-write.
+
+1. `ssh old` and stop Watchtower first, then Plex:
+
+   ```sh
+   ssh old '
+     docker compose -f /srv/watchtower/docker-compose.yml down
+     docker compose -f /srv/plex/docker-compose.yml stop
+   '
+   ```
+
+   Watchtower goes first because it recreates containers on its own
+   schedule when a new image appears. It only ever acts on *running*
+   containers, so a stopped Plex will not be resurrected by it — but a
+   Watchtower-triggered recreate landing in the middle of the copy below
+   would capture the database mid-write, which is precisely what stopping
+   Plex was meant to prevent. It stays down from here on: the cluster's
+   image updates come from Renovate PRs (§2.1).
+2. Then follow §4's steps 1–3 for `plex` (sync-policy off, scale to zero,
+   resolve the PVC's host path).
+3. Copy Plex's Application Support tree in, **excluding `Cache/`** — this is
+   the single biggest disk-growth lever available at migration time:
+
+   ```sh
+   rsync -a --exclude='Cache/' \
+     'old:/srv/plex/config/Library/Application Support/Plex Media Server/' \
+     '/var/lib/rancher/k3s/storage/pvc-<uid>_media_plex/Library/Application Support/Plex Media Server/'
+   ```
+
+   Confirm the source path resolves before running the copy — the quoting
+   above matters, the path has spaces in it:
+
+   ```sh
+   ssh old 'ls -d "/srv/plex/config/Library/Application Support/Plex Media Server"'
+   ```
+
+   The destination path assumes the image's `/config` mounts the same
+   `Library/Application Support/Plex Media Server/` layout every mainstream
+   Plex container image uses (LinuxServer.io, and — per its Dockerfile —
+   `ghcr.io/home-operations/plex`). **This is cited, not independently
+   confirmed against the pinned image at authoring time** — PR8 verifies
+   the exact in-image layout when it lands; if PR8's own notes describe a
+   different path, follow those over this runbook.
+4. `chown -R 1000:1000` the PVC directory, then scale Plex back up.
+5. **Identity check — this is what makes the whole migration low-risk for
+   Plex specifically.** `Preferences.xml`'s `ProcessedMachineIdentifier`
+   came across with the copy, so the new pod claims the *same* server
+   identity as the old one — no re-claim through plex.tv, and watch history
+   (tied to that identity) survives intact. Confirm it:
+
+   ```sh
+   grep -o 'ProcessedMachineIdentifier="[^"]*"' \
+     '/var/lib/rancher/k3s/storage/pvc-<uid>_media_plex/Library/Application Support/Plex Media Server/Preferences.xml'
+   curl -s http://10.10.10.10:32400/identity   # over WG — Plex has no Ingress
+   ```
+
+   Both must report the same machine identifier. (Plex only answers
+   `/identity` unauthenticated once claimed — if this returns an auth
+   challenge instead, the identity did not carry over; stop and re-check the
+   copy before going further.)
+6. If §2's inventory shows the old media path differed from `/data/media`,
+   fix each library's path (Settings → Manage → Libraries → Edit → path) —
+   otherwise this is a no-op, since the mount is identical.
+7. **Make sure the old Plex can never come back up** — two servers sharing
+   one Plex identity is a supported-nowhere state that corrupts both. A
+   `docker compose stop` is not enough on its own: the compose file almost
+   certainly carries `restart: unless-stopped` or `always`, and `always`
+   brings the container back the next time the Docker daemon or the server
+   restarts. Take the container away entirely:
+
+   ```sh
+   ssh old '
+     docker compose -f /srv/plex/docker-compose.yml down
+     docker ps -a --filter name=plex   # expect no rows
+   '
+   ```
+
+   `down` removes the container while leaving `/srv/plex/config` untouched
+   on disk, so the old state is still there as a fallback if step 5's
+   identity check fails.
+8. Enable scheduled library scans (Settings → Library → "Update my library
+   periodically", e.g. every hour). virtiofs has no reliable inotify (see
+   `docs/architecture.md`'s risk list), so this — plus the `*arr`→Plex
+   Connect notification already verified in §6 — is the actual refresh
+   path, not filesystem-event auto-detection.
+9. Disable video preview thumbnail generation (Settings → Library →
+   "Generate video preview thumbnails" → Never). This is a disk-growth
+   control (§12 tracks growth going forward), not a functional requirement.
+
+---
+
+## 9. Overseerr / Tautulli / Maintainerr (after PR8, PR9)
+
+**Overseerr** — follow §4 for `overseerr` (config PVC mounted at
+`/app/config`):
+
+- Restore `settings.json` and the sqlite db from **`/srv/overserr/config/`**
+  (one `e` — §2.1). The Plex auth token lives in `settings.json` and
+  survives because Plex's identity survived §8 — no re-authentication
+  needed.
+- Re-point Plex/Sonarr/Radarr hostnames (Settings → Services → each entry):
+  `plex.media.svc.cluster.local:32400`, `sonarr.media.svc.cluster.local:8989`,
+  `radarr.media.svc.cluster.local:7878`, with `SONARR_API_KEY`/
+  `RADARR_API_KEY` where an API key field is asked for.
+- Configure the Telegram agent in the UI (Settings → Notifications →
+  Telegram): bot token = `TELEGRAM_BOT_TOKEN`, chat id = `TELEGRAM_CHAT_ID`
+  (the group, §2.5), notification type **Media Available** enabled.
+- Verify Overseerr's own login still works unauthenticated by Authelia (its
+  Ingress carries no forward-auth annotation by design — Plex OAuth is the
+  end-user login, per the phase's decision).
+
+**Tautulli** — follow §4 for `tautulli` (config PVC 5Gi at `/config`):
+
+- Restore the history db (`tautulli.db`) from the old config dir.
+- Re-point Plex (Settings → Plex Media Server): host
+  `plex.media.svc.cluster.local`, port `32400`. Run "Verify Server" — it
+  should reconnect cleanly since the restored db already has the working
+  auth token.
+- Configure the recently-added digest to the same Telegram group (Settings
+  → Notification Agents → Telegram, same bot token/chat id as Overseerr;
+  enable the "Recently Added" trigger on whatever schedule is wanted).
+
+**Maintainerr** — fresh setup, nothing to restore (its rules are UI-only,
+no export/import path exists):
+
+- Add the Plex server: `plex.media.svc.cluster.local:32400`.
+- Add Sonarr/Radarr with `SONARR_API_KEY`/`RADARR_API_KEY`.
+- Re-create whatever collection/cleanup rules mattered on the old server —
+  there is no config to migrate here, only a checklist to redo by hand.
+
+---
+
+## 10. Deluge (after PR4) — executed LAST
+
+Do not run this section until §11 has already stopped the old server's
+`*arr`s and Deluge and taken the final delta. This is the one app whose
+restore is not independent of the cutover sequence.
+
+1. Final stop of the old Deluge — this is the point of no return for the
+   old server's torrent session:
+
+   ```sh
+   ssh old 'docker compose -f /srv/deluge/docker-compose.yml stop'
+   ```
+
+2. Copy `core.conf`, the `state/` directory (torrents + fastresume files),
+   and the `auth` file (WebUI password) into the new Deluge's config PVC,
+   per §4's dir-resolution steps. Copying the whole
+   `/srv/deluge/config/` dir is simpler and equally correct — the files
+   above are the ones that carry the session, the rest is UI preferences:
+
+   ```sh
+   rsync -a old:/srv/deluge/config/ /var/lib/rancher/k3s/storage/pvc-<uid>_media_deluge/
+   ```
+
+   **`/srv/deluge/config-backup` is a sibling of `config`, not a
+   subdirectory of it** (§2.1), so the copy above does not pull it in —
+   which is what you want. Leave it on the old server: it is a pre-existing
+   snapshot of this exact state, and the single best rollback if step 4's
+   path handling goes wrong. Do not restore *from* it without first
+   checking how old it is (`ssh old 'ls -la /srv/deluge/config-backup'`) —
+   a stale `state/` re-adds torrents that have since been removed.
+3. **Before scaling Deluge back up**, edit the copied `core.conf` in place
+   on the VM:
+
+   ```json
+   "listen_ports": [51413, 51413],
+   "random_port": false,
+   ```
+
+   This is the port-preserving NAT contract the whole single-IP model
+   depends on — `config/lab.yml`'s `ports.torrent: 51413` is the single
+   source for both the Tofu firewall rule and the Ansible DNAT rule that
+   forward the public port here. Deluge picking a random port instead
+   silently breaks inbound connectability for every existing torrent.
+4. **Paths:** if §2.3 already confirmed `/data/torrents/...`-style paths in
+   the old `core.conf`, no further edit is needed — the mount is identical.
+   **If it did not**, do **not** `sed` the `state/*.fastresume` files to fix
+   the paths: they are bencoded, and a plain text substitution changes
+   string lengths without updating the length-prefixes bencode requires,
+   silently corrupting every entry it touches. Use a bencode-aware tool
+   (a small Python script against a bencode library, or the
+   `deluge-console` CLI) to rewrite paths correctly, or — the simpler,
+   safer option — import with the old paths as-is and let Deluge's own
+   **Move Storage** action (WebUI or console, per-torrent or in bulk) do the
+   relocation, since Deluge already knows how to update its own fastresume
+   state consistently.
+5. `chown -R 1000:1000` the Deluge config PVC directory.
+6. Scale Deluge up, verify the WebUI is reachable and the old password
+   still authenticates.
+7. **Verify before declaring done:** open the Torrents view and confirm
+   seeds have completed their startup recheck and are announcing
+   successfully (tracker status column shows a recent OK, not an error) —
+   don't walk away from a batch of torrents silently failing to announce.
+
+---
+
+## 11. Delta syncs + pipeline cutover
+
+1. **Delta #2**, while the old server is still fully live (expect hours,
+   not days — most of the tree is already there): re-run §3's exact
+   command, unchanged:
+
+   ```sh
+   rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+   ```
+
+2. When ready to cut the pipeline over, stop everything on the old server
+   that can still write to `/data` — the `*arr`s, Unpackerr, and Deluge.
+   **Watchtower first**, so it cannot recreate any of them behind you (it
+   is already down if §8 has run; this is idempotent):
+
+   ```sh
+   ssh old '
+     docker compose -f /srv/watchtower/docker-compose.yml down
+     for a in prowlarr sonarr radarr bazarr unpackerr deluge; do
+       docker compose -f "/srv/$a/docker-compose.yml" stop
+     done
+     docker ps --format "{{.Names}}"   # expect none of the above to remain
+   '
+   ```
+
+   Unpackerr is in that list even though it has no state of its own (§2.1):
+   it extracts archives into `/data`, so leaving it running would keep the
+   source tree moving underneath the final delta.
+
+3. **Final delta** (expect minutes): the same single whole-tree command one
+   more time — this is the pass that must be complete and gapless, since
+   nothing is racing it now:
+
+   ```sh
+   rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+   ```
+
+   Re-assert ownership afterwards, since this pass brings in files created
+   by the old server's uid/gid since §3 ran:
+
+   ```sh
+   chown -R 1000:1000 /tank/data
+   ```
+
+4. Now run §10 (Deluge) — the old server's session is stopped and its
+   source data is frozen, exactly what §10 assumes.
+5. **The media pipeline is now served by the cluster** — every request that
+   used to flow through the old docker-compose stack flows through `media`
+   namespace pods instead.
+6. **Public DNS cutover remains entirely separate** — see
+   [`dns-cutover.md`](dns-cutover.md). Nothing above changes what
+   `tomkatom.com` resolves to; that stays the old server's IP until an
+   operator deliberately runs that runbook.
+
+---
+
+## 12. Post-migration hardening
+
+1. **Patch every config PV to `Retain`** — local-path-provisioner's default
+   reclaim policy is `Delete`, so deleting a PVC by mistake (or an Argo
+   `--auto-prune` acting on a removed Application) destroys the app's
+   config with it. Enumerate and patch:
+
+   ```sh
+   kubectl get pv -o json \
+     | jq -r '.items[] | select(.spec.claimRef.namespace=="media") | .metadata.name' \
+     | while read -r pv; do
+         kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+       done
+   kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy,NS:.spec.claimRef.namespace \
+     | grep media   # every row should now read Retain
+   ```
+
+2. Confirm the `*arr` backups configured in §6 are actually landing:
+
+   ```sh
+   ssh debian@k3s.lab.tomkatom.com 'ls -la /data/backups/sonarr /data/backups/radarr'
+   ```
+
+3. The full backup story (`vzdump` → NFS) is deferred to Phase 8 — nothing
+   to do here beyond what §6/§12.1 already cover as interim mitigations.
+4. Until Phase 7's observability lands, watch disk growth by hand
+   periodically (Plex's Cache exclusion and disabled thumbnails from §8 are
+   the main controls, but verify them):
+
+   ```sh
+   ssh debian@k3s.lab.tomkatom.com 'du -sh /var/lib/rancher/k3s/storage/*'
+   ```
+
+---
+
+## 13. Per-app verification table
+
+One concrete, checkable assertion per app that actually carried state
+across:
+
+| App | Assert |
+|---|---|
+| Deluge | Tracker on an active private-tracker torrent reports the client's announced address as **`145.239.3.55`** (the new server's public IP, via egress masquerade); `ss -lntu \| grep 51413` on the k3s VM shows both `tcp` and `udp` bound |
+| Sonarr / Radarr | `stat -c %h` on a file already imported into the library is **≥ 2** for the same file under `/data/torrents/...` and `/data/media/...` — the hardlink survived the migration |
+| Prowlarr | Settings → Indexers → **Test All** green; Apps → Sonarr/Radarr sync succeeds |
+| Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
+| Plex | `curl http://10.10.10.10:32400/identity` (over WG) returns the **same** `machineIdentifier` as the old server's `Preferences.xml` — no re-claim; a remote client shows **Direct Play**, zero transcode sessions |
+| Overseerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Overseerr flips **Available** → a **Telegram group** message arrives |
+| Tautulli | The recently-added digest posts to the same Telegram group on its configured schedule; play history shows continuity from before the migration |
+| Maintainerr | At least one re-created rule executes against a test item without error |
+| Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |
