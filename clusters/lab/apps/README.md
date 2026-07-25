@@ -201,6 +201,20 @@ Without the comment, Renovate has no way to find the tag at all — it will
 never open a PR for it, silently, and the image pins here would rot
 unnoticed.
 
+The `@sha256:` digest is optional but preferred: the tag says which
+version, the digest says which exact build, so a re-pushed tag can't
+change what runs. Both forms are handled — the regex captures the version
+into `currentValue` and the digest into a separate `currentDigest` group,
+which is what lets Renovate bump the version *and* re-pin the digest in
+the same PR.
+
+That split is load-bearing, and its absence is a silent failure rather
+than a loud one. A regex that swallows the whole `1.2.3@sha256:…` string
+into `currentValue` hands Renovate something that is not a parseable
+version; it finds no update and opens no PR, exactly as if the comment
+were missing. If a digest-pinned image here ever stops receiving bumps,
+check that group before anything else.
+
 ## local-path reclaim is `Delete`
 
 Every config PVC in this stack uses the cluster's default StorageClass,
