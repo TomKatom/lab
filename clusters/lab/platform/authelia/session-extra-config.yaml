@@ -1,0 +1,16 @@
+# Plain (non-secret) supplemental Authelia config — see ../authelia.yaml's
+# configMap.extraConfigs comment for why this exists instead of a
+# configMap.session.cookies valuesObject entry. Nothing here is sensitive:
+# just the public domain and portal URL.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authelia-session-extra-config
+  namespace: authelia
+data:
+  session.yaml: |
+    session:
+      cookies:
+        - domain: tomkatom.com
+          authelia_url: https://auth.tomkatom.com
+          default_redirection_url: https://auth.tomkatom.com

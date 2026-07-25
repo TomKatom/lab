@@ -17,8 +17,10 @@ Cluster platform services, synced before any media app depends on them:
   wildcard `Certificate`, because Traefik's default `TLSStore` can only read
   a Secret from its own namespace. **Implemented (Phase 5).** See "Exposing a
   service" below.
-- `authelia` — forward-auth (file users + TOTP, SQLite) in front of the
-  *arr/Deluge UIs.
+- `authelia.yaml` + `authelia-config.yaml` + `authelia/` — forward-auth
+  (file users + TOTP, SQLite) in front of the *arr/Deluge UIs.
+  **Implemented (Phase 5).** See "Protecting a service with forward-auth"
+  below.
 - `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
   here later (Phase 7).
 
@@ -99,6 +101,32 @@ certificate. Two consequences worth knowing:
   which is how an app opts into Authelia forward-auth:
   `traefik.ingress.kubernetes.io/router.middlewares:
   authelia-forwardauth@kubernetescrd`.
+
+## Protecting a service with forward-auth
+
+Add the cross-namespace Middleware annotation to the Ingress:
+
+```yaml
+metadata:
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+```
+
+That's it — `access_control.default_policy: deny` plus a `*.tomkatom.com`
+rule in `authelia.yaml` already covers every host, so a new Ingress is
+protected the moment the annotation lands. Two things worth knowing:
+
+- **Don't add this annotation to Authelia's own Ingress**
+  (`authelia/ingress-auth.yaml`). The portal must stay reachable
+  unauthenticated — putting it behind its own forward-auth is a lockout
+  loop.
+- **Authelia's two Applications sync in the opposite order from every
+  other component here.** `authelia-config.yaml` (the PVC, the four ksops
+  secrets, this Middleware) is wave 1; `authelia.yaml` (the chart) is wave
+  2 — the reverse of cert-manager/Traefik's chart-then-CRs ordering. There's
+  no CRD/webhook here to wait for; instead the Pod needs its PVC and secret
+  files to already exist the instant it starts, so the config half must
+  land first and therefore also carries `CreateNamespace=true`.
 
 ## Pre-merge review
 

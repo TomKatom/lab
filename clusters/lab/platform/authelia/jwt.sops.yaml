@@ -1,0 +1,32 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# The encrypted value below is the literal string REPLACE_ME_BEFORE_MERGE,
+# not a real secret. Before merging, generate a random secret (e.g.
+# `openssl rand -hex 32`), then:
+#   sops clusters/lab/platform/authelia/jwt.sops.yaml
+# replace the value, delete this comment block, commit. Signs the
+# password-reset JWT (config key `identity_validation.reset_password.jwt_secret`
+# — see ../authelia.yaml). Free to rotate any time; only invalidates
+# in-flight reset links.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: authelia-jwt
+    namespace: authelia
+type: Opaque
+stringData:
+    identity_validation.reset_password.jwt.hmac.key: ENC[AES256_GCM,data:EbA+AgmWhPoi8FLrSHh4vCvrqG88qGE=,iv:iSiOriQK+bqCchfq08v9qe2XxsiKRYPKrV/90pn74OY=,tag:OdNfTI+b7HH3sT4x8r9BYg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBBRzAvZDZNMVQzZEUxVmpY
+            RUxtSzdxUkVmaklZU2NrazIzOU9DTG1NZlNRCkZVSTFCK3NkQ3pZVGlEOUVrUkFx
+            clZVQlJXVU8raWxwMlhKcEJTT3puNTQKLS0tIG1uaFR3cHRaQ1pTemVlS0ZacjdR
+            TU9GUTh2QkwzeEw0djJIdGxUVnEzMkEKLC4P4+zRcHwgSVvPHR4YDOs+1V0BnXE2
+            tnyTLRj9DjshP9Jdw5HC5APvVrfbpUAIhtxVqB+JXSgUTl6EdAtIuQ==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T00:37:54Z"
+    mac: ENC[AES256_GCM,data:9rMTY+KemGLY2N4KYtlzd7aiFgz5QqBqM7/+oBOVm/sorJZC31zyI3Z5bZX8Z1JeH2vPmwYHGjeMFcZOdlxPXHrMaid1DTv2JI7CeS1b71/cAW+i6acwBYCO/mbuxZD1G95f6oQudvpBV0sNtqHwV9KOp6nQb5V1ytuGRmQEARs=,iv:eJA9nySAOiYiLF7WEKS18zGNYpfn60M8f4xhS8aGnFg=,tag:m21ED+0Um1qGZ/BBptvR5A==,type:str]
+    version: 3.13.2

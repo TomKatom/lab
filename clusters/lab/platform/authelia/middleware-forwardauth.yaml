@@ -1,0 +1,19 @@
+# Cross-namespace opt-in for any app's Ingress:
+# traefik.ingress.kubernetes.io/router.middlewares:
+#   authelia-forwardauth@kubernetescrd
+# (namespace-name@kubernetescrd — see ../README.md "Exposing a service").
+# Requires Traefik's providers.kubernetesCRD.allowCrossNamespace (../traefik.yaml).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forwardauth
+  namespace: authelia
+spec:
+  forwardAuth:
+    address: http://authelia.authelia.svc.cluster.local:9091/api/authz/forward-auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - Remote-User
+      - Remote-Groups
+      - Remote-Email
+      - Remote-Name
