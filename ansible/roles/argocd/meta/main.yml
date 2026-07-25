@@ -2,7 +2,7 @@
 galaxy_info:
   role_name: argocd
   author: tomkatom
-  description: Installs Argo CD via a pinned helm binary and applies the root-app app-of-apps bootstrap manifest
+  description: Installs Argo CD via a pinned helm binary, applies the root-app app-of-apps bootstrap manifest, and installs the argocd CLI
   license: MIT
   min_ansible_version: "2.15"
   platforms:

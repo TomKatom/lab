@@ -1,9 +1,14 @@
 ---
 # Installs Argo CD (app-of-apps root + ksops-patched repo-server) on the
-# k3s cluster via a pinned helm binary, then applies root-app.yaml. Runs on
-# k3s-node itself, so `k3s kubectl` needs no explicit KUBECONFIG (root reads
-# /etc/rancher/k3s/k3s.yaml implicitly); `helm` does not know that default
-# path, so it gets an explicit KUBECONFIG env on the tasks that need it.
+# k3s cluster via a pinned helm binary, then applies root-app.yaml. Also
+# installs the argocd CLI so an operator can inspect Application state
+# straight from k3s-node later (`KUBECONFIG=/etc/rancher/k3s/k3s.yaml argocd
+# app list --core` — no login needed, `--core` mode reads the Application
+# CRDs directly via that kubeconfig instead of talking to the argocd-server
+# API). Runs on k3s-node itself, so `k3s kubectl` needs no explicit
+# KUBECONFIG (root reads /etc/rancher/k3s/k3s.yaml implicitly); `helm` does
+# not know that default path, so it gets an explicit KUBECONFIG env on the
+# tasks that need it.
 #
 # The trust-root assert below is defense-in-depth, not the primary
 # guarantee: argocd-bootstrap.yml runs the argocd_secrets role first, which
@@ -69,6 +74,19 @@
     group: root
     mode: "0755"
     creates: /usr/local/bin/helm
+
+- name: Download the argocd CLI binary
+  # Unlike helm's tarball above, GitHub releases the argocd CLI as a bare
+  # binary — get_url writes it straight to its final path, and its checksum
+  # comparison already skips re-downloading once the destination matches
+  # argocd_cli_sha256, so no unarchive/creates: dance is needed.
+  ansible.builtin.get_url:
+    url: "https://github.com/argoproj/argo-cd/releases/download/v{{ argocd_cli_version }}/argocd-linux-amd64"
+    dest: /usr/local/bin/argocd
+    checksum: "sha256:{{ argocd_cli_sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Add the argo helm repo
   # helm repo add is naturally idempotent against the same URL — re-running

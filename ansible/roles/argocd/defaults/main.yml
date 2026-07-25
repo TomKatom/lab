@@ -29,6 +29,17 @@ argocd_chart_version: "10.1.4"
 argocd_helm_repo_name: argo
 argocd_helm_repo_url: https://argoproj.github.io/argo-helm
 
+# The argocd CLI, matching the server version bundled by argocd_chart_version
+# above (chart 10.1.4 -> Argo CD v3.4.5) so `argocd version` never reports a
+# client/server skew. Bump this alongside argocd_chart_version, not
+# independently.
+# renovate: datasource=github-releases depName=argoproj/argo-cd
+argocd_cli_version: "3.4.5"
+# SHA256 of the argocd-linux-amd64 binary, cross-checked on 2026-07-25
+# against https://github.com/argoproj/argo-cd/releases/download/v3.4.5/cli_checksums.txt
+# and a local sha256 of the downloaded binary. Both matched.
+argocd_cli_sha256: "23303f05a58c1e041324d5645b0f9d6ea338b16bbf32f4a24508f388fcf9f9c0"
+
 # Node-local scratch dir the controller's checkout of
 # clusters/lab/bootstrap/*.yaml is copied into before helm/kubectl consume
 # it — the role runs on k3s-node, but those files live in the controller's
