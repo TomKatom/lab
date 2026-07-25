@@ -293,12 +293,121 @@ The new host's SSH is WireGuard-only by design (no public management
 surface), so a push *from* the old server would need inbound access this
 host will never grant. **Pull, don't push** — the Proxmox host reaches out
 to the old server instead, which is fine because the old server still has
-its own public SSH:
+its own public SSH.
+
+### 3.1 Pre-flight: the new host needs its own path to `old`
+
+The old server is a **VM (`old`) on its own Proxmox host (`old-pve`)**, and
+`/data` is a virtual disk *inside that VM* — not a bind mount visible on
+`old-pve`. So there is no shorter route: the transfer runs
+new-pve → `old-pve` → `old`, with `old-pve` relaying.
+
+Your laptop's `~/.ssh/config` does not help here. The rsync runs as **root
+on the new Proxmox host**, so `old` must resolve in *that* host's SSH
+config, with a key that host holds. Agent forwarding is not a substitute —
+it dies with your SSH session, and this transfer outlives it by days.
+
+1. **Mint a dedicated key on the new host.** Passphrase-less, because an
+   unattended multi-day job cannot answer a prompt. It is removed again in
+   §12:
+
+   ```sh
+   ssh root@pve.lab.tomkatom.com \
+     "ssh-keygen -t ed25519 -N '' -f /root/.ssh/id_migration -C pve-media-migration"
+   ```
+
+2. **Authorize it on *both* hops** — `old-pve` to make the jump, `old` as
+   the destination. Run from your laptop, which already reaches both. The
+   `grep` guard keeps a re-run from appending a duplicate:
+
+   ```sh
+   PUB=$(ssh root@pve.lab.tomkatom.com 'cat /root/.ssh/id_migration.pub')
+   for h in old-pve old; do
+     ssh "$h" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
+       grep -qxF '$PUB' ~/.ssh/authorized_keys 2>/dev/null || \
+       printf '%s\n' '$PUB' >> ~/.ssh/authorized_keys; \
+       chmod 600 ~/.ssh/authorized_keys"
+   done
+   ```
+
+3. **Copy your laptop's working host definitions to the new host**, rather
+   than retyping addresses from memory. `ssh -G` prints the *effective*
+   resolved config, so this reads back exactly what already works:
+
+   ```sh
+   ssh -G old-pve | grep -E '^(hostname|user|port) '
+   ssh -G old     | grep -E '^(hostname|user|port|proxyjump) '
+   ```
+
+   Write `/root/.ssh/config` on the new host with those values:
+
+   ```
+   Host old-pve
+       HostName <hostname from old-pve above>
+       User <user>
+       IdentityFile /root/.ssh/id_migration
+       IdentitiesOnly yes
+
+   Host old
+       HostName <hostname from old above — as reachable from old-pve>
+       User <user>
+       ProxyJump old-pve
+       IdentityFile /root/.ssh/id_migration
+       IdentitiesOnly yes
+       ServerAliveInterval 60
+       ServerAliveCountMax 3
+   ```
+
+   `IdentitiesOnly yes` stops SSH offering every other key on the host and
+   tripping `MaxAuthTries` before it reaches this one. The `ServerAlive*`
+   pair kills a wedged connection in ~3 minutes instead of letting it hang
+   for hours — which matters because §3.2 retries on exit, and a hung
+   transfer never exits.
+
+4. **Prove it works non-interactively.** `BatchMode=yes` fails instead of
+   prompting, so this cannot pass merely because you were sitting there:
+
+   ```sh
+   ssh root@pve.lab.tomkatom.com \
+     'ssh -o BatchMode=yes old "hostname && df -h /data && ls /data"'
+   ```
+
+   Expect the VM's hostname and the `media`/`torrents`/`torrents-final`
+   listing from §2.4. Anything that prompts, hangs, or asks about a host
+   key is a problem to fix **now**, not sixteen hours into a transfer.
+
+5. **Dry-run the real command** — this also gives you the total byte count
+   to check against §2.4's capacity numbers before committing days to it:
+
+   ```sh
+   rsync -aHn --info=stats2 --exclude='/lost+found/' old:/data/ /tank/data/
+   ```
+
+### 3.2 The transfer
 
 ```sh
 tmux new -s media-rsync   # this runs for days; don't let a dropped SSH kill it
-rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+until rsync -aH --info=progress2 --partial-dir=.rsync-partial \
+        --exclude='/lost+found/' old:/data/ /tank/data/; do
+  echo "rsync exited $? — retrying in 60s"; sleep 60
+done
 ```
+
+The retry loop is there because the jump doubles the failure surface:
+`old-pve`'s sshd restarting, or the relay dropping, kills the run outright,
+and losing a day of transfer to a five-second blip is avoidable. **Retrying
+is safe for hardlinks** — each attempt is a fresh whole-tree pass, so `-H`
+still sees both halves of every pair (see the constraint below).
+
+`--partial-dir` keeps an interrupted file's bytes so the retry resumes it
+instead of starting that file over — worth having when single files run to
+tens of gigabytes. It stashes them in a side directory rather than leaving
+a truncated file sitting at the real path, and rsync excludes that
+directory from its own transfer automatically.
+
+Do watch it rather than trusting the loop: it will happily spin forever on
+something real and permanent, like a full pool. If the same error repeats
+twice, stop and read it.
 
 The exclusion is anchored (leading `/`) so it drops only the source
 filesystem's own `lost+found` at the root of `/data` — an artifact of the
@@ -316,7 +425,12 @@ constraint in this whole runbook; there is no partial-then-fix-up path once
 it's been split.
 
 The old server keeps serving throughout — this is a read-only pull against
-it. Once it finishes (expect **days**, not hours, for a multi-TB library):
+it.
+
+### 3.3 Ownership normalization
+
+Once the transfer finishes (expect **days**, not hours, for a multi-TB
+library):
 
 ```sh
 mkdir -p /tank/data/backups
@@ -725,11 +839,12 @@ restore is not independent of the cutover sequence.
 ## 11. Delta syncs + pipeline cutover
 
 1. **Delta #2**, while the old server is still fully live (expect hours,
-   not days — most of the tree is already there): re-run §3's exact
-   command, unchanged:
+   not days — most of the tree is already there): re-run §3.2's exact
+   command, unchanged, from the same place and as the same user:
 
    ```sh
-   rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+   rsync -aH --info=progress2 --partial-dir=.rsync-partial \
+     --exclude='/lost+found/' old:/data/ /tank/data/
    ```
 
 2. When ready to cut the pipeline over, stop everything on the old server
@@ -756,8 +871,12 @@ restore is not independent of the cutover sequence.
    nothing is racing it now:
 
    ```sh
-   rsync -aH --info=progress2 --exclude='/lost+found/' old:/data/ /tank/data/
+   rsync -aH --info=progress2 --partial-dir=.rsync-partial \
+     --exclude='/lost+found/' old:/data/ /tank/data/
    ```
+
+   When it reports zero bytes transferred on a second consecutive run, the
+   trees are identical and the source is provably frozen.
 
    Re-assert ownership afterwards, since this pass brings in files created
    by the old server's uid/gid since §3 ran:
@@ -795,15 +914,34 @@ restore is not independent of the cutover sequence.
      | grep media   # every row should now read Retain
    ```
 
-2. Confirm the `*arr` backups configured in §6 are actually landing:
+2. **Retire the migration SSH key.** §3.1 put a passphrase-less key on the
+   new Proxmox host that authenticates to both `old-pve` and `old`. Once
+   §11's final delta is done, nothing needs it again, and leaving it in
+   place means the new host's compromise hands over the old one too:
+
+   ```sh
+   ssh root@pve.lab.tomkatom.com 'shred -u /root/.ssh/id_migration*'
+   PUB=$(ssh root@pve.lab.tomkatom.com 'cat /root/.ssh/id_migration.pub' 2>/dev/null)
+   # then drop the pve-media-migration line from authorized_keys on both hops:
+   for h in old-pve old; do ssh "$h" 'grep -n pve-media-migration ~/.ssh/authorized_keys'; done
+   ```
+
+   Read the `grep` output and remove those lines by hand — this is a
+   one-time, two-host edit, and a scripted in-place rewrite of
+   `authorized_keys` is a well-known way to lock yourself out of a machine
+   you still need. Also drop the two `Host` blocks from
+   `/root/.ssh/config` on the new host so nothing later resolves `old` and
+   fails confusingly.
+
+3. Confirm the `*arr` backups configured in §6 are actually landing:
 
    ```sh
    ssh debian@k3s.lab.tomkatom.com 'ls -la /data/backups/sonarr /data/backups/radarr'
    ```
 
-3. The full backup story (`vzdump` → NFS) is deferred to Phase 8 — nothing
+4. The full backup story (`vzdump` → NFS) is deferred to Phase 8 — nothing
    to do here beyond what §6/§12.1 already cover as interim mitigations.
-4. Until Phase 7's observability lands, watch disk growth by hand
+5. Until Phase 7's observability lands, watch disk growth by hand
    periodically (Plex's Cache exclusion and disabled thumbnails from §8 are
    the main controls, but verify them):
 
