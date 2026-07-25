@@ -1,0 +1,16 @@
+# The one environment value every app in this stack shares. Consumed via
+# `envFrom` (whole map, not a named key) so adding a second shared variable
+# later needs no change in any consuming app — see ../README.md.
+#
+# TZ matters beyond cosmetics: the *arr in-app scheduled tasks, Deluge's
+# bandwidth scheduler and every log timestamp read during the migration
+# follow it. It sets the *container's* clock only — a CronJob's `schedule:`
+# is evaluated by the cluster controller, not the Pod, so Recyclarr's sync
+# time is unaffected by this value.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: media-env
+  namespace: media
+data:
+  TZ: Asia/Jerusalem
