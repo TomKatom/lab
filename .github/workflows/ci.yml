@@ -194,15 +194,20 @@ jobs:
       # not a local Chart.yaml dir) - the "helm template charts" step above
       # only renders local charts and silently skips these. This step
       # renders them the same way Argo would: `helm template --repo`, no
-      # `helm repo add` bookkeeping needed.
-      - name: helm template remote-chart platform Applications
+      # `helm repo add` bookkeeping needed. Phase 6 PR1 widened the glob to
+      # also cover clusters/lab/apps/*.yaml - the media stack follows the
+      # identical single-source remote-chart convention one directory down,
+      # discovered by apps.yaml rather than root-app.yaml. nullglob means an
+      # empty apps/ glob (nothing but README.md today) contributes zero
+      # iterations rather than a literal, non-existent path.
+      - name: helm template remote-chart Applications
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           schema="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
           found=false
-          for app in clusters/lab/platform/*.yaml; do
+          for app in clusters/lab/platform/*.yaml clusters/lab/apps/*.yaml; do
             [ -f "$app" ] || continue
             kind=$(yq eval '.kind // ""' "$app")
             [ "$kind" = "Application" ] || continue
@@ -226,7 +231,7 @@ jobs:
                   -schema-location default -schema-location "$schema"
             rm -f "$valuesFile"
           done
-          $found || echo "no remote-chart platform Applications yet, skipping"
+          $found || echo "no remote-chart platform/apps Applications yet, skipping"
       # ksops SecretGenerator overlays (kind: ksops, apiVersion: viaduct.ai/v1)
       # decrypt a *.sops.yaml Secret - `kustomize build` can't decrypt them in
       # this GitHub-hosted, keyless job (no SOPS_AGE_KEY here; the age key

@@ -1,13 +1,276 @@
 # apps
 
-The media stack, each app a thin `values.yaml` against the shared
-`bjw-s/app-template` Helm chart to stay DRY across ~7 near-identical
-deployments: `plex`, `prowlarr`, `sonarr`, `radarr`, `bazarr`, `deluge`,
-`overseerr`.
+The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
+Overseerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
+`media-common` config, discovered the same way `platform/` is —
+`clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
+`"3"` (after every platform wave 0-2, since every app here assumes Traefik,
+Authelia, cert-manager and external-dns already exist) whose `source.path`
+is this directory with `directory.recurse: false`. Exactly like root-app
+one layer up, that means only the top-level `apps/*.yaml` Application
+manifests are applied directly; each app's own non-Application content —
+a kustomize overlay, a ksops-encrypted Secret — lives in a same-named
+subdirectory and is pulled in only by that component's own
+`<component>-config.yaml` Application. See
+[`platform/README.md`](../platform/README.md#component-layout) for the
+three-piece convention this mirrors.
 
-All share the single `/data` tree (`/data/torrents` + `/data/media`, TRaSH
-layout) via virtiofs, so Sonarr/Radarr import with atomic hardlink moves —
-no copies. App configs/DBs live on VM NVMe via `local-path-provisioner`.
-Plex direct-plays only, on its own port, outside Traefik/Authelia.
+Phase 6 built this directory — see [`master-plan.md`](../../../master-plan.md)
+("Media apps") for where it sits in the overall build order.
 
-Not yet implemented — built in Phase 6.
+## One `media` namespace, not one per app
+
+Every platform component gets its own namespace. This stack deliberately
+does not: `deluge`, `prowlarr`, `sonarr`, `radarr`, `bazarr`, `unpackerr`,
+`plex`, `overseerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
+all land in a single `media` namespace.
+
+The reason is the shared secrets, not laziness. `media-common` (wave 0,
+below) holds one copy each of `arr-api-keys` and `telegram`, consumed by
+most of the apps above. Kubernetes Secrets don't cross namespaces — giving
+each app its own namespace would mean re-encrypting every shared secret
+once per consuming namespace, the same way `external-dns` already carries
+a second, separately-encrypted copy of the Cloudflare API token because it
+sits in its own namespace from cert-manager's (see
+[`platform/README.md`](../platform/README.md#dns-records-from-ingresses-inert)).
+That one, documented 2-copy case is already a rotation hazard worth
+calling out; this stack is ~10+ apps deep, and per-app namespaces would
+turn it into ~10+ copies of the same two Secrets to keep in sync by hand
+on every rotation. One namespace, one copy of each, is the deliberate
+trade: the whole suite is one coupled trust domain anyway (they all talk
+to each other's ClusterIP Services by design), so the usual argument for
+namespace-per-component — blast-radius isolation between components that
+don't trust each other — doesn't buy anything here.
+
+## Identity: everything runs as 1000:1000
+
+`1000:1000` is the `debian` user on the underlying VM, and the owner of
+the `/data` hostPath tree (see below). Every app's `securityContext` is
+this block verbatim unless documented otherwise:
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  runAsNonRoot: true
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    drop: ["ALL"]
+```
+
+`fsGroupChangePolicy: OnRootMismatch` keeps `fsGroup`'s recursive chown
+from re-running on every pod restart once ownership already matches — the
+`/data` tree and the config PVCs are both large enough that a full chown
+on every restart would be its own outage.
+
+**Documented exception: Deluge.** The LinuxServer.io image boots as root
+via its own `s6` init and drops privilege internally — it cannot be forced
+through Kubernetes' `runAsUser` the way the `home-operations` images used
+elsewhere in this stack can. Its manifest carries no
+`securityContext.runAsUser`; instead it sets the LSIO-native identity env
+directly:
+
+```yaml
+env:
+  - name: PUID
+    value: "1000"
+  - name: PGID
+    value: "1000"
+  - name: UMASK
+    value: "002"
+```
+
+If any other image later turns out to need root at container start
+(verify at authoring time — the `home-operations` images used elsewhere in
+this stack are confirmed rootless), give it the same shape of per-app note
+explaining why, rather than silently weakening the house default.
+
+## The `/data` mount
+
+`/data` is a hostPath, mounted at the identical container path `/data` in
+every app that touches it — never remapped, never split into separate
+`/downloads` and `/media` mounts. That sameness is the point: Sonarr,
+Radarr and Bazarr import by hardlinking a completed download from
+`/data/torrents/...` into `/data/media/...`, and a hardlink only works
+within one filesystem. Same path everywhere means zero Remote Path
+Mappings to configure in any `*arr`, and the import step is a rename, not
+a copy — instant regardless of file size, and the seeding copy under
+`/data/torrents` keeps satisfying its tracker ratio after import.
+
+Mount rules:
+
+- **rw**: `deluge` (writes the downloads), `sonarr`/`radarr`/`bazarr`
+  (write imports and subtitles into `/data/media`), `unpackerr` (extracts
+  archives in place before the `*arr`s import them).
+- **ro**: `plex`, and only at `/data/media` — Plex only ever reads, never
+  writes, the media tree, and has no business seeing `/data/torrents` at
+  all.
+- **nobody else.** `prowlarr`, `recyclarr`, `overseerr`, `tautulli`,
+  `maintainerr` and `homepage` never mount `/data` — none of them touch
+  files, only APIs.
+
+## Ingress: chart-rendered, not a `-config` dir
+
+Unlike `platform/`, where every Ingress-bearing CR lives in a component's
+`-config` kustomize overlay, an app's Ingress here is a value inside its
+own chart Application's `helm.valuesObject` (`app-template`'s `ingress:`
+key) — one file per app holds host, Service and port together, and the
+widened CI render step (see below) renders and validates it exactly like
+the rest of the values. A `-config` dir only exists where there's
+multi-file plain config with nothing to do with a chart's own resources
+(`recyclarr`, `homepage`) or a ksops Secret to decrypt (`media-common`) —
+see "Sync waves" and "Kustomize `-config` dirs" below.
+
+House Ingress style is unchanged from `platform/` (see
+[`platform/README.md`](../platform/README.md#exposing-a-service)): no
+`ingressClassName`, no `tls:` block — Traefik is the cluster default
+`IngressClass` and its default `TLSStore` already serves the
+`*.tomkatom.com` wildcard for any host that doesn't ask for its own
+certificate. Every admin-facing host carries exactly this annotation to
+sit behind Authelia:
+
+```yaml
+metadata:
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+```
+
+Authelia's existing ACL already covers every new host here with zero
+Authelia-side change: `access_control.default_policy: deny` plus one rule
+for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
+any hostname under the zone, new or old. The one deliberate exception is
+Overseerr's `requests.tomkatom.com` — it carries **no** forward-auth
+annotation at all, because end users authenticate through Overseerr's own
+Plex OAuth login instead; an un-annotated Ingress means Authelia is never
+consulted for that host. Everything else admin-facing gets the
+annotation.
+
+## Single `source:`, always
+
+An app's chart Application must never become a multi-source Application.
+CI's widened render step (below) reads `.spec.source.chart` to decide
+whether a file is a remote-chart Application worth rendering — a
+multi-source Application has no `.spec.source` at all (it's
+`.spec.sources`, a list), so the step's guard silently evaluates to empty
+and skips the file entirely rather than failing loudly. A schema mistake
+in a multi-source app manifest would pass CI unnoticed. Every app chart
+here has exactly one `source:`,
+`repoURL: https://bjw-s-labs.github.io/helm-charts`, `chart: app-template`,
+pinned `targetRevision`, inline `helm.valuesObject`.
+
+## Secrets and environment
+
+Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
+`media`):
+
+- **Secret `arr-api-keys`** — `SONARR_API_KEY`, `RADARR_API_KEY`,
+  `PROWLARR_API_KEY`, `BAZARR_API_KEY`. Consumed by name, per key, via
+  `env.valueFrom.secretKeyRef` wherever an app needs one of them (e.g.
+  Unpackerr's `UN_SONARR_0_API_KEY`, Homepage's `HOMEPAGE_VAR_*` widget
+  keys) — never `envFrom` for this one, since apps only ever need a
+  subset of the four keys.
+- **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
+  Overseerr's and Tautulli's notification agents (configured in-app; the
+  Secret only holds the credential).
+- **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
+  app that cares about time zone consumes the whole map via `envFrom`
+  rather than naming the single key.
+
+## Renovate: the image-tag comment convention
+
+The `argocd` manager already bumps each app's `chart:`/`targetRevision:`
+pin. It has no idea an inline `valuesObject` contains a container image
+tag, though — that's a plain string a few levels deep in Helm values, not
+a field either the `argocd` or `kubernetes` manager understands. A
+`customManagers` regex closes the gap instead: it looks for a comment of
+the exact shape `# renovate: datasource=docker depName=<image>` on the
+line directly above a `tag:` key, anywhere under `clusters/lab/apps/`.
+Every app's `valuesObject` must use this two-line form for its image:
+
+```yaml
+image:
+  repository: ghcr.io/home-operations/sonarr
+  # renovate: datasource=docker depName=ghcr.io/home-operations/sonarr
+  tag: "4.0.15.2941@sha256:..."
+```
+
+Without the comment, Renovate has no way to find the tag at all — it will
+never open a PR for it, silently, and the image pins here would rot
+unnoticed.
+
+## local-path reclaim is `Delete`
+
+Every config PVC in this stack uses the cluster's default StorageClass,
+`local-path-provisioner`, whose reclaim policy is `Delete`: deleting the
+PVC (or the Application that owns it, without care) deletes the
+underlying data on the node with it — there is no recycle bin. Two
+mitigations, neither automatic yet:
+
+- The migration runbook's post-migration hardening step patches every
+  config PV to `Retain` by hand once real data lives on it
+  (`kubectl patch pv <pv> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'`),
+  so a PVC delete afterwards orphans the PV instead of destroying the
+  data.
+- Every `*arr` has a built-in backup feature, pointed at
+  `/data/backups/<app>` — on the same ZFS-backed tree as everything else,
+  survives a PVC delete outright.
+
+A full backup story (offsite, scheduled) is out of scope here and
+deferred to Phase 8.
+
+## Sync waves within `apps/`
+
+- **`media-common` — wave `"0"`.** First into the `media` namespace, so it
+  carries `syncOptions: [CreateNamespace=true]` — the same first-syncer
+  rule `authelia-config.yaml` follows for the `authelia` namespace. Every
+  other app's Secret/ConfigMap consumption assumes it already exists.
+- **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
+  `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
+  `overseerr`, `maintainerr`), together with `recyclarr-config`'s and
+  `homepage-config`'s own kustomize-source Applications.
+- **`recyclarr` and `homepage` charts — wave `"2"`**, one wave after their
+  own `-config` overlays, so the ConfigMap each mounts already exists the
+  moment the Pod starts.
+
+A first-sync race — an app Pod starting before `media-common` has
+finished and hitting a secret-not-found — is expected and self-heals on
+the next sync; it is not a bug to chase.
+
+## Argo strips nulls in `valuesObject`
+
+Same hard-won lesson as `platform/` (see
+[`platform/README.md`](../platform/README.md#pre-merge-review)): Argo's
+API server strips any `null` out of `helm.valuesObject` before Helm ever
+sees it ([argo-cd#16312](https://github.com/argoproj/argo-cd/issues/16312)).
+`key: null` renders correctly under CI's `helm template` (which doesn't go
+through Argo's API server) and does nothing live. Never use `null` to
+remove a chart default here — find the chart's own positive form of "off"
+(an empty list, `enabled: false`, whatever the chart's
+`values.schema.json` actually models) instead.
+
+## Kustomize `-config` dirs
+
+Most apps here have no `-config` directory at all — their entire manifest
+is the one chart Application file, Ingress included. A `-config`
+kustomize-source Application (mirroring `authelia-config.yaml`'s shape)
+only exists where there's:
+
+- **Multi-file plain config with no ksops Secret to decrypt** —
+  `recyclarr-config` (a `recyclarr.yml` ConfigMap) and `homepage-config`
+  (Homepage's own config-as-code ConfigMaps). CI's kustomize-build step
+  actually builds and validates these, since it only skips a directory
+  when it can detect a ksops `SecretGenerator` inside it.
+- **A ksops Secret to decrypt** — `media-common`, the one directory in
+  this stack that CI's kustomize step deliberately skips building (no
+  `SOPS_AGE_KEY` in that job), the same way every platform `-config`
+  overlay with a `.sops.yaml` file is skipped.
+
+## Migrating state from the old server
+
+State migration (media files, `*arr` databases, Plex identity and watch
+history, Deluge's session and active seeds) is entirely operator-executed
+and out of scope for any Application here — see
+[`docs/runbooks/media-migration.md`](../../../docs/runbooks/media-migration.md).
