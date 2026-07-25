@@ -1,0 +1,88 @@
+# Unpackerr — extracts archives (rar/zip/7z torrent releases usually ship
+# compressed) in place under /data/torrents before Sonarr/Radarr import
+# them. Fully declarative via UN_* env; no config file, no Service, no
+# Ingress, no PVC. See ./README.md for the /data mount table and sync waves
+# this file follows.
+#
+# Sonarr/Radarr don't exist yet in this repo (a sibling PR is landing them
+# in parallel) — Unpackerr will log connection errors against both URLs
+# below until that PR merges. Expected, not a bug; not worth making
+# conditional for a gap that closes on its own once both apps land.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: unpackerr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/unpackerr/unpackerr
+                  # renovate: datasource=docker depName=ghcr.io/unpackerr/unpackerr
+                  tag: "0.15.2"
+                env:
+                  UN_SONARR_0_URL: http://sonarr.media.svc.cluster.local:8989
+                  UN_SONARR_0_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                  UN_SONARR_0_PATHS_0: /data/torrents
+                  UN_RADARR_0_URL: http://radarr.media.svc.cluster.local:7878
+                  UN_RADARR_0_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: RADARR_API_KEY
+                  UN_RADARR_0_PATHS_0: /data/torrents
+                envFrom:
+                  - configMap: media-env
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 128Mi
+                  # Extraction is bursty (CPU spikes decompressing a large
+                  # archive, otherwise idle polling the *arrs), so limits sit
+                  # well above requests rather than 1:1 — headroom for a
+                  # burst without letting one runaway extraction take the
+                  # node.
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        persistence:
+          data:
+            type: hostPath
+            hostPath: /data
+            hostPathType: Directory
+            globalMounts:
+              - path: /data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
