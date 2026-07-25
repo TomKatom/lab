@@ -11,7 +11,10 @@ Cluster platform services, synced before any media app depends on them:
   via the Cloudflare DNS-01 solver. Two `ClusterIssuer`s
   (`letsencrypt-staging`, `letsencrypt-prod`) share one API-token Secret.
   **Implemented (Phase 5).** See "Issuing a certificate" below.
-- `external-dns` — Cloudflare records follow Ingress objects.
+- `external-dns.yaml` + `external-dns-config.yaml` + `external-dns/` —
+  Cloudflare records follow Ingress objects. **Implemented (Phase 5), and
+  deliberately inert** — it runs with `--dry-run` until the DNS cutover. See
+  "DNS records from Ingresses (inert)" below.
 - `traefik.yaml` + `traefik-config.yaml` + `traefik/` — ingress controller on
   `:443` (klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
   wildcard `Certificate`, because Traefik's default `TLSStore` can only read
@@ -24,7 +27,9 @@ Cluster platform services, synced before any media app depends on them:
 - `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
   here later (Phase 7).
 
-Everything not marked implemented above is still being built in Phase 5.
+Every platform component Phase 5 set out to build is now in place;
+`monitoring/` is the only entry above still a placeholder, and it belongs to
+Phase 7.
 
 ## Component layout
 
@@ -127,6 +132,41 @@ protected the moment the annotation lands. Two things worth knowing:
   no CRD/webhook here to wait for; instead the Pod needs its PVC and secret
   files to already exist the instant it starts, so the config half must
   land first and therefore also carries `CreateNamespace=true`.
+
+## DNS records from Ingresses (inert)
+
+external-dns watches `Ingress` objects and would publish an A record per
+host into the `tomkatom.com` Cloudflare zone. **It currently publishes
+nothing.** `extraArgs: ["--dry-run"]` in `external-dns.yaml` makes it
+authenticate, read the zone, and log every record it *would* write, then
+return before touching anything.
+
+That is not a soft default — it is the guard rail for this phase:
+
+- **`tomkatom.com` still resolves to the old, live server**, which owns
+  every record on this zone and issues its own certificates from it.
+- **`policy: upsert-only` protects against deletes, not overwrites.** With
+  dry-run off, the first `*.tomkatom.com` Ingress would upsert a real record
+  and take that hostname away from the old server.
+
+So the flag comes off exactly once, as a deliberate step in the cutover —
+`docs/runbooks/dns-cutover.md` (Phase 5, PR6) — alongside flipping
+`manage_dns=true` in Tofu. Never as a drive-by edit.
+
+Two settings worth knowing before that day:
+
+- **`txtOwnerId: lab-k3s`** is stamped into every ownership TXT record.
+  Two servers share this zone; the owner ID is how external-dns tells its
+  own records from the ones it must not touch.
+- **`sources: [ingress]`**, narrowed from the chart's
+  `[service, ingress]`. `service` would pick up Traefik's LoadBalancer and
+  publish `10.10.10.10` — the *internal* address, since klipper binds the
+  node IP — to a public zone.
+
+The Cloudflare token is the same one cert-manager uses, encrypted a second
+time into the `external-dns` namespace (`external-dns/cloudflare-api-token.sops.yaml`),
+because Secrets don't cross namespaces. **Rotating it means editing both
+files in one commit.**
 
 ## Pre-merge review
 

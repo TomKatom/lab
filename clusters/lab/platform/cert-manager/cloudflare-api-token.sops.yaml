@@ -1,12 +1,13 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# The encrypted value below is the literal string
-# REPLACE_ME_BEFORE_MERGE, not a real credential. Before merging:
-#   sops clusters/lab/platform/cert-manager/cloudflare-api-token.sops.yaml
-# and replace it with a dedicated Cloudflare API token scoped to
-# Zone:DNS:Edit + Zone:Read on the tomkatom.com zone. Then delete these
-# comment lines. The same token value is encrypted again for the
-# external-dns namespace in PR5 — one token, two Secrets, since a
-# Secret cannot be read across namespaces.
+# The dedicated Cloudflare API token both ClusterIssuers authenticate
+# with (Zone:DNS:Edit + Zone:Read on tomkatom.com). The same value is
+# encrypted a second time in ../external-dns/cloudflare-api-token.sops.yaml
+# for that namespace — a Secret cannot be read across namespaces, so
+# rotating means editing both files in the same commit.
+#
+# This file carried a stale "PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS"
+# header until now: the real token was sops-edited in before #44 merged,
+# but SOPS only encrypts `stringData`, so the comment survived the
+# round-trip untouched and outlived what it described.
 apiVersion: v1
 kind: Secret
 metadata:

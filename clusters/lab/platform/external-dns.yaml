@@ -1,0 +1,80 @@
+# external-dns — the chart half of the component (see README.md "Component
+# layout"). Its only CR is the Cloudflare API token Secret, in the sibling
+# external-dns-config.yaml → ./external-dns/.
+#
+# ⚠ DEPLOYED INERT. `--dry-run` below is the single most load-bearing line in
+# this file: `tomkatom.com` still resolves to the *old* operational server,
+# which owns every live record on this zone. Without dry-run, `upsert-only`
+# would happily create auth.tomkatom.com and override the old server's live
+# wildcard for that host. The flag comes off in the DNS cutover, not before —
+# see README.md "DNS records from Ingresses (inert)".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes-sigs.github.io/external-dns
+    chart: external-dns
+    targetRevision: 1.21.1
+    helm:
+      valuesObject:
+        provider:
+          name: cloudflare
+        env:
+          # The Cloudflare provider reads its credential from the
+          # environment, not from a config file — CF_API_TOKEN is the
+          # scoped-token form (CF_API_KEY/CF_API_EMAIL is the legacy global
+          # key, which this lab does not use). Secret decrypted by ksops
+          # from ./external-dns/, one sync-wave earlier.
+          - name: CF_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: cloudflare-api-token
+                key: api-token
+        sources:
+          # Ingress only. The chart default is [service, ingress], and
+          # `service` would pull in Traefik's LoadBalancer Service — whose
+          # external IP is the *internal* 10.10.10.10, since klipper binds
+          # the node address. Publishing that to a public zone is wrong in
+          # every scenario, cutover included.
+          - ingress
+        domainFilters:
+          # Hard boundary on the one zone this instance may touch. Not
+          # sourced from config/lab.yml's `domain` — Argo renders this
+          # manifest straight from git with no templating layer in between.
+          - tomkatom.com
+        # Chart defaults, both restated because they are load-bearing and
+        # Renovate bumps this chart unattended. upsert-only never issues a
+        # delete, so a mistakenly-removed Ingress cannot take a live record
+        # with it; the txt registry is what makes external-dns able to tell
+        # its own records from the old server's at all.
+        policy: upsert-only
+        registry: txt
+        # Written into every ownership TXT record. The old server manages
+        # records on this same zone by hand, so an owner ID this specific is
+        # the difference between "external-dns adopts a record" and
+        # "external-dns leaves someone else's record alone".
+        txtOwnerId: lab-k3s
+        # Keeps ownership TXTs off the record names themselves
+        # (_externaldns.auth.tomkatom.com, not auth.tomkatom.com), so a TXT
+        # can never collide with the A record it tracks.
+        txtPrefix: _externaldns.
+        extraArgs:
+          # See the header. external-dns still authenticates, reads the
+          # zone, and logs `Changing record.` for everything it *would*
+          # write — it just returns before the mutation
+          # (provider/cloudflare/cloudflare.go, v0.21.0). Removing this is a
+          # deliberate cutover step, never a drive-by edit.
+          - --dry-run
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

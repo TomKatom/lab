@@ -1,0 +1,30 @@
+# external-dns — the config half: the Cloudflare API token Secret (ksops).
+#
+# Wave 1, *before* the chart Application (wave 2) — same reasoning as
+# Authelia and the reverse of cert-manager/Traefik. There is no CRD or
+# webhook to wait on here; the external-dns Pod resolves CF_API_TOKEN from
+# this Secret at container start and CrashLoopBackOffs if it is missing, so
+# the Secret has to land first. CreateNamespace therefore lives here rather
+# than on external-dns.yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/external-dns
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,32 @@
+# The *same* Cloudflare API token already encrypted in
+# ../cert-manager/cloudflare-api-token.sops.yaml (Zone:DNS:Edit +
+# Zone:Read on tomkatom.com), re-encrypted here for the external-dns
+# namespace — one token, two Secrets, because a Secret cannot be read
+# across namespaces. Not a placeholder: this is the live credential.
+#
+# Rotating it means editing *both* files in the same commit, or
+# cert-manager and external-dns end up authenticating with different
+# tokens. `sops <file>` → paste the new value → save → commit, twice.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: cloudflare-api-token
+    namespace: external-dns
+type: Opaque
+stringData:
+    api-token: ENC[AES256_GCM,data:MWLFMhYgmHhznoXCodXyRfmR6vhmm8lmclrcpmMIqhyFa+5sq66PwqjWl9VVSuSipie/osM=,iv:Fbl0UKYLiDZD5qQD3LfZqSfGewoqtw4ceHaHoXgoJjo=,tag:3NhTSwm4e7/mcF8VK3SG4g==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAwQ3V0WkpNazNhVmErR3Bp
+            eGlWNFF5aTFHTUw1em5RR2hJbSttMk1EMFVZCjlXbFRDRktNVXU4NzRVQ0tUVUlH
+            djJ4M3FiNTVWUE5KaFMzZTh0aUxYOWcKLS0tIFJtSVJFemlUU3RYSExtOW5HYUNw
+            M3FwSzJKLzJxZzZ2STJaSmQrRDJTZTQKjniOtdNfGPYESQh8z/uW7clQcD4i9ByF
+            2xfr5VOguvmdbnNTYPTHFRIfNu7qD+0nwUgta/pK2WMDt0/c0vBYrw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T13:09:43Z"
+    mac: ENC[AES256_GCM,data:rB7XSNpUuskhz8hFjelGGCDcxaj/5qLSLDccJAYVjb6eHRnDYG4Shh5HRPCKQV2jxW5gTA355zLmSqNTmtowWHPBCJ+egnocMLNLUaTwtEJSzQbkxneqtySEIZoi0g1FiSFszu3liE1VaD+fvKzs9HY/KRXzff/N2WQupVZml8g=,iv:q0DWus/Vho9qkZe2XhHj74d3jdfiQ82k8DITZE1NBbo=,tag:yRhgy7gm+BxRMTBrxGW7yA==,type:str]
+    version: 3.13.2
