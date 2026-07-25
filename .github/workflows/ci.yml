@@ -126,6 +126,29 @@ jobs:
   render-manifests:
     name: helm/kustomize render -> kubeconform
     runs-on: ubuntu-latest
+    env:
+      # kubeconform ships only the built-in Kubernetes schemas, so every
+      # CRD-backed resource this repo writes - ClusterIssuer, Certificate,
+      # Middleware, and the Argo CD Application manifests themselves - used
+      # to be silently *skipped* rather than validated - a misspelled field
+      # in a ClusterIssuer passed CI and only failed once Argo had already
+      # applied it. datreeio/CRDs-catalog publishes JSON schemas for all of
+      # them; the steps below feed it to kubeconform as an extra
+      # -schema-location template. (It catches unknown fields, not wrong
+      # ones: a real-but-inapplicable field like cert-manager's legacy
+      # apiKeySecretRef is still in the schema and still validates.)
+      #
+      # Pinned to a commit, never `main`: it is a third-party repo on a
+      # moving branch, and an upstream schema change should never be able to
+      # break this repo's CI unannounced. Bumping the pin is a deliberate
+      # edit. Note this makes the job non-hermetic - one network fetch per
+      # distinct GVK, which is fine at this scale.
+      #
+      # The residual "Skipped" count on a chart render is
+      # CustomResourceDefinition objects: kubeconform ships no schema for
+      # them and the catalog carries none either. Chart-generated, never
+      # hand-written here - not a gap worth chasing.
+      CRDS_CATALOG_REF: "dcaa31aa03082906c0325a7a0ee7d5191e9cbe24"
     steps:
       - uses: actions/checkout@v7
       - uses: azure/setup-helm@v5
@@ -154,13 +177,15 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          schema="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
           charts=(clusters/lab/apps/*/ clusters/lab/platform/*/)
           found=false
           for c in "${charts[@]}"; do
             [ -f "${c}Chart.yaml" ] || continue
             found=true
             echo "== helm template ${c} =="
-            helm template "$c" | kubeconform -strict -ignore-missing-schemas -summary
+            helm template "$c" | kubeconform -strict -ignore-missing-schemas -summary \
+              -schema-location default -schema-location "$schema"
           done
           $found || echo "no Helm charts yet, skipping"
       # Starting Phase 5 PR2, each clusters/lab/platform/<component>.yaml is
@@ -175,6 +200,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          schema="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
           found=false
           for app in clusters/lab/platform/*.yaml; do
             [ -f "$app" ] || continue
@@ -195,7 +221,9 @@ jobs:
 
             echo "== helm template ${app} (name=${name} chart=${chart} version=${targetRevision}) =="
             helm template "$releaseName" "$chart" --repo "$repoURL" --version "$targetRevision" \
-              --namespace "$namespace" -f "$valuesFile" | kubeconform -strict -ignore-missing-schemas -summary
+              --namespace "$namespace" -f "$valuesFile" \
+              | kubeconform -strict -ignore-missing-schemas -summary \
+                  -schema-location default -schema-location "$schema"
             rm -f "$valuesFile"
           done
           $found || echo "no remote-chart platform Applications yet, skipping"
@@ -211,6 +239,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          schema="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
           found=false
           while IFS= read -r -d '' k; do
             dir=$(dirname "$k")
@@ -220,6 +249,51 @@ jobs:
             fi
             found=true
             echo "== kustomize build ${dir} =="
-            kustomize build "$dir" | kubeconform -strict -ignore-missing-schemas -summary
+            kustomize build "$dir" | kubeconform -strict -ignore-missing-schemas -summary \
+              -schema-location default -schema-location "$schema"
           done < <(find clusters -name kustomization.yaml -print0)
           $found || echo "no non-ksops Kustomize overlays yet, skipping"
+      # The step above cannot see the resources that most need checking: a
+      # component directory holding a ksops Secret is skipped *wholesale*
+      # (the guard is per-directory, and each component deliberately keeps
+      # its CRs and its encrypted Secret together), so cert-manager's
+      # ClusterIssuers and Authelia's Middleware/PVC/Ingress never reach
+      # kubeconform that way. Lint the CR files directly instead - no
+      # kustomize, no decryption needed, and it covers the top-level
+      # Application manifests at the same time.
+      #
+      # -ignore-missing-schemas is deliberately absent here, unlike every
+      # step above: these are files this repo wrote, so an unrecognised
+      # apiVersion/kind is a mistake to fail on, not a gap to tolerate.
+      # Adding a resource from a CRD the catalog does not carry means adding
+      # a -schema-location for it (or vendoring the schema), on purpose.
+      - name: kubeconform CR + Application manifests directly
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${CRDS_CATALOG_REF}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+          files=()
+          while IFS= read -r -d '' f; do
+            case "$(basename "$f")" in
+              # Kustomize's own config and SOPS ciphertext are not
+              # Kubernetes manifests; the .sops.yaml files are Secrets only
+              # after the repo-server decrypts them.
+              kustomization.yaml | *.sops.yaml) continue ;;
+            esac
+            # Drop anything that is not a Kubernetes object either: Helm
+            # values files (no `kind` at all) and ksops generator
+            # descriptors (kind: ksops). Keep the file if any document in it
+            # has some other kind.
+            if ! yq eval-all '.kind // ""' "$f" | grep -qvE '^(ksops)?$'; then
+              echo "== skipping ${f} (not a Kubernetes manifest) =="
+              continue
+            fi
+            files+=("$f")
+          done < <(find clusters -name '*.yaml' -print0)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no CR or Application manifests yet, skipping"
+            exit 0
+          fi
+          printf '== kubeconform %s\n' "${files[@]}"
+          kubeconform -strict -summary \
+            -schema-location default -schema-location "$schema" "${files[@]}"

@@ -13,8 +13,11 @@
 # host for the same reason as everything else on this box.
 #
 # external-dns (Phase 5) manages per-service records (sonarr., auth., ...)
-# dynamically; it must run with an `upsert-only` policy so it can never
-# delete or clobber these Tofu-owned apex/wildcard/vpn records.
+# dynamically. It runs `policy: sync`, which does delete — what keeps it off
+# these Tofu-owned records is ownership, not policy: external-dns only
+# touches a record carrying its own `_externaldns.` TXT with
+# `external-dns/owner=lab-k3s`, and nothing here has one. See
+# clusters/lab/platform/external-dns.yaml.
 #
 # `cloudflare_zone_id` is a plain var (not a data source) to avoid Cloudflare
 # v5 provider schema churn on zone lookups — it's not secret, just an
@@ -24,7 +27,10 @@
 # records currently point at the old server and are still in production use.
 # Until cutover, `for_each` resolves to `{}` so `tofu apply` never touches
 # Cloudflare — flip `manage_dns` to true once the new server is ready to take
-# over these records.
+# over these records. The apex already exists and Cloudflare allows several A
+# records at one name, so that flip needs an `import` block or the zone ends
+# up round-robining between two servers: the procedure is
+# docs/runbooks/dns-cutover.md, not a bare `tofu apply`.
 
 resource "cloudflare_dns_record" "records" {
   for_each = var.manage_dns ? local.dns_a_records : {}
