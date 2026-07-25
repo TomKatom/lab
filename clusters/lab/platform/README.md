@@ -145,19 +145,31 @@ That is not a soft default — it is the guard rail for this phase:
 
 - **`tomkatom.com` still resolves to the old, live server**, which owns
   every record on this zone and issues its own certificates from it.
-- **`policy: upsert-only` protects against deletes, not overwrites.** With
-  dry-run off, the first `*.tomkatom.com` Ingress would upsert a real record
-  and take that hostname away from the old server.
+- **No `policy` value protects against overwrites** — policy gates deletes,
+  never creates. With dry-run off, the first `*.tomkatom.com` Ingress would
+  create a real record and take that hostname away from the old server.
 
 So the flag comes off exactly once, as a deliberate step in the cutover —
 `docs/runbooks/dns-cutover.md` (Phase 5, PR6) — alongside flipping
 `manage_dns=true` in Tofu. Never as a drive-by edit.
 
-Two settings worth knowing before that day:
+Three settings worth knowing before that day:
 
-- **`txtOwnerId: lab-k3s`** is stamped into every ownership TXT record.
-  Two servers share this zone; the owner ID is how external-dns tells its
-  own records from the ones it must not touch.
+- **`txtOwnerId: lab-k3s`** is stamped into an ownership TXT record beside
+  everything external-dns creates. Two servers share this zone; the owner ID
+  is how external-dns tells its own records from the ones it must not touch.
+- **`policy: sync`**, not the chart default `upsert-only`. `upsert-only`
+  never issues a delete at all, so every retired Ingress would strand a
+  permanent A + TXT pair on a shared zone that nothing in git accounts for.
+  `sync` is safe here because deletion is scoped by *ownership*, not by
+  policy: `TXTRegistry.ApplyChanges` filters `Delete`/`UpdateOld`/
+  `UpdateNew` through `FilterEndpointsByOwnerID`
+  ([`registry/txt/registry.go`, v0.21.0](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/registry/txt/registry.go)),
+  which drops any endpoint with no owner label. The old server's
+  hand-managed records and Tofu's `manage_dns` apex/wildcard/`vpn.` records
+  carry no ownership TXT, so `sync` cannot reach them. Delete the owner TXT
+  by hand and external-dns forgets the record instead of cleaning it up —
+  so remove the Ingress, not the TXT.
 - **`sources: [ingress]`**, narrowed from the chart's
   `[service, ingress]`. `service` would pick up Traefik's LoadBalancer and
   publish `10.10.10.10` — the *internal* address, since klipper binds the

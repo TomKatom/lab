@@ -4,10 +4,11 @@
 #
 # ⚠ DEPLOYED INERT. `--dry-run` below is the single most load-bearing line in
 # this file: `tomkatom.com` still resolves to the *old* operational server,
-# which owns every live record on this zone. Without dry-run, `upsert-only`
-# would happily create auth.tomkatom.com and override the old server's live
-# wildcard for that host. The flag comes off in the DNS cutover, not before —
-# see README.md "DNS records from Ingresses (inert)".
+# which owns every live record on this zone. Without dry-run, external-dns
+# would create auth.tomkatom.com and override the old server's live wildcard
+# for that host. No `policy` value substitutes for the flag — policy gates
+# deletes, never creates. It comes off in the DNS cutover, not before — see
+# README.md "DNS records from Ingresses (inert)".
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -48,12 +49,24 @@ spec:
           # sourced from config/lab.yml's `domain` — Argo renders this
           # manifest straight from git with no templating layer in between.
           - tomkatom.com
-        # Chart defaults, both restated because they are load-bearing and
-        # Renovate bumps this chart unattended. upsert-only never issues a
-        # delete, so a mistakenly-removed Ingress cannot take a live record
-        # with it; the txt registry is what makes external-dns able to tell
-        # its own records from the old server's at all.
-        policy: upsert-only
+        # `sync`, not the chart default `upsert-only`: a retired Ingress has
+        # to take its record with it, or the zone accumulates orphans that
+        # nothing in git accounts for and only a human can find.
+        #
+        # What keeps that safe on a zone shared with the old server is
+        # ownership, not policy. The txt registry writes an ownership TXT
+        # stamped with txtOwnerId beside every record external-dns creates,
+        # and TXTRegistry.ApplyChanges runs Delete/UpdateOld/UpdateNew
+        # through FilterEndpointsByOwnerID (registry/txt/registry.go,
+        # v0.21.0) — an endpoint with no owner label is skipped outright. The
+        # old server's hand-managed records and Tofu's apex/wildcard/vpn
+        # records have no ownership TXT, so `sync` cannot reach them. Create
+        # is deliberately *not* filtered upstream; that is the overwrite path
+        # --dry-run guards.
+        #
+        # registry: txt is the chart default, restated because it is what
+        # makes the above true and Renovate bumps this chart unattended.
+        policy: sync
         registry: txt
         # Written into every ownership TXT record. The old server manages
         # records on this same zone by hand, so an owner ID this specific is
