@@ -15,7 +15,7 @@ metadata:
     namespace: authelia
 type: Opaque
 stringData:
-    session.encryption.key: ENC[AES256_GCM,data:1fiuT9ovbYDGf3rDeOLDK1SFQPfB0DM=,iv:KD81mNUImkznJ0kisJdjfBmtt2/lKwiLm/TxEHvxBT0=,tag:IjWIn2EbamC5quIVegdBvA==,type:str]
+    session.encryption.key: ENC[AES256_GCM,data:LPFI/Mh0W/1wExOzLAy18uvH+JoBhbQZzA5dpE5lqyGrJJjAhm6qNEbUJ9AFRKLy7JiDpgDuSXLCp8Z5OX+AdQ==,iv:CYcVJ44EMIlf+t6b+4AsDmsredqpqEVG3EUFR25fvDE=,tag:ffZ8ktWfMYg02q7aA7CRQw==,type:str]
 sops:
     age:
         - enc: |
@@ -28,6 +28,6 @@ sops:
             -----END AGE ENCRYPTED FILE-----
           recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-07-25T00:37:45Z"
-    mac: ENC[AES256_GCM,data:K+iZDdXklWT55lTdVIp30P+UEPldKjp2tOdick0Z+9bdJt5tqe830Mr1ttMGNWsjTUwXBhChKv4L5qC3sTPbPca774SJs8m1pTE9Av/6G67aYWSmN+cuQPSkQ2M1BEyYbQYfmmPLMjmtKd2XNlRpc1BnOqhOifn4nJUsY0HKHoI=,iv:zAYmEtV5toWCbxFo5HUu57gT9mG7goW9wFytZca3RMg=,tag:ISy9aRQrKtMx83zd9UKuPg==,type:str]
+    lastmodified: "2026-07-25T12:22:55Z"
+    mac: ENC[AES256_GCM,data:DCpJxsvkhMnBFtHSppwM07asgddSLn28xQoIkvpEDnfM9UVD8MKUBzoPV89rmqktb3s04Pj4iFrM9eCWONZVXsmqSVBUrFBSXzAQ9eADePRt6Vwd9z+mJFAzkDn6nHDkZnLTMDK37ot8r0RXs8J3aStFhDajIRwE0/H2uCwbuvI=,iv:2T1TgI7coKmXf76s4k2GPDNiM/+HI9AtfHuglkT0rm8=,tag:8K02G573UvyJP6yk4BOy2Q==,type:str]
     version: 3.13.2

@@ -23,7 +23,7 @@ metadata:
     namespace: authelia
 type: Opaque
 stringData:
-    users_database.yml: ENC[AES256_GCM,data:/j635MVDhYbyU4/b51A5qHLlxJ9WQSEmU7MoseyIirzHca1K/xdk289fiJS0V2eI8InakS3Dlt97QQQhZm3trdTVHqX+pQEmFbWx76yKRodqmO4wuDHHNlu6xIl0xbldSqvOzGniKoDkWkkA6A/1zrZu64jjSARUg+G0s6fR1x1ZWkO4wWBz9Bp2MqTP/poZK2IyVxkXoJsY0Lqa,iv:ka5vos2Zib0x9YWHvaWL+4C4sam/xN6qFbFkfIhD89w=,tag:WcrgMQI2rkcQ8DBi5xAMSA==,type:str]
+    users_database.yml: ENC[AES256_GCM,data:Jfjfmn0wzK3eQKCoEBWSgIZODN7RLdD8oevuulwg5BAtfmlDbj/5XPj0hiP3BvqDGItHqH3yMHZrRQ2iYPDIwcbjy6mqV4+ZNNF4206bQ5i9CdBypK8LaFlWpKxmehLHJM02+eTiZ5i3uaK4GrP8cdL/l4AU8vPjw16DyeK77PU9SmroOFkOhIZKzkrXXZ4FRqk8/ulC8R07iK9mU+ByN7NvScN0BjxYjKp4t9EW34js4WUaAR8fCp++FiV2fRnMDUdrzHGO38u0nAxg+s/BtfNarmRg6x84rTm0GETPdea1bm2ia+mmGWZS8rIPsxxz,iv:zyFkUs3b5+OVKR6vfmCbyMHLQEMZFnvoSM+OGWeeFmw=,tag:w2p0q2CLMY5HNc1eXsy9Yw==,type:str]
 sops:
     age:
         - enc: |
@@ -36,6 +36,6 @@ sops:
             -----END AGE ENCRYPTED FILE-----
           recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-07-25T00:37:58Z"
-    mac: ENC[AES256_GCM,data:Rm2fH5rtT6PTnC6ddAnPPF7WGlq5/3p1zwp+3TL/EkfNlqvsgrpD0/GQUhl9MmfZNTxRdPc+coHWeX68xRZjcKsBt2YPa8mtQU2bXr2SRCSonQdJuuhB8PjAflwtSLw8C6wCfyEyXc7k0X/WaEVpcpRFn4lSezSPQr8xY2IhwyI=,iv:M5lmtywrt+Sa7TZyieGxejDEIKjpdpxyCHUQptDfLKY=,tag:bfKqTYbioGIsoyDrJ/3YMA==,type:str]
+    lastmodified: "2026-07-25T12:38:23Z"
+    mac: ENC[AES256_GCM,data:R6jOBOqWBvZx/XzCbGXLwP/iUR1570FCJ8ReaaHWabVinAHP+Go9IBxUl/ISDRa978bqpSeZY5/1/ONzp3EJbSr4yO5WzQmxCvdUwkrVzUxsD+ejdlUGbtsKAfdIwEudxZ1JDKRYoJnjlTUG/FvcNiQ+N5LXrEUT6P63FmMn1LA=,iv:FJcC6R3kflEfKX7ft/ci6I4+v8WLt61bTo13K6ftERY=,tag:SWMsrKogWaf+CzqIBzci/A==,type:str]
     version: 3.13.2
