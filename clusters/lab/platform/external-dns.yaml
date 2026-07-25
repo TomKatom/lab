@@ -2,13 +2,18 @@
 # layout"). Its only CR is the Cloudflare API token Secret, in the sibling
 # external-dns-config.yaml → ./external-dns/.
 #
-# ⚠ DEPLOYED INERT. `--dry-run` below is the single most load-bearing line in
-# this file: `tomkatom.com` still resolves to the *old* operational server,
-# which owns every live record on this zone. Without dry-run, external-dns
-# would create auth.tomkatom.com and override the old server's live wildcard
-# for that host. No `policy` value substitutes for the flag — policy gates
-# deletes, never creates. It comes off in the DNS cutover, not before — see
-# README.md "DNS records from Ingresses (inert)".
+# ⚠ DEPLOYED INERT. `--dry-run` below is the load-bearing line in this file,
+# but not for the reason it looks like. It cannot stop external-dns taking a
+# hostname from the old operational server, because nothing can: every name
+# that server serves already has an explicit record, and an existing record
+# it does not own is unreachable to it (see `policy` below). What dry-run
+# guards is the one write that *is* unconditional — creating a name the zone
+# does not have yet — and today every such name would be created pointing at
+# 10.10.10.10. Traefik publishes its LoadBalancer address into every Ingress
+# status and klipper binds that to the k3s node's internal address, so RFC1918
+# space in a public zone is the real hazard. The flag comes off in the DNS
+# cutover, and not before the target is fixed — see README.md "DNS records
+# from Ingresses (inert)".
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -54,15 +59,24 @@ spec:
         # nothing in git accounts for and only a human can find.
         #
         # What keeps that safe on a zone shared with the old server is
-        # ownership, not policy. The txt registry writes an ownership TXT
-        # stamped with txtOwnerId beside every record external-dns creates,
-        # and TXTRegistry.ApplyChanges runs Delete/UpdateOld/UpdateNew
-        # through FilterEndpointsByOwnerID (registry/txt/registry.go,
-        # v0.21.0) — an endpoint with no owner label is skipped outright. The
-        # old server's hand-managed records and Tofu's apex/wildcard/vpn
-        # records have no ownership TXT, so `sync` cannot reach them. Create
-        # is deliberately *not* filtered upstream; that is the overwrite path
-        # --dry-run guards.
+        # ownership, not policy — and it is enforced at two layers, both
+        # read in the v0.21.0 source rather than assumed:
+        #
+        #   1. plan.calculateChanges filters Delete/UpdateOld/UpdateNew
+        #      through FilterEndpointsByOwnerID, and appendTakenDNSNameChanges
+        #      drops a Create outright unless *every* record already at that
+        #      name is owned by us (plan/plan.go).
+        #   2. TXTRegistry.ApplyChanges re-filters Delete/UpdateOld/UpdateNew
+        #      the same way (registry/txt/registry.go).
+        #
+        # An endpoint with no owner label fails both. The old server's records
+        # and Tofu's manage_dns apex/vpn records carry no ownership TXT, so
+        # `sync` cannot reach them — and neither can a create, which is why
+        # external-dns cannot take over an existing hostname at all.
+        #
+        # The one unconditional write is a Create for a name with *no*
+        # existing record. That is not an overwrite, but it is still a public
+        # write, and it is what --dry-run is actually guarding. See the header.
         #
         # registry: txt is the chart default, restated because it is what
         # makes the above true and Renovate bumps this chart unattended.

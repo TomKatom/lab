@@ -141,17 +141,26 @@ nothing.** `extraArgs: ["--dry-run"]` in `external-dns.yaml` makes it
 authenticate, read the zone, and log every record it *would* write, then
 return before touching anything.
 
-That is not a soft default — it is the guard rail for this phase:
+That is not a soft default, but it guards a narrower thing than it looks
+like. Worth being precise about, because the cutover depends on it:
 
-- **`tomkatom.com` still resolves to the old, live server**, which owns
-  every record on this zone and issues its own certificates from it.
-- **No `policy` value protects against overwrites** — policy gates deletes,
-  never creates. With dry-run off, the first `*.tomkatom.com` Ingress would
-  create a real record and take that hostname away from the old server.
+- **It cannot take a hostname away from the old server.** Every name that
+  server actually serves has an *explicit* record — `sonarr`, `radarr`,
+  `prowlarr` and `deluge` are each a `CNAME` to the apex, verified by `dig`;
+  a random name under the zone returns `NXDOMAIN`, so **there is no
+  wildcard DNS record** (the old server has a wildcard *certificate*, which
+  is a different thing). A name that already has a record external-dns does
+  not own is unreachable to it — see `policy: sync` below.
+- **What it does guard is the one unconditional write: creating a name the
+  zone does not have yet.** `auth.tomkatom.com` and `plex.tomkatom.com`
+  resolve to nothing today, so those are real creates.
+- **And today every such create would point at `10.10.10.10`** — RFC1918
+  space in a public zone. See the `sources` bullet below for why.
 
 So the flag comes off exactly once, as a deliberate step in the cutover —
 `docs/runbooks/dns-cutover.md` (Phase 5, PR6) — alongside flipping
-`manage_dns=true` in Tofu. Never as a drive-by edit.
+`manage_dns=true` in Tofu **and fixing the published target**. Never as a
+drive-by edit.
 
 Three settings worth knowing before that day:
 
@@ -161,19 +170,32 @@ Three settings worth knowing before that day:
 - **`policy: sync`**, not the chart default `upsert-only`. `upsert-only`
   never issues a delete at all, so every retired Ingress would strand a
   permanent A + TXT pair on a shared zone that nothing in git accounts for.
-  `sync` is safe here because deletion is scoped by *ownership*, not by
-  policy: `TXTRegistry.ApplyChanges` filters `Delete`/`UpdateOld`/
-  `UpdateNew` through `FilterEndpointsByOwnerID`
-  ([`registry/txt/registry.go`, v0.21.0](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/registry/txt/registry.go)),
-  which drops any endpoint with no owner label. The old server's
-  hand-managed records and Tofu's `manage_dns` apex/wildcard/`vpn.` records
-  carry no ownership TXT, so `sync` cannot reach them. Delete the owner TXT
-  by hand and external-dns forgets the record instead of cleaning it up —
-  so remove the Ingress, not the TXT.
-- **`sources: [ingress]`**, narrowed from the chart's
-  `[service, ingress]`. `service` would pick up Traefik's LoadBalancer and
-  publish `10.10.10.10` — the *internal* address, since klipper binds the
-  node IP — to a public zone.
+  `sync` is safe here because reach is scoped by *ownership*, not by policy,
+  at two independent layers in v0.21.0:
+
+  1. `plan.calculateChanges` filters `Delete`/`UpdateOld`/`UpdateNew` through
+     `FilterEndpointsByOwnerID`, and `appendTakenDNSNameChanges` drops a
+     `Create` outright unless *every* record already at that name is owned by
+     us ([`plan/plan.go`](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/plan/plan.go#L230)).
+  2. `TXTRegistry.ApplyChanges` re-filters the same three
+     ([`registry/txt/registry.go`](https://github.com/kubernetes-sigs/external-dns/blob/v0.21.0/registry/txt/registry.go#L335)).
+
+  An endpoint with no owner label fails both, and the old server's records
+  and Tofu's `manage_dns` apex/`vpn.` records have no ownership TXT. Delete
+  an owner TXT by hand and external-dns forgets the record instead of
+  cleaning it up — so remove the Ingress, not the TXT.
+- **`sources: [ingress]`**, narrowed from the chart's `[service, ingress]`,
+  to keep external-dns off Services it has no business publishing. ⚠ **It
+  does not avoid the `10.10.10.10` problem, despite how it was originally
+  justified.** The Traefik chart renders
+  `--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik`,
+  so Traefik copies its LoadBalancer status onto every Ingress, and
+  external-dns reads the target from there — the same internal address
+  `sources: [service]` would have given, since klipper binds the node IP.
+  Before dry-run comes off, the target has to be overridden: external-dns
+  `--default-targets`, a per-Ingress
+  `external-dns.alpha.kubernetes.io/target` annotation, or Traefik's
+  `ingressEndpoint.ip`. Tracked as a cutover-runbook prerequisite.
 
 The Cloudflare token is the same one cert-manager uses, encrypted a second
 time into the `external-dns` namespace (`external-dns/cloudflare-api-token.sops.yaml`),
