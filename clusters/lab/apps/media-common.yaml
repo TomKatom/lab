@@ -1,0 +1,32 @@
+# media-common — everything the media stack shares before any app of it
+# exists: the `media` namespace itself, the two ksops Secrets
+# (`arr-api-keys`, `telegram`) and the `media-env` ConfigMap.
+#
+# Wave 0 within apps/ — first Application into the `media` namespace, so
+# CreateNamespace lives here and nowhere else in this directory, the same
+# first-syncer rule authelia-config.yaml follows one directory up. Every
+# app chart (wave 1) consumes at least the ConfigMap, so this must land
+# first; an app Pod that starts before this finishes and hits a
+# secret-not-found self-heals on the next sync (see ./README.md).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: media-common
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps/media-common
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,46 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# All four encrypted values below are the literal string
+# REPLACE_ME_BEFORE_MERGE, not real API keys. Read the old server's current
+# keys per `docs/runbooks/media-migration.md` §2.2, then:
+#   sops clusters/lab/apps/media-common/arr-api-keys.sops.yaml
+# replace the four values, delete this comment block, commit. Keep each
+# value quoted — an *arr key is 32 hex chars and can be all-digits, which
+# unquoted YAML would parse as a number and stringData rejects.
+#
+# These are pinned to the old server's keys deliberately, never rotated:
+# the databases restored in runbook §5-§7 already hold those keys in their
+# own cross-references (Prowlarr's app-sync entries, Overseerr, Unpackerr),
+# so reusing them makes the restore key-surgery-free.
+#
+# Consumed one key at a time via env.valueFrom.secretKeyRef, never envFrom —
+# no app needs all four (see ../README.md "Secrets and environment"). The
+# first three are also *inputs*, not just copies: Prowlarr/Sonarr/Radarr each
+# set `<APP>__AUTH__APIKEY` from them, and that env var overrides whatever
+# the restored config.xml holds. BAZARR_API_KEY has no equivalent override —
+# Bazarr owns its key and can drift from this value (runbook §7).
+apiVersion: v1
+kind: Secret
+metadata:
+    name: arr-api-keys
+    namespace: media
+type: Opaque
+stringData:
+    SONARR_API_KEY: ENC[AES256_GCM,data:s2DHY865SvIZJ4/GtIn08k07Kx7WLl8=,iv:Ym94QcJky/j+WEdAxINTUBVzZZO6T6lXizgfk5Hmgqk=,tag:NapsaT5etMPFicIcrXBo3Q==,type:str]
+    RADARR_API_KEY: ENC[AES256_GCM,data:Z2siQ44poxdf0Rap3YABsQZjbhySC2o=,iv:1NmTfNoi1ayYroCjfsh5aWg3Ke45+B0iKF1n1I7y7w0=,tag:Bb+jhEBZpI5yUkZxMV3M7Q==,type:str]
+    PROWLARR_API_KEY: ENC[AES256_GCM,data:2TvDomuSTQPKTR/5+B16URVAUYKk7Sg=,iv:6x1BO328VnAlulFBQqXS7l81tasH3JzzBCFI0VlBtHE=,tag:9dM55gmIvdCNx3TpkhxSvA==,type:str]
+    BAZARR_API_KEY: ENC[AES256_GCM,data:U2Qk72vXoVChdEHvQiKiUlL0HmUz9Xk=,iv:BgItRpVWobM+x9R4ReTWfiDw/V6pBKaAFiSdUylW9lM=,tag:aGK9Hh9ED2foVksH34/i5A==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSAva0lseTJ6dmh5bkVOd2Zm
+            UFVqakxmalB2WW03d05Sb21MNEI0M3h3M3c0CkJ4alFuMWtDVzFMS1pqN05UTnR2
+            M2JCeUk5NDVRY2RlRXAvN21WUU9ISjgKLS0tIEd3a0JoMWpRVHNBT2tYU3U1eVpL
+            bFhwVWU4SEtSd1RzemxOTlpGcUhLQ3MKRJGAYO96uvRhlhdQE5nN9P0eNFcycDBj
+            T3NqqcsiidSS5DV8+pNSEJNOLoq44mV0xUHFjqYQd3GsWQFoAUh9Fw==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T21:56:20Z"
+    mac: ENC[AES256_GCM,data:y67kWW4G+coZEe60puXDJPcRBQg5+mXY6Vd5RYnr4lWvfpwwTzVgHawa/W+TwRlTRiynW8qQLDo0uxCXnuwIqneyFlBXDYgd2KWBoRIxXOHEir4lZCfi4h0m2EmlLhXquR9Wv+AM/L056pyHm0P7I+TlqrgvG2cJ7WK8cIOOFQQ=,iv:2hOM1HYzivcDQovjpGcgJmi+MbU9CAKaZhqvpu7/GxY=,tag:ChJ3clA8oI0+sTnAYt3eQA==,type:str]
+    version: 3.13.2

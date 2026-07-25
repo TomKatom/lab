@@ -1,0 +1,37 @@
+# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
+# Both encrypted values below are the literal string REPLACE_ME_BEFORE_MERGE.
+# Create the bot and read the group's chat id per
+# `docs/runbooks/media-migration.md` §2.5, then:
+#   sops clusters/lab/apps/media-common/telegram.sops.yaml
+# replace both values, delete this comment block, commit. Keep both quoted —
+# a group chat id is a negative integer (e.g. -1001234567890), which
+# unquoted YAML would parse as a number and stringData rejects.
+#
+# Overseerr's "Media Available" agent and Tautulli's recently-added digest
+# both post to this one group. Neither reads the Secret itself — both are
+# configured in their own UI during runbook §9, and this is the single
+# committed place the credential lives so a rotation has one home.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: telegram
+    namespace: media
+type: Opaque
+stringData:
+    TELEGRAM_BOT_TOKEN: ENC[AES256_GCM,data:VhOawkOiQRRNw+2X4pLBBM8RD9hVSwA=,iv:cR45XzuS9n7PHDWkrzic7QTbC5ayM8heDjqIPz2vt4c=,tag:01Y6Ciflk+RPAeN6xF+Zjg==,type:str]
+    TELEGRAM_CHAT_ID: ENC[AES256_GCM,data:dWtc6ayo2wT44Eob20JBks7w147MRYM=,iv:aLp8xhdVZpie9/PdaAkrGt3GXMv0iY98Yb2bb3YjAP4=,tag:ORDZxxi0fZoTlTt73ioniw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBnVUZ4UnlLQk5XamV6QkE1
+            aWRXdU9nbHVlR0dUUTkrVHJ6ZDhXUkY5Y1ZjCnZiMnFTVndjMXczdGdWWTRONktp
+            dC9GYmtMazQzT2dpSSt1NnkzQlFSVVEKLS0tIEdrWjBpaExEVzdnSWJxN0luODJa
+            T2ZrY2lmaGlUTDFSWm9LNDAvVmlCMVkK8L3l1FsAgJBsmKt0YGEP277V6f7uOGD2
+            dHGuvBWYI8jVpCGECNQorsgzz1nnEfwKN4LqKYCwTu65cbA0rg/x2A==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-25T21:56:20Z"
+    mac: ENC[AES256_GCM,data:MtGM9CRGo9nCuONuy0Jfwe/1WO5SZ3/uOHlDUm0IvAYiLGj5bLVhMY4Jc/b22Se5mu0B9U3vrGobANney//HuNgopRS8BdW8Y6NBSCO8WlHaGEFp31jiALmlkGZsW17LDew4k84MV/6nXKufx4PJN1uUJh396JRWaHd4aCZXDAI=,iv:Eh058SZPUOTchLVDDVR7Q+5VZ3vOuA14H0HAfHPxiE8=,tag:eEDYfElwqrLvE9/PJsm8MA==,type:str]
+    version: 3.13.2
