@@ -25,10 +25,10 @@ metadata:
     namespace: media
 type: Opaque
 stringData:
-    SONARR_API_KEY: ENC[AES256_GCM,data:s2DHY865SvIZJ4/GtIn08k07Kx7WLl8=,iv:Ym94QcJky/j+WEdAxINTUBVzZZO6T6lXizgfk5Hmgqk=,tag:NapsaT5etMPFicIcrXBo3Q==,type:str]
-    RADARR_API_KEY: ENC[AES256_GCM,data:Z2siQ44poxdf0Rap3YABsQZjbhySC2o=,iv:1NmTfNoi1ayYroCjfsh5aWg3Ke45+B0iKF1n1I7y7w0=,tag:Bb+jhEBZpI5yUkZxMV3M7Q==,type:str]
-    PROWLARR_API_KEY: ENC[AES256_GCM,data:2TvDomuSTQPKTR/5+B16URVAUYKk7Sg=,iv:6x1BO328VnAlulFBQqXS7l81tasH3JzzBCFI0VlBtHE=,tag:9dM55gmIvdCNx3TpkhxSvA==,type:str]
-    BAZARR_API_KEY: ENC[AES256_GCM,data:U2Qk72vXoVChdEHvQiKiUlL0HmUz9Xk=,iv:BgItRpVWobM+x9R4ReTWfiDw/V6pBKaAFiSdUylW9lM=,tag:aGK9Hh9ED2foVksH34/i5A==,type:str]
+    SONARR_API_KEY: ENC[AES256_GCM,data:/d7Maeby3AggC5qR3jf8a3N3WnjUYvQYfh348m9pA0I=,iv:6p58pd3hWmzLvjVyeQjJ/zAnQ7QxVdoa0cWOZyjhChI=,tag:egKaQk8SMyo+hLNrvISbSg==,type:str]
+    RADARR_API_KEY: ENC[AES256_GCM,data:shhmwM/TzhGV/SyTBR9GpTGlr7OfR+rTp6bzTZ3/6g0=,iv:TZYClXqxfq/uL0ve2f86E2sFpbB17Bkry4ZAXudI+LM=,tag:nVrldzhWnlzsWnwRMnAJuw==,type:str]
+    PROWLARR_API_KEY: ENC[AES256_GCM,data:VGIU0bIANwcmI3P2iDtImxbTe3vxtY8ZLhosW28AYow=,iv:jnFZUmjF2qzffU6wqkxTJqg/xZTyWCZj1OLhe47WPjQ=,tag:UOSmS9+DUKL9VcRpOz7mVw==,type:str]
+    BAZARR_API_KEY: ENC[AES256_GCM,data:K/j4EBwnA0k54WVX4P5w5RCu5+vmv985Etpo1LKvuO0=,iv:P/x9VRYtuA2vQ3RU8/nwKzQ/wdSp/BgOSCtb3dmp8qg=,tag:37d8GQfWYYF67jr2cNspbQ==,type:str]
 sops:
     age:
         - enc: |
@@ -41,6 +41,6 @@ sops:
             -----END AGE ENCRYPTED FILE-----
           recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-07-25T21:56:20Z"
-    mac: ENC[AES256_GCM,data:y67kWW4G+coZEe60puXDJPcRBQg5+mXY6Vd5RYnr4lWvfpwwTzVgHawa/W+TwRlTRiynW8qQLDo0uxCXnuwIqneyFlBXDYgd2KWBoRIxXOHEir4lZCfi4h0m2EmlLhXquR9Wv+AM/L056pyHm0P7I+TlqrgvG2cJ7WK8cIOOFQQ=,iv:2hOM1HYzivcDQovjpGcgJmi+MbU9CAKaZhqvpu7/GxY=,tag:ChJ3clA8oI0+sTnAYt3eQA==,type:str]
+    lastmodified: "2026-07-25T22:34:46Z"
+    mac: ENC[AES256_GCM,data:4k+KskSBNdavh9t9x+srmF0hgsHPgyscJbGHB+yG5GA9LvCdz+g4r5tsFBYCECILJxaNVPqClyIRKVZM6gXrqcj5sxFEEWwewWak1LZQXAZwDhmB5tyHX541A1lkkllQ/f140i6vYD7smMAq6jbQDVGBxGNQbFh2oTlvqViv7Xs=,iv:+Im8pu4H5Ua1x1wSBKlx9DBzi9YLVsmxFFI7Df8dIFo=,tag:fsB3v07ZdSBr0wNtWa8BaA==,type:str]
     version: 3.13.2

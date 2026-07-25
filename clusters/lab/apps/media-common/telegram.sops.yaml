@@ -18,8 +18,8 @@ metadata:
     namespace: media
 type: Opaque
 stringData:
-    TELEGRAM_BOT_TOKEN: ENC[AES256_GCM,data:VhOawkOiQRRNw+2X4pLBBM8RD9hVSwA=,iv:cR45XzuS9n7PHDWkrzic7QTbC5ayM8heDjqIPz2vt4c=,tag:01Y6Ciflk+RPAeN6xF+Zjg==,type:str]
-    TELEGRAM_CHAT_ID: ENC[AES256_GCM,data:dWtc6ayo2wT44Eob20JBks7w147MRYM=,iv:aLp8xhdVZpie9/PdaAkrGt3GXMv0iY98Yb2bb3YjAP4=,tag:ORDZxxi0fZoTlTt73ioniw==,type:str]
+    TELEGRAM_BOT_TOKEN: ENC[AES256_GCM,data:Sgyxkdvp+9nRANdC1b/P23uWwTJQ25KifouG4ek/hoiYtl31/wm76RGGVQk/Xw==,iv:2bS+0+4xiI8lKEFmPjVdLNJqj7bo9yxZvNmFkaax788=,tag:j6OR7jK2b/Ta5VXiFWyflw==,type:str]
+    TELEGRAM_CHAT_ID: ENC[AES256_GCM,data:w6RpgY09We4SMzQ=,iv:ZhnJfCoGr/UomN7ezMIOJJRLQv65JzNy13XJnuC9mng=,tag:i9CutsJHSgSnlwe4MkRQzA==,type:int]
 sops:
     age:
         - enc: |
@@ -32,6 +32,6 @@ sops:
             -----END AGE ENCRYPTED FILE-----
           recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-07-25T21:56:20Z"
-    mac: ENC[AES256_GCM,data:MtGM9CRGo9nCuONuy0Jfwe/1WO5SZ3/uOHlDUm0IvAYiLGj5bLVhMY4Jc/b22Se5mu0B9U3vrGobANney//HuNgopRS8BdW8Y6NBSCO8WlHaGEFp31jiALmlkGZsW17LDew4k84MV/6nXKufx4PJN1uUJh396JRWaHd4aCZXDAI=,iv:Eh058SZPUOTchLVDDVR7Q+5VZ3vOuA14H0HAfHPxiE8=,tag:eEDYfElwqrLvE9/PJsm8MA==,type:str]
+    lastmodified: "2026-07-25T22:38:03Z"
+    mac: ENC[AES256_GCM,data:iHHVk31NxzGIlfDAyaF1WnjKVFw/ThQJhESF3c+0xo51yqySWXrnSGT0mKtF/QxrES5p1uxtP5aP+vMbVkyqQt4EkIWPIQuUFH4Mw+D5HQb27OGXeTo49HTmFAPqjO6XMAax00ItKSLGxdGRWQy5lbF4X7Hj+5M8BPeH8X4TQ7M=,iv:S0sB/+g0Hukf/MJbPscxSmIRj8UwghVOylZi1H/2ITQ=,tag:juPu1UnOhwwI35pIcOS4Zg==,type:str]
     version: 3.13.2
