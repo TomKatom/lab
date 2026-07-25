@@ -172,6 +172,10 @@ Edit them in with `sops clusters/lab/apps/media-common/
 arr-api-keys.sops.yaml` once PR3 has merged (its placeholder gate says
 exactly this).
 
+> **⚠ Type every value as a quoted string** — `"a1b2c3…"`, not `a1b2c3…`.
+> See the box in §2.5: an all-digit key entered bare re-encrypts as a
+> number and the Secret then fails to apply.
+
 ### 2.3 Deluge: listen port and path layout — verify, don't assume
 
 ```sh
@@ -278,6 +282,25 @@ fails its recheck.
 
 Edit them in with `sops clusters/lab/apps/media-common/telegram.sops.yaml`
 once PR3 has merged.
+
+> **⚠ Type every value as a quoted string.** In the `sops` editor write
+> `TELEGRAM_CHAT_ID: "-1234567890"`, **with the quotes**. Bare, YAML reads
+> it as a number and sops re-encrypts it as `type:int`; a number under
+> `stringData` makes the whole Secret unappliable, and Argo drops it with
+> `cannot unmarshal number into Go struct field Secret.stringData of type
+> string` — the Secret never appears in the namespace while every other
+> resource in the overlay applies normally, so `kubectl get ns media`
+> looks healthy and only the one Secret is missing. This bit for real on
+> the first fill of this file. CI now rejects it at PR time; if the check
+> named **sops Secret values are all strings** fails, this is why —
+> re-open the file and quote the value.
+>
+> Verify before committing, without printing the secret:
+>
+> ```sh
+> grep -c 'type:str]' clusters/lab/apps/media-common/telegram.sops.yaml
+> # 3 — both values plus the sops mac. Any 'type:int]' is the bug above.
+> ```
 
 ---
 

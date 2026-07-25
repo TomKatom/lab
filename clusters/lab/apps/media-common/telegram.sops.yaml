@@ -1,11 +1,16 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# Both encrypted values below are the literal string REPLACE_ME_BEFORE_MERGE.
-# Create the bot and read the group's chat id per
-# `docs/runbooks/media-migration.md` §2.5, then:
-#   sops clusters/lab/apps/media-common/telegram.sops.yaml
-# replace both values, delete this comment block, commit. Keep both quoted —
-# a group chat id is a negative integer (e.g. -1001234567890), which
-# unquoted YAML would parse as a number and stringData rejects.
+# Real credentials, age-encrypted. Sourced per
+# `docs/runbooks/media-migration.md` §2.5; rotate with
+# `sops clusters/lab/apps/media-common/telegram.sops.yaml`.
+#
+# ⚠ Every value here must stay a *quoted string*. TELEGRAM_CHAT_ID is an
+# all-digit negative group id: typed unquoted into the sops editor it
+# re-encrypts as `type:int`, and a number under `stringData` makes the
+# whole Secret unappliable — Argo fails the sync with "cannot unmarshal
+# number into Go struct field Secret.stringData of type string" and this
+# Secret simply never appears in the namespace, while every other resource
+# in the overlay applies fine. That is exactly what happened on first fill
+# (#54); CI now greps every clusters/**/*.sops.yaml for non-`type:str`
+# values under stringData so it fails at PR time instead.
 #
 # Overseerr's "Media Available" agent and Tautulli's recently-added digest
 # both post to this one group. Neither reads the Secret itself — both are
@@ -19,7 +24,7 @@ metadata:
 type: Opaque
 stringData:
     TELEGRAM_BOT_TOKEN: ENC[AES256_GCM,data:Sgyxkdvp+9nRANdC1b/P23uWwTJQ25KifouG4ek/hoiYtl31/wm76RGGVQk/Xw==,iv:2bS+0+4xiI8lKEFmPjVdLNJqj7bo9yxZvNmFkaax788=,tag:j6OR7jK2b/Ta5VXiFWyflw==,type:str]
-    TELEGRAM_CHAT_ID: ENC[AES256_GCM,data:w6RpgY09We4SMzQ=,iv:ZhnJfCoGr/UomN7ezMIOJJRLQv65JzNy13XJnuC9mng=,tag:i9CutsJHSgSnlwe4MkRQzA==,type:int]
+    TELEGRAM_CHAT_ID: ENC[AES256_GCM,data:LaD2opzqaQzjj3U=,iv:+5CXjpsqs0iO6uYTE3HgXkVCyX2S3AyF6L0vNvmTXSU=,tag:W/LnGASVI5vYYBynh1CXTA==,type:str]
 sops:
     age:
         - enc: |
@@ -32,6 +37,6 @@ sops:
             -----END AGE ENCRYPTED FILE-----
           recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
     encrypted_regex: ^(data|stringData)$
-    lastmodified: "2026-07-25T22:38:03Z"
-    mac: ENC[AES256_GCM,data:iHHVk31NxzGIlfDAyaF1WnjKVFw/ThQJhESF3c+0xo51yqySWXrnSGT0mKtF/QxrES5p1uxtP5aP+vMbVkyqQt4EkIWPIQuUFH4Mw+D5HQb27OGXeTo49HTmFAPqjO6XMAax00ItKSLGxdGRWQy5lbF4X7Hj+5M8BPeH8X4TQ7M=,iv:S0sB/+g0Hukf/MJbPscxSmIRj8UwghVOylZi1H/2ITQ=,tag:juPu1UnOhwwI35pIcOS4Zg==,type:str]
+    lastmodified: "2026-07-25T22:50:18Z"
+    mac: ENC[AES256_GCM,data:0KvIgUfJNNngUe8/B1jDA/3E/p18sRGCJPzw0sJz9OoJV1hfH+i/x78bey3V1JJTASc7s1BLmb2//Rfi/Qvt23WwHGYDRfuoY2p3CjjL9aF+wHheRG0hhH2/cb1Bs7WCkNhM4kzfGwShG/PfqyDZlNSWy9NH98B3hMWwpJm6v6c=,iv:YQlXUOQ/xhVIz3pEPQTOSwguoP1Dpqq/5BsSuAv7U74=,tag:bMxBVXbzM0XgGMhLinIK8Q==,type:str]
     version: 3.13.2
