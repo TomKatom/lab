@@ -151,6 +151,45 @@ jobs:
       CRDS_CATALOG_REF: "dcaa31aa03082906c0325a7a0ee7d5191e9cbe24"
     steps:
       - uses: actions/checkout@v7
+      # A Kubernetes Secret's stringData is map[string]string, so every
+      # value in a ksops-decrypted Secret must be a *string*. A value typed
+      # into the `sops` editor without quotes - an all-digit *arr API key,
+      # a negative Telegram group chat id - is parsed as a YAML number and
+      # re-encrypted as `type:int`. Nothing else in this pipeline notices:
+      # the file is well-formed YAML, kustomize builds it, and kubeconform
+      # validates the Secret. It only fails at Argo sync time, with `cannot
+      # unmarshal number into Go struct field Secret.stringData of type
+      # string` - and the failure is quiet in the worst way, since the
+      # other resources in the overlay apply normally and only the one
+      # Secret is missing from the namespace (hit for real on #54's first
+      # fill of telegram.sops.yaml).
+      #
+      # The type tag lives in the plaintext ciphertext envelope
+      # (`ENC[AES256_GCM,data:...,type:int]`), so this check needs neither
+      # decryption nor the age key - which is what lets it run in this
+      # keyless, GitHub-hosted job at all.
+      #
+      # Scoped to clusters/ on purpose: ansible/ and infra/tofu/ sops files
+      # legitimately hold ints and bools. Only Kubernetes Secret payloads
+      # are required to be strings. It lives in this job rather than its
+      # own so it gates on an already-required check.
+      - name: sops Secret values are all strings
+        shell: bash
+        run: |
+          set -uo pipefail
+          bad=0
+          while IFS= read -r -d '' f; do
+            offenders=$(grep -nE 'ENC\[AES256_GCM,' "$f" | grep -vE 'type:str\]' || true)
+            [ -n "$offenders" ] || continue
+            bad=1
+            echo "::error file=${f}::non-string SOPS value(s) - stringData requires strings. Run \`sops ${f}\` and re-enter the value in quotes."
+            # Redact the payload; the type tag and key name are the point.
+            echo "$offenders" | sed -E 's/ENC\[AES256_GCM,.*(type:[a-z]+)\]/ENC[<redacted>,\1]/'
+          done < <(find clusters \( -name '*.sops.yaml' -o -name '*.sops.yml' \) -print0)
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          echo "all clusters/**/*.sops.ya?ml values are type:str"
       - uses: azure/setup-helm@v5
       - name: install kustomize + kubeconform
         env:

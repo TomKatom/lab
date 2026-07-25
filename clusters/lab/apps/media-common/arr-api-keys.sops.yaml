@@ -1,11 +1,12 @@
-# !! PLACEHOLDER CIPHERTEXT — DO NOT MERGE AS-IS !!
-# All four encrypted values below are the literal string
-# REPLACE_ME_BEFORE_MERGE, not real API keys. Read the old server's current
-# keys per `docs/runbooks/media-migration.md` §2.2, then:
-#   sops clusters/lab/apps/media-common/arr-api-keys.sops.yaml
-# replace the four values, delete this comment block, commit. Keep each
-# value quoted — an *arr key is 32 hex chars and can be all-digits, which
-# unquoted YAML would parse as a number and stringData rejects.
+# Real API keys, age-encrypted. Read off the old server per
+# `docs/runbooks/media-migration.md` §2.2; edit with
+# `sops clusters/lab/apps/media-common/arr-api-keys.sops.yaml`.
+#
+# ⚠ Every value here must stay a *quoted string*. An *arr key is 32 hex
+# chars and can come out all-digits; typed unquoted into the sops editor it
+# re-encrypts as `type:int`, and a number under `stringData` makes the whole
+# Secret unappliable (see ./telegram.sops.yaml, where that happened for
+# real). CI now greps for it.
 #
 # These are pinned to the old server's keys deliberately, never rotated:
 # the databases restored in runbook §5-§7 already hold those keys in their
