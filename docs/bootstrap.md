@@ -30,6 +30,7 @@ argocd_secrets   → ensure argocd namespace
                  → create repo-lab repository Secret  (deploy key from SOPS)
 argocd           → assert both Secrets exist (fails loudly if not)
                  → install pinned helm binary
+                 → install pinned argocd CLI
                  → helm upgrade --install argo-cd (ksops repo-server patch) --wait
                  → kubectl apply root-app.yaml
                  → read-back: repo-server rolled out, root-app present
@@ -134,6 +135,16 @@ kubectl -n argocd exec deploy/argo-cd-argocd-repo-server -- \
   sh -c 'ls -l /usr/local/bin/ksops /usr/local/bin/kustomize && echo "$SOPS_AGE_KEY_FILE"'
 ```
 
+The `argocd` CLI is also on `k3s-node` now (same role, pinned version matching
+`argocd_chart_version`'s bundled server version). SSH to the node and use
+`--core` mode — it reads the Application CRDs straight through the ambient
+kubeconfig, no `argocd login`/password needed:
+
+```sh
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml argocd app list --core
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml argocd app get root-app --core
+```
+
 The repo-server Deployment is **`argo-cd-argocd-repo-server`**, not
 `argo-cd-repo-server`: the release is named `argo-cd`, and the chart's
 `fullname` helper only collapses `<release>-<nameOverride>` to the bare
@@ -210,6 +221,18 @@ sync rolls the upgrade out on its own. **You never re-dispatch
 > order (the role was authored before the self-manage manifest existed, so
 > there was nothing to grep). If a future change ever reintroduces a third
 > copy of the version, it **must** join the same Renovate group.
+
+`argocd_cli_version` (same defaults file) is a **third, deliberately
+ungrouped** pin — it's a `github-releases` dep, not `helm`, so Renovate bumps
+it on its own schedule rather than alongside the two above. That's fine for
+drift, not fine for silence: because `argocd` CLI installation only runs
+during an `argocd-bootstrap` dispatch (never on push, same as the rest of
+this role), a CLI-only Renovate PR landing on `master` does **not** update
+the binary already on `k3s-node` — it takes effect only on the next
+(re-)dispatch. A client/server skew just prints a warning
+(`level=warning msg="Client version is different than server version"`,
+non-fatal); if it ever bothers you, re-dispatch `argocd-bootstrap` to pick up
+the new CLI (idempotent, per [Re-dispatching](#re-dispatching-a-failed-or-partial-bootstrap)).
 
 ## What this stage does *not* touch (confirm it stays true)
 
