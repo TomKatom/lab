@@ -96,7 +96,7 @@ spec:
 Traefik's `IngressClass` is the cluster default, and its `default` `TLSStore`
 serves `wildcard-tomkatom-tls` (issued by `traefik/wildcard-certificate.yaml`
 into the `traefik` namespace) for any host that doesn't ask for its own
-certificate. Two consequences worth knowing:
+certificate. Three consequences worth knowing:
 
 - **There is no `:80`.** Only the `websecure` entrypoint is published on the
   Service, so klipper binds `:443` on the node and nothing else — matching
@@ -106,6 +106,12 @@ certificate. Two consequences worth knowing:
   which is how an app opts into Authelia forward-auth:
   `traefik.ingress.kubernetes.io/router.middlewares:
   authelia-forwardauth@kubernetescrd`.
+- **`kubectl get ingress` reports the public IP**, not the node's
+  `10.10.10.10`. Traefik writes `ingressEndpoint.ip` from `traefik.yaml`
+  into every Ingress status instead of copying its own LoadBalancer
+  address, because that status field is exactly where external-dns reads
+  the target it publishes. Both halves of that setting are load-bearing —
+  see "DNS records from Ingresses (inert)" below.
 
 ## Protecting a service with forward-auth
 
@@ -133,6 +139,52 @@ protected the moment the annotation lands. Two things worth knowing:
   files to already exist the instant it starts, so the config half must
   land first and therefore also carries `CreateNamespace=true`.
 
+### Adding or changing a user
+
+Users live in `authelia/users-database.sops.yaml`, encrypted whole. There is
+no redeploy:
+
+```sh
+authelia crypto hash generate argon2 --password '...'   # or run it interactively
+sops clusters/lab/platform/authelia/users-database.sops.yaml
+# add the user + argon2id hash, save, commit, PR, merge
+```
+
+Argo updates the Secret on merge. **Authelia picks it up on its next
+container restart, not instantly** — the file is mounted with `subPath`
+(it has to be: it nests inside the SQLite PVC's own `/config` mount), and a
+`subPath` mount re-resolves on container restart rather than tracking the
+Secret live. Restart the Pod if you need the change now.
+
+### Smoke-testing forward-auth end to end
+
+Worth doing after any change to Traefik, Authelia, or the wildcard cert.
+Apply a throwaway protected Ingress, check it, delete it — do **not** commit
+it into `platform/`, which is steady state only:
+
+```sh
+kubectl create ns whoami-test
+kubectl -n whoami-test create deployment whoami --image=traefik/whoami:v1.11.0
+kubectl -n whoami-test expose deployment whoami --port=80
+kubectl -n whoami-test create ingress whoami \
+  --rule='whoami-test.tomkatom.com/*=whoami:80' \
+  --annotation traefik.ingress.kubernetes.io/router.middlewares=authelia-forwardauth@kubernetescrd
+
+# all three checks run over WireGuard, against the node — never public DNS
+curl -sI --resolve whoami-test.tomkatom.com:443:10.10.10.10 \
+  https://whoami-test.tomkatom.com          # 302 → auth.tomkatom.com, real LE chain
+kubectl -n whoami-test get ingress whoami \
+  -o jsonpath='{.status.loadBalancer.ingress[*].ip}'   # 145.239.3.55, not 10.10.10.10
+
+kubectl delete ns whoami-test
+```
+
+A `302` to `auth.tomkatom.com?rd=...` is the pass: it proves the wildcard
+cert served, Traefik routed, and the Middleware resolved cross-namespace. A
+`200` means forward-auth did **not** engage — check the annotation. Note
+external-dns logs a would-create for the new host while the Ingress exists;
+that is dry-run doing its job, and it disappears with the namespace.
+
 ## DNS records from Ingresses (inert)
 
 external-dns watches `Ingress` objects and would publish an A record per
@@ -153,20 +205,22 @@ like. Worth being precise about, because the cutover depends on it:
   not own is unreachable to it — see `policy: sync` below.
 - **What it does guard is the one unconditional write: creating a name the
   zone does not have yet.** `auth.tomkatom.com` and `plex.tomkatom.com`
-  resolve to nothing today, so those are real creates.
-- **And today every such create would point at `10.10.10.10`** — RFC1918
-  space in a public zone. See the `sources` bullet below for why.
+  resolve to nothing today, so those are real creates — and a create makes
+  a new-server service resolve publicly while the old server is still the
+  one in production. That timing, not safety, is what the flag buys now.
 
-So the flag comes off exactly once, as a deliberate step in the cutover —
-`docs/runbooks/dns-cutover.md` (Phase 5, PR6) — alongside flipping
-`manage_dns=true` in Tofu **and fixing the published target**. Never as a
-drive-by edit.
+So the flag comes off exactly once, as a deliberate step in
+[`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md),
+alongside flipping `manage_dns=true` in Tofu. Never as a drive-by edit.
 
 Three settings worth knowing before that day:
 
 - **`txtOwnerId: lab-k3s`** is stamped into an ownership TXT record beside
   everything external-dns creates. Two servers share this zone; the owner ID
   is how external-dns tells its own records from the ones it must not touch.
+  The TXT's name carries a record-type infix: an A record at
+  `auth.tomkatom.com` is tracked by `_externaldns.a-auth.tomkatom.com`, a
+  CNAME by `cname-`. Easy to look up the wrong name otherwise.
 - **`policy: sync`**, not the chart default `upsert-only`. `upsert-only`
   never issues a delete at all, so every retired Ingress would strand a
   permanent A + TXT pair on a shared zone that nothing in git accounts for.
@@ -185,17 +239,24 @@ Three settings worth knowing before that day:
   an owner TXT by hand and external-dns forgets the record instead of
   cleaning it up — so remove the Ingress, not the TXT.
 - **`sources: [ingress]`**, narrowed from the chart's `[service, ingress]`,
-  to keep external-dns off Services it has no business publishing. ⚠ **It
-  does not avoid the `10.10.10.10` problem, despite how it was originally
-  justified.** The Traefik chart renders
-  `--providers.kubernetesingress.ingressendpoint.publishedservice=traefik/traefik`,
-  so Traefik copies its LoadBalancer status onto every Ingress, and
-  external-dns reads the target from there — the same internal address
-  `sources: [service]` would have given, since klipper binds the node IP.
-  Before dry-run comes off, the target has to be overridden: external-dns
-  `--default-targets`, a per-Ingress
-  `external-dns.alpha.kubernetes.io/target` annotation, or Traefik's
-  `ingressEndpoint.ip`. Tracked as a cutover-runbook prerequisite.
+  to keep external-dns off Services it has no business publishing — the
+  rendered ClusterRole then grants `ingresses` get/watch/list and nothing
+  more. It buys nothing on the *target*, though: external-dns takes that
+  from `status.loadBalancer.ingress[].ip` on the Ingress, which Traefik
+  fills in either way.
+
+**The target is fixed in `traefik.yaml`, not here.** Left at chart defaults,
+Traefik copies its own LoadBalancer address into every Ingress status —
+`10.10.10.10`, since klipper binds the node — and external-dns would publish
+RFC1918 space into a public zone. So `traefik.yaml` sets
+`providers.kubernetesIngress.publishedService.enabled: false` **and**
+`ingressEndpoint.ip: 145.239.3.55`. Both, in that combination: Traefik's
+`updateIngressStatus` returns early on `publishedService` and never looks at
+`ip`, so the second setting alone is silently a no-op, and the chart defaults
+the first to `true`. **Re-check `kubectl get ingress -A` shows the public IP
+after any Traefik chart bump** — that is the realistic way this regresses,
+and external-dns's logs will not tell you (the Cloudflare provider never logs
+a target).
 
 The Cloudflare token is the same one cert-manager uses, encrypted a second
 time into the `external-dns` namespace (`external-dns/cloudflare-api-token.sops.yaml`),
@@ -207,6 +268,26 @@ files in one commit.**
 CI's `render-manifests` job renders every top-level platform `Application`
 (`helm template` for chart Applications, `kustomize build` for overlays,
 skipping ksops overlays it has no key to decrypt) as a syntax/schema
-preview. For an exact, ksops-decrypted preview of a change to an
-*already-created* Application, run `argocd app diff <app> --revision
-<branch>` over WireGuard before merging.
+preview, then validates every CR and `Application` file directly against
+real CRD schemas from a pinned `datreeio/CRDs-catalog` commit. That last
+step is why a misspelled field in a `ClusterIssuer` or `Middleware` now
+fails CI instead of failing live: kubeconform's built-in schemas cover no
+CRD, and a resource with no schema is *skipped*, not validated. It runs
+without `-ignore-missing-schemas`, so adding a resource from a CRD the
+catalog doesn't carry is a deliberate step (add a `-schema-location`), not a
+silent pass.
+
+Two things it still cannot see, both by design:
+
+- **Chart values.** `helm template` proves a values file renders; it cannot
+  prove the value takes effect. Read the rendered container args when a
+  setting is load-bearing — Traefik's `ingressEndpoint` and external-dns's
+  `--dry-run` are both settings whose absence renders perfectly.
+- **Anything null in a `helm.valuesObject`.** Argo's API server strips nulls
+  before Helm sees them ([argo-cd#16312](https://github.com/argoproj/argo-cd/issues/16312)),
+  so `key: null` renders correctly in CI and does nothing live. Always find
+  the positive form of the setting.
+
+For an exact, ksops-decrypted preview of a change to an *already-created*
+Application, run `argocd app diff <app> --revision <branch>` over WireGuard
+before merging.

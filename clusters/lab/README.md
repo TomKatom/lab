@@ -6,7 +6,11 @@ everything here is reconciled from git; nothing is applied by hand.
 - `bootstrap/` — Argo CD Helm values, the ksops repo-server patch, and
   `root-app.yaml` (Phase 4, live — see [`docs/bootstrap.md`](../../docs/bootstrap.md)).
 - `platform/` — cert-manager, external-dns, Traefik, Authelia, ksops-encrypted
-  secrets, and a placeholder `monitoring/` namespace (Phase 5).
+  secrets, and a placeholder `monitoring/` namespace (Phase 5, live — see
+  [`platform/README.md`](platform/README.md)). Everything is synced and
+  healthy except external-dns, which runs `--dry-run` on purpose until the
+  zone moves off the old server
+  ([`docs/runbooks/dns-cutover.md`](../../docs/runbooks/dns-cutover.md)).
 - `apps/` — the media stack: Plex, Prowlarr, Sonarr, Radarr, Bazarr, Deluge,
   Overseerr, each a small `values.yaml` against the shared
   `bjw-s/app-template` Helm chart (Phase 6).

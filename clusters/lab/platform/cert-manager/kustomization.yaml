@@ -10,7 +10,12 @@ kind: Kustomization
 generators:
   - secret-generator.yaml
 
+# The real *.tomkatom.com Certificate is not here — it lives in ../traefik/,
+# because Traefik's default TLSStore can only read a Secret from its own
+# namespace. A `smoke-staging` Certificate sat here until the prod issuance
+# succeeded; it was removed once it had done its job (prune took the
+# Certificate and its Secret with it). Re-add one the same way if the DNS-01
+# path ever needs re-proving without spending prod rate limit.
 resources:
   - clusterissuer-staging.yaml
   - clusterissuer-prod.yaml
-  - smoke-staging-certificate.yaml

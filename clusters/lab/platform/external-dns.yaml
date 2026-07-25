@@ -8,12 +8,13 @@
 # that server serves already has an explicit record, and an existing record
 # it does not own is unreachable to it (see `policy` below). What dry-run
 # guards is the one write that *is* unconditional — creating a name the zone
-# does not have yet — and today every such name would be created pointing at
-# 10.10.10.10. Traefik publishes its LoadBalancer address into every Ingress
-# status and klipper binds that to the k3s node's internal address, so RFC1918
-# space in a public zone is the real hazard. The flag comes off in the DNS
-# cutover, and not before the target is fixed — see README.md "DNS records
-# from Ingresses (inert)".
+# does not have yet (`auth.`, `plex.` resolve to nothing today). Those creates
+# now carry the right target — traefik.yaml's `ingressEndpoint.ip` publishes
+# the public IP into every Ingress status, replacing the internal 10.10.10.10
+# klipper would otherwise put there — so what is left to guard is the timing:
+# a create makes a name resolve to the *new* server while the old one is still
+# in production. The flag comes off as a deliberate step in
+# docs/runbooks/dns-cutover.md, never as a drive-by edit.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -43,11 +44,12 @@ spec:
                 name: cloudflare-api-token
                 key: api-token
         sources:
-          # Ingress only. The chart default is [service, ingress], and
-          # `service` would pull in Traefik's LoadBalancer Service — whose
-          # external IP is the *internal* 10.10.10.10, since klipper binds
-          # the node address. Publishing that to a public zone is wrong in
-          # every scenario, cutover included.
+          # Ingress only, narrowed from the chart default [service, ingress]
+          # so external-dns has no way to publish a Service it was never
+          # meant to — the rendered ClusterRole then grants `ingresses`
+          # get/watch/list and nothing more. Note this buys nothing on the
+          # *target*: Traefik copies an address into every Ingress status
+          # either way, which is why traefik.yaml pins `ingressEndpoint.ip`.
           - ingress
         domainFilters:
           # Hard boundary on the one zone this instance may touch. Not
@@ -87,9 +89,14 @@ spec:
         # the difference between "external-dns adopts a record" and
         # "external-dns leaves someone else's record alone".
         txtOwnerId: lab-k3s
-        # Keeps ownership TXTs off the record names themselves
-        # (_externaldns.auth.tomkatom.com, not auth.tomkatom.com), so a TXT
-        # can never collide with the A record it tracks.
+        # Keeps ownership TXTs off the record names themselves, so a TXT can
+        # never collide with the record it tracks. Mind the record-type
+        # infix when looking one up: the TXT for an A record at
+        # auth.tomkatom.com is `_externaldns.a-auth.tomkatom.com`, and a
+        # CNAME's would be `cname-`. AffixNameMapper.ToTXTName
+        # (registry/mapper/mapper.go) prepends `<type>-` to the first label
+        # unless the affix itself templates %{record_type}, which this one
+        # does not.
         txtPrefix: _externaldns.
         extraArgs:
           # See the header. external-dns still authenticates, reads the

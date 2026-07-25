@@ -307,14 +307,16 @@ Each phase is its own PR. Full detail and current status in
    encryption, gated CI apply pipeline. Authored + `tofu validate` green;
    first apply is a manual operator step (see
    [`docs/runbooks/tofu-apply.md`](runbooks/tofu-apply.md)).
-3. **Configure (Ansible)** *(current)* — WireGuard first, then NAT/DNAT,
+3. **Configure (Ansible)** — WireGuard first, then NAT/DNAT,
    hardening, `tank`, virtiofs, k3s install. Also install/enable
    `qemu-guest-agent` in the VM (see [Guest agent](#guest-agent) below) —
    Phase 2 deliberately leaves this out, since the VM has no OS config yet.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.
-5. **Platform apps** — cert-manager, external-dns, Traefik, Authelia.
-6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge → Plex →
-   Overseerr.
+5. **Platform apps** — cert-manager, external-dns, Traefik, Authelia. All
+   live. external-dns runs `--dry-run` until the zone moves off the old
+   server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
+6. **Media apps** *(current)* — Prowlarr → Sonarr/Radarr/Bazarr → Deluge →
+   Plex → Overseerr.
 7. **Observability** *(later)* — kube-prometheus-stack + Loki.
 8. **Backups** *(later)* — `vzdump` → NFS on a separate box.
 

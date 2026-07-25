@@ -61,6 +61,34 @@ spec:
             # pointing at authelia-forwardauth@kubernetescrd. Traefik v3
             # denies cross-namespace references by default.
             allowCrossNamespace: true
+          kubernetesIngress:
+            # What Traefik writes into every Ingress's
+            # status.loadBalancer.ingress[].ip — and therefore the target
+            # external-dns publishes, since the Ingress source reads the
+            # target from exactly that field.
+            #
+            # Both settings are needed, and the order they are evaluated in
+            # is the reason: Traefik's updateIngressStatus returns early on
+            # publishedService and never looks at ip
+            # (pkg/provider/kubernetes/ingress/kubernetes.go, v3.7.6), so
+            # setting ip alone is silently a no-op. The chart defaults
+            # publishedService.enabled to true, which points the status at
+            # this chart's own LoadBalancer Service — whose address klipper
+            # sets to the node's internal 10.10.10.10. Publishing that into
+            # a public zone is the hazard external-dns's --dry-run currently
+            # stands in for; this is the fix that lets the flag come off.
+            #
+            # The literal is the OVH host's single public IPv4 — the same
+            # value as infra/tofu/terraform.tfvars' `ovh_public_ip` and
+            # ansible/inventory/group_vars/all.yml, repeated because Argo
+            # renders this manifest straight from git with no templating
+            # layer that could reference either. If that IP ever changes,
+            # `grep -rn` for it: this file is one of the places it hides,
+            # and docs/runbooks/dns-cutover.md lists the rest.
+            publishedService:
+              enabled: false
+            ingressEndpoint:
+              ip: 145.239.3.55
         tlsStore:
           default:
             defaultCertificate:
