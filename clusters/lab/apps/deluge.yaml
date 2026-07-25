@@ -51,13 +51,29 @@ spec:
                     enabled: true
                     type: TCP
                     port: 8112
+                # Sized for the ~400 permanently-seeding torrents this
+                # inherits from the old server, where the cost of getting it
+                # wrong is asymmetric: an OOM kill means Deluge never writes
+                # state/*.fastresume, and all 400 torrents force-recheck
+                # against multi-TB of data on next start — hours of disk
+                # thrash and zero seeding. Memory limit is deliberately well
+                # above the ~1Gi of anonymous memory 400 torrents actually
+                # need, because libtorrent 2.x's mmap disk I/O charges its
+                # page cache to the cgroup: reclaimable, so not an OOM risk,
+                # but it keeps a tight limit in permanent reclaim. Headroom
+                # is free on a 128GB node.
+                #
+                # No CPU limit: seeding is not CPU-bound, and the one time
+                # Deluge is (a mass recheck) is the one time throttling it
+                # costs real waiting. Nothing else on this node needs
+                # protecting from it — same as every platform component,
+                # which set no limits at all.
                 resources:
                   requests:
-                    cpu: 250m
-                    memory: 512Mi
+                    cpu: 500m
+                    memory: 1Gi
                   limits:
-                    cpu: "2"
-                    memory: 2Gi
+                    memory: 4Gi
         # Documented exception (./README.md "Identity: everything runs as
         # 1000:1000"): the LSIO image boots as root via its own s6 init and
         # drops privilege internally to PUID/PGID above. No
@@ -71,6 +87,12 @@ spec:
         # kept; runAsUser/runAsGroup/runAsNonRoot and the container
         # securityContext are the only pieces the house block loses here.
         defaultPodOptions:
+          # Deluge writes one state/*.fastresume per torrent on SIGTERM;
+          # ~400 of them do not finish inside the 30s default, and a SIGKILL
+          # mid-write costs the same full recheck an OOM would. Every config
+          # change and image bump rolls this pod, so a clean shutdown is a
+          # routine event, not a rare one.
+          terminationGracePeriodSeconds: 300
           securityContext:
             fsGroup: 1000
             fsGroupChangePolicy: OnRootMismatch
