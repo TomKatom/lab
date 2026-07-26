@@ -1,0 +1,168 @@
+# Deluge — the shared BitTorrent client every *arr points its download
+# client at (`deluge.media.svc.cluster.local:8112`, Prowlarr/Sonarr/Radarr
+# talk to it over the WebUI's JSON-RPC API, not a native protocol). See
+# ./README.md for the mount table, sync waves, and the LSIO securityContext
+# exception this file follows.
+#
+# In-app listen port is not a manifest concern: Deluge's own core.conf sets
+# the torrent listen port, rewritten by docs/runbooks/media-migration.md §10
+# from the old server's 62348 to [51413, 51413] with random_port: false.
+# config/lab.yml's ports.torrent: 51413 is DNAT'd port-preserving from the
+# public IP to the node — the two LoadBalancer Services below are only the
+# cluster half of that contract; nothing here sets Deluge's listen port.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deluge
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: lscr.io/linuxserver/deluge
+                  # renovate: datasource=docker depName=lscr.io/linuxserver/deluge
+                  tag: "2.2.0-ls381"
+                env:
+                  # LSIO identity env — see the pod-level securityContext
+                  # comment below for why this replaces, rather than
+                  # complements, Kubernetes' own runAsUser enforcement.
+                  PUID: "1000"
+                  PGID: "1000"
+                  UMASK: "002"
+                envFrom:
+                  - configMap: media-env
+                probes:
+                  liveness:
+                    enabled: true
+                    type: TCP
+                    port: 8112
+                  readiness:
+                    enabled: true
+                    type: TCP
+                    port: 8112
+                # Sized for the ~400 permanently-seeding torrents this
+                # inherits from the old server, where the cost of getting it
+                # wrong is asymmetric: an OOM kill means Deluge never writes
+                # state/*.fastresume, and all 400 torrents force-recheck
+                # against multi-TB of data on next start — hours of disk
+                # thrash and zero seeding. Memory limit is deliberately well
+                # above the ~1Gi of anonymous memory 400 torrents actually
+                # need, because libtorrent 2.x's mmap disk I/O charges its
+                # page cache to the cgroup: reclaimable, so not an OOM risk,
+                # but it keeps a tight limit in permanent reclaim. Headroom
+                # is free on a 128GB node.
+                #
+                # No CPU limit: seeding is not CPU-bound, and the one time
+                # Deluge is (a mass recheck) is the one time throttling it
+                # costs real waiting. Nothing else on this node needs
+                # protecting from it — same as every platform component,
+                # which set no limits at all.
+                resources:
+                  requests:
+                    cpu: 500m
+                    memory: 1Gi
+                  limits:
+                    memory: 4Gi
+        # Documented exception (./README.md "Identity: everything runs as
+        # 1000:1000"): the LSIO image boots as root via its own s6 init and
+        # drops privilege internally to PUID/PGID above. No
+        # runAsUser/runAsNonRoot — the container does not start as 1000, so
+        # runAsNonRoot: true would fail admission outright — and no
+        # container-level capabilities.drop either: s6 needs CAP_CHOWN,
+        # CAP_SETUID, CAP_SETGID and CAP_DAC_OVERRIDE to chown /config and
+        # /data and then su from root down to PUID/PGID, and dropping ALL
+        # would break that internal step, not just harden it. The fsGroup/
+        # seccompProfile fields below don't block a root start, so they're
+        # kept; runAsUser/runAsGroup/runAsNonRoot and the container
+        # securityContext are the only pieces the house block loses here.
+        defaultPodOptions:
+          # Deluge writes one state/*.fastresume per torrent on SIGTERM;
+          # ~400 of them do not finish inside the 30s default, and a SIGKILL
+          # mid-write costs the same full recheck an OOM would. Every config
+          # change and image bump rolls this pod, so a clean shutdown is a
+          # routine event, not a rare one.
+          terminationGracePeriodSeconds: 300
+          securityContext:
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        service:
+          # Three Services, not one: klipper (k3s's bundled LB) can't share
+          # one port across TCP and UDP on a mixed-protocol Service, so the
+          # torrent port is split into two single-protocol LoadBalancers.
+          # Fallback if bt-udp ever needs to go away: drop it and disable
+          # DHT on any private tracker in use — TCP-only inbound is
+          # acceptable, just slower to find peers.
+          app:
+            # Pins the Service name to `deluge`. app-template appends the
+            # identifier to every Service name as soon as an app declares
+            # more than one (`_determineResourceNameFromValues.tpl`), so the
+            # WebUI would otherwise be `deluge-app` purely because the
+            # torrent port needed splitting — and it would silently rename
+            # again if a Service were ever added or removed. The *arrs'
+            # download-client host is config living in their DBs, not in
+            # git, so a rename there is a manual re-point on every app;
+            # DELUGE_URL in media-common/media-urls.yaml depends on this
+            # name too.
+            forceRename: deluge
+            ports:
+              http:
+                port: 8112
+          bt-tcp:
+            type: LoadBalancer
+            ports:
+              torrent:
+                port: 51413
+                protocol: TCP
+          bt-udp:
+            type: LoadBalancer
+            ports:
+              torrent:
+                port: 51413
+                protocol: UDP
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: deluge.tomkatom.com
+                paths:
+                  - path: /
+                    service:
+                      identifier: app
+                      port: 8112
+        persistence:
+          config:
+            accessMode: ReadWriteOnce
+            size: 2Gi
+            globalMounts:
+              - path: /config
+          # Broader than the old server, which bind-mounted only
+          # /data/torrents into Deluge — keep the full /data tree anyway, to
+          # match every sibling app's identical mount (see ./README.md
+          # "The /data mount"); don't narrow this back to /data/torrents.
+          data:
+            type: hostPath
+            hostPath: /data
+            hostPathType: Directory
+            globalMounts:
+              - path: /data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

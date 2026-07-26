@@ -1,0 +1,49 @@
+# The cluster-internal address of every app in the stack, in one place.
+#
+# These apps talk to each other constantly — Unpackerr polls Sonarr and
+# Radarr, Recyclarr pushes profiles to both, Homepage widgets read all of
+# them — and each consumer needs the same `http://<svc>.media.svc.cluster
+# .local:<port>` string. Inlining it per consumer means one port change is
+# a multi-file edit with no way to tell whether every copy was found.
+#
+# Consumed per key via `env.valueFrom.configMapKeyRef`, exactly like the
+# `arr-api-keys` Secret and for the same reason: an app needs a subset,
+# and the generic key here maps onto whatever env name that app happens to
+# want (Unpackerr's `UN_SONARR_0_URL`, Homepage's `HOMEPAGE_VAR_*`). This
+# is deliberately NOT `media-env` — that one is `envFrom`-ed whole by every
+# app because every app wants TZ, which is not true of these.
+#
+# This is a contract, not a description. The value here and the `service:`
+# block in each app's own manifest are two declarations of one fact and
+# nothing validates them against each other, so an app PR that changes a
+# port or Service name must change it here in the same commit.
+#
+# On Service names: app-template names the Service after the release when
+# an app declares exactly one, and appends the service identifier to all
+# of them as soon as it declares two or more. Deluge needs three (the
+# klipper mixed-protocol workaround), so it pins its WebUI Service with
+# `forceRename: deluge` rather than answering to `deluge-app` — see
+# ../deluge.yaml. Any app that later grows a second Service must do the
+# same or update its entry here; the rename is silent otherwise.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: media-urls
+  namespace: media
+data:
+  # Verified against the rendered chart output of the manifests that own
+  # them (`helm template`, Service name and port read off the object).
+  DELUGE_URL: http://deluge.media.svc.cluster.local:8112
+  PROWLARR_URL: http://prowlarr.media.svc.cluster.local:9696
+  FLARESOLVERR_URL: http://flaresolverr.media.svc.cluster.local:8191
+  SONARR_URL: http://sonarr.media.svc.cluster.local:8989
+  RADARR_URL: http://radarr.media.svc.cluster.local:7878
+  # Declared ahead of the PRs that create these Services (bazarr/recyclarr,
+  # plex/tautulli, the request layer). Ports come from the phase plan's
+  # reference table and are unverified against a real render until then —
+  # each of those PRs must confirm its Service renders with this name and
+  # port, or fix the entry here.
+  BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
+  PLEX_URL: http://plex.media.svc.cluster.local:32400
+  TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
+  OVERSEERR_URL: http://overseerr.media.svc.cluster.local:5055
