@@ -1,0 +1,157 @@
+# Sonarr — TV library management, driving Prowlarr for acquisition and
+# writing hardlinked imports into /data/media (see ./README.md "The /data
+# mount"). Wave 1: after media-common (wave 0) has created the namespace
+# and the arr-api-keys/telegram Secrets and media-env ConfigMap this
+# consumes.
+#
+# Comes up with an empty config on first sync — restoring the migrated
+# database, re-pointing the download client at Deluge and cleaning up
+# obsolete Remote Path Mappings are operator steps in
+# docs/runbooks/media-migration.md §6, not manifest concerns.
+#
+# sonarr.tomkatom.com is a taken name: an unowned CNAME on the still-live
+# old server points it at its own apex today, and external-dns here runs
+# --dry-run with ownership gates that mean it can never touch that record
+# regardless of what this Ingress declares. See
+# docs/runbooks/dns-cutover.md for the eventual cutover.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sonarr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. 1000:1000 is the
+        # `debian` user that owns the /data hostPath tree — see
+        # ./README.md "Identity: everything runs as 1000:1000". The
+        # home-operations image runs as `nobody:nogroup` by default and is
+        # confirmed rootless (checked its image config at authoring time),
+        # so no per-app exception is needed the way Deluge's LSIO image
+        # requires one.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/home-operations/sonarr
+                  # renovate: datasource=docker depName=ghcr.io/home-operations/sonarr
+                  tag: "4.0.19.2991@sha256:f9dec0cf69a45b16c698ef2a25fe6c70ff4ec8d0b2315897c0d48b3b5a456c87"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  # Overrides config.xml's AuthenticationMethod at startup,
+                  # which is what makes the migrated config reproducible —
+                  # Authelia's forwardAuth already gates the Ingress, so
+                  # Sonarr's own Forms login would just be a redundant,
+                  # out-of-sync second prompt. `External` (trust the
+                  # upstream proxy's headers, never prompt) is a real value
+                  # of NzbDrone.Core.Authentication.AuthenticationType in
+                  # this exact pinned tag (v4.0.19.2991) — verified against
+                  # Sonarr's own source, not just the wiki.
+                  SONARR__AUTH__METHOD: External
+                  # Must equal the old server's key: Prowlarr's app sync,
+                  # Unpackerr and Overseerr all cross-reference this value
+                  # in the migrated databases. Lives in arr-api-keys,
+                  # created by media-common — see ./README.md "Secrets and
+                  # environment".
+                  SONARR__AUTH__APIKEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # /ping is [AllowAnonymous] in Sonarr's own source at this
+                  # exact pinned tag (src/Sonarr.Http/Ping/PingController.cs)
+                  # — safe to probe from outside Authelia's forwardAuth,
+                  # which only gates the Ingress, not in-cluster kubelet
+                  # probes anyway.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /ping
+                    port: 8989
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /ping
+                    port: 8989
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /ping
+                    port: 8989
+                resources:
+                  requests:
+                    cpu: 200m
+                    memory: 512Mi
+                  limits:
+                    cpu: "2"
+                    memory: 2Gi
+        service:
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 8989
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: sonarr.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 5Gi
+            globalMounts:
+              - path: /config
+          # Identical container path to every other rw consumer of this
+          # hostPath (Radarr, Bazarr, Unpackerr, Deluge) — hardlink imports
+          # from /data/torrents into /data/media only work within one
+          # filesystem, and same-path-everywhere is what makes Remote Path
+          # Mappings unnecessary. See ./README.md "The /data mount".
+          data:
+            type: hostPath
+            hostPath: /data
+            hostPathType: Directory
+            globalMounts:
+              - path: /data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
