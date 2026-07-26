@@ -1,0 +1,81 @@
+# FlareSolverr — optional. It exists only to solve Cloudflare challenges for
+# indexers that need it; Prowlarr's UI is pointed at
+# http://flaresolverr.media.svc.cluster.local:8191 as an indexer-level proxy
+# per docs/runbooks/media-migration.md §5, not by anything in this file. If
+# no indexer ends up needing it, delete this file — Argo's prune removes the
+# Deployment and Service with it, nothing else in the stack references it.
+#
+# Wave 1, same as every other app chart here. No Ingress (nothing external
+# should ever reach this) and no persistence — its only state is a live
+# Chromium session, worth nothing across a restart.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: flaresolverr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        controllers:
+          main:
+            containers:
+              main:
+                image:
+                  repository: ghcr.io/flaresolverr/flaresolverr
+                  # renovate: datasource=docker depName=ghcr.io/flaresolverr/flaresolverr
+                  tag: "v3.5.0@sha256:139dfee1c6f89249c8d665d1333a42e8ec74ec0a86bc6bb1c8461e10d3a66a47"
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 2Gi
+                securityContext:
+                  # No per-app exception needed, unlike Deluge's LSIO note in
+                  # ./README.md. The upstream Dockerfile already `useradd`s a
+                  # dedicated `flaresolverr` account and switches to it with
+                  # `USER flaresolverr` at build time — confirmed by pulling
+                  # this exact digest and checking /etc/passwd, that account
+                  # is uid/gid 1000, the same identity this stack already
+                  # standardizes on. It also launches Chromium with
+                  # --no-sandbox (confirmed in source), so it never wants
+                  # Chromium's own setuid sandbox or the extra capabilities
+                  # that implies — the container boundary is the only
+                  # sandbox in play, and it was confirmed to start cleanly
+                  # and pass its own internal browser-launch self-test as
+                  # 1000:1000 with every capability dropped.
+                  capabilities:
+                    drop: ["ALL"]
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        service:
+          main:
+            controller: main
+            ports:
+              http:
+                port: 8191
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
