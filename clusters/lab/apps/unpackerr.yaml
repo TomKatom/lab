@@ -5,9 +5,11 @@
 # this file follows.
 #
 # Sonarr/Radarr don't exist yet in this repo (a sibling PR is landing them
-# in parallel) — Unpackerr will log connection errors against both URLs
-# below until that PR merges. Expected, not a bug; not worth making
-# conditional for a gap that closes on its own once both apps land.
+# in parallel) — Unpackerr will log connection errors against both until
+# that PR merges. Expected, not a bug; not worth making conditional for a
+# gap that closes on its own once both apps land. Note this fails at
+# connect, not at startup: the addresses resolve through media-urls
+# regardless of whether anything is listening behind them.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -31,15 +33,26 @@ spec:
                   repository: ghcr.io/unpackerr/unpackerr
                   # renovate: datasource=docker depName=ghcr.io/unpackerr/unpackerr
                   tag: "0.15.2"
+                # Address and credential both come from media-common, so
+                # this file states only what is specific to Unpackerr: which
+                # apps it serves and where their downloads land.
                 env:
-                  UN_SONARR_0_URL: http://sonarr.media.svc.cluster.local:8989
+                  UN_SONARR_0_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SONARR_URL
                   UN_SONARR_0_API_KEY:
                     valueFrom:
                       secretKeyRef:
                         name: arr-api-keys
                         key: SONARR_API_KEY
                   UN_SONARR_0_PATHS_0: /data/torrents
-                  UN_RADARR_0_URL: http://radarr.media.svc.cluster.local:7878
+                  UN_RADARR_0_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: RADARR_URL
                   UN_RADARR_0_API_KEY:
                     valueFrom:
                       secretKeyRef:

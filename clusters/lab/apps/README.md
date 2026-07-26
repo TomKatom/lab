@@ -178,6 +178,41 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
 - **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
   app that cares about time zone consumes the whole map via `envFrom`
   rather than naming the single key.
+- **ConfigMap `media-urls`** — the cluster-internal address of every app
+  in the stack (`DELUGE_URL`, `SONARR_URL`, …), consumed per key via
+  `env.valueFrom.configMapKeyRef`, same as `arr-api-keys` and never via
+  `envFrom`. These apps talk to each other constantly, so the same
+  `http://<svc>.media.svc.cluster.local:<port>` string is needed by
+  several consumers at once; holding it in one place is what keeps a port
+  change from being a multi-file edit with no way to confirm every copy
+  was found.
+
+  Treat it as a contract rather than a description. The entry here and
+  the `service:` block in the app's own manifest are two declarations of
+  one fact, and nothing validates them against each other — so a PR that
+  changes a Service name or port changes both in the same commit.
+
+### A Service's name depends on how many Services its app declares
+
+app-template names a Service after the release when an app declares
+exactly one, and appends the service identifier to **all** of them as
+soon as it declares two or more
+(`_determineResourceNameFromValues.tpl`). Sonarr declares one Service and
+gets `sonarr`; Deluge declares three (the klipper mixed-protocol
+workaround) and would get `deluge-app`, `deluge-bt-tcp`, `deluge-bt-udp`.
+
+The trap is that this reacts to a change made for unrelated reasons:
+adding a metrics Service to a single-Service app silently renames the one
+every other app was already calling. Nothing fails at render time — the
+in-chart `ingress.hosts.paths.service.identifier` reference follows the
+rename, so the app keeps serving; only the consumers that reach it by DNS
+break, and the *arrs' download-client and connection settings live in
+their own databases rather than in git, so re-pointing them is manual
+per-app work.
+
+Deluge therefore pins its WebUI Service with `forceRename: deluge`. Any
+app here that grows a second Service must do the same, or update its
+`media-urls` entry in the same commit.
 
 ## Renovate: the image-tag comment convention
 

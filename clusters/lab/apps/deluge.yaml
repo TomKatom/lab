@@ -106,6 +106,17 @@ spec:
           # DHT on any private tracker in use — TCP-only inbound is
           # acceptable, just slower to find peers.
           app:
+            # Pins the Service name to `deluge`. app-template appends the
+            # identifier to every Service name as soon as an app declares
+            # more than one (`_determineResourceNameFromValues.tpl`), so the
+            # WebUI would otherwise be `deluge-app` purely because the
+            # torrent port needed splitting — and it would silently rename
+            # again if a Service were ever added or removed. The *arrs'
+            # download-client host is config living in their DBs, not in
+            # git, so a rename there is a manual re-point on every app;
+            # DELUGE_URL in media-common/media-urls.yaml depends on this
+            # name too.
+            forceRename: deluge
             ports:
               http:
                 port: 8112

@@ -12,3 +12,4 @@ generators:
 
 resources:
   - media-env.yaml
+  - media-urls.yaml
