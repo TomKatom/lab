@@ -1,0 +1,184 @@
+# Plex — the media server itself, reading (never writing) the /data/media
+# tree the *arrs fill. Wave 1: after media-common (wave 0) has created the
+# namespace and the media-env ConfigMap this consumes.
+#
+# Deliberately has no Ingress, unlike every other app here. Plex remote
+# access is brokered by plex.tv: the server registers its own reachable
+# address with plex.tv, and clients are handed that address directly — so
+# there is no hostname to publish, no DNS record, and nothing for Authelia
+# to sit in front of. The LoadBalancer Service below is the whole of its
+# exposure, and 32400/TCP is DNAT'd port-preserving from the public IP to
+# the node the same way config/lab.yml's other exposed ports are.
+#
+# Comes up unclaimed on first sync. Restoring the migrated Application
+# Support tree — which is what carries the server identity and the watch
+# history with it — is an operator step in
+# docs/runbooks/media-migration.md §8, not a manifest concern.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: plex
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. 1000:1000 is the
+        # `debian` user that owns the /data hostPath tree — see
+        # ./README.md "Identity: everything runs as 1000:1000". The
+        # home-operations image is confirmed rootless at this exact pinned
+        # digest: its image config declares `User: nobody:nogroup`, and its
+        # /entrypoint.sh only edits Preferences.xml under /config with
+        # xmlstarlet before exec'ing the server — no s6, no chown, no
+        # internal privilege drop that a non-root start would break. No
+        # per-app exception is needed the way Deluge's LSIO image requires
+        # one.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/home-operations/plex
+                  # renovate: datasource=docker depName=ghcr.io/home-operations/plex
+                  tag: "1.43.3.10828@sha256:0c0b6899339503af17cb190b25af6acf10f0030e2820985e16ee14ef428f49d7"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  # /entrypoint.sh in this exact pinned digest writes this
+                  # value into Preferences.xml's `customConnections`
+                  # attribute on every start (verified by reading the
+                  # entrypoint out of the image, not from docs) — that is
+                  # the address Plex registers with plex.tv for remote
+                  # clients, and it is unconditional, so it survives the
+                  # migrated Preferences.xml restore in §8. `ADVERTISE_IP`
+                  # is only a legacy alias for the same variable in that
+                  # script.
+                  #
+                  # The literal is the OVH host's single public IPv4 — the
+                  # same value as infra/tofu/terraform.tfvars'
+                  # `ovh_public_ip`, repeated here for the same reason
+                  # clusters/lab/platform/traefik.yaml repeats it: Argo
+                  # renders this manifest straight from git with no
+                  # templating layer that could reference it. If that IP
+                  # ever changes, `grep -rn` for it — this file is one of
+                  # the places it hides, and docs/runbooks/dns-cutover.md
+                  # lists the rest.
+                  PLEX_ADVERTISE_URL: https://145.239.3.55:32400
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # TCP, not HTTP. Plex's only unauthenticated HTTP
+                  # endpoint, /identity, answers just once the server is
+                  # claimed — and this pod starts unclaimed, before §8's
+                  # restore brings the identity across, so an HTTP probe
+                  # would get an auth challenge and never let the pod go
+                  # ready. An accepted TCP connection on 32400 is the
+                  # strongest liveness signal available in that state.
+                  liveness:
+                    enabled: true
+                    type: TCP
+                    port: 32400
+                  readiness:
+                    enabled: true
+                    type: TCP
+                    port: 32400
+                  startup:
+                    enabled: true
+                    type: TCP
+                    port: 32400
+                # Sized for direct play, which is what this library is
+                # actually served as — the steady-state cost is little more
+                # than reading files off disk and pushing them at the
+                # network. The spike is a library scan (metadata fetch,
+                # thumbnail and intro detection across the whole tree),
+                # which is bursty and parallel; the limit is there to keep
+                # a scan from starving the *arrs on the same node, not
+                # because playback needs it.
+                resources:
+                  requests:
+                    cpu: "1"
+                    memory: 2Gi
+                  limits:
+                    cpu: "4"
+                    memory: 6Gi
+        service:
+          # Exactly one Service, so app-template names it `plex` after the
+          # release rather than appending the identifier
+          # (`_determineResourceNameFromValues.tpl`) — which is the name
+          # PLEX_URL in media-common/media-urls.yaml, and Overseerr's,
+          # Tautulli's and Maintainerr's in-app server settings, all
+          # depend on. Adding a second Service here would silently rename
+          # this one; see ./README.md "A Service's name depends on how many
+          # Services its app declares" and pin it with `forceRename: plex`
+          # if that ever happens.
+          #
+          # LoadBalancer via k3s's bundled klipper — the same mechanism
+          # Traefik's 443 uses. 32400/TCP only: Plex's GDM discovery
+          # broadcast is UDP and LAN-only, and there is no LAN here.
+          app:
+            controller: app
+            type: LoadBalancer
+            ports:
+              http:
+                port: 32400
+                protocol: TCP
+        persistence:
+          # 20Gi rather than the *arrs' 5Gi: this holds the metadata
+          # database plus the artwork, chapter thumbnails and intro-marker
+          # data for the whole library, and it grows with the library
+          # rather than staying flat. §8 excludes Cache/ from the restore
+          # for exactly that reason.
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 20Gi
+            globalMounts:
+              - path: /config
+          # Read-only, and only /data/media — Plex reads the media tree and
+          # must never write to it, and it has no business seeing
+          # /data/torrents at all. This is the one deliberate exception to
+          # the mount-the-whole-/data rule every rw consumer follows; see
+          # ./README.md "The /data mount".
+          media:
+            type: hostPath
+            hostPath: /data/media
+            hostPathType: Directory
+            globalMounts:
+              - path: /data/media
+                readOnly: true
+          # /entrypoint.sh sets Preferences.xml's TranscoderTempDirectory
+          # to /transcode when it is unset. emptyDir, not a PVC: transcode
+          # segments are scratch that is worthless across a restart, and
+          # keeping them off the config volume is what stops a transcode
+          # session from filling it.
+          transcode:
+            type: emptyDir
+            globalMounts:
+              - path: /transcode
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

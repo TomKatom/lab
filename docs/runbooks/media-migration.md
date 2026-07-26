@@ -698,13 +698,13 @@ database isn't captured mid-write.
    ssh old 'ls -d "/srv/plex/config/Library/Application Support/Plex Media Server"'
    ```
 
-   The destination path assumes the image's `/config` mounts the same
-   `Library/Application Support/Plex Media Server/` layout every mainstream
-   Plex container image uses (LinuxServer.io, and — per its Dockerfile —
-   `ghcr.io/home-operations/plex`). **This is cited, not independently
-   confirmed against the pinned image at authoring time** — PR8 verifies
-   the exact in-image layout when it lands; if PR8's own notes describe a
-   different path, follow those over this runbook.
+   **Verified against the pinned image** (PR8): the image config of
+   `ghcr.io/home-operations/plex:1.43.3.10828` sets
+   `PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR=/config/Library/Application Support`,
+   and its `/entrypoint.sh` reads `Preferences.xml` from
+   `${PLEX_MEDIA_SERVER_APPLICATION_SUPPORT_DIR}/Plex Media Server/` — so
+   the destination above is the layout the pinned image actually uses, not
+   an assumption carried from other images.
 4. `chown -R 1000:1000` the PVC directory, then scale Plex back up.
 5. **Identity check — this is what makes the whole migration low-risk for
    Plex specifically.** `Preferences.xml`'s `ProcessedMachineIdentifier`
@@ -750,6 +750,21 @@ database isn't captured mid-write.
 9. Disable video preview thumbnail generation (Settings → Library →
    "Generate video preview thumbnails" → Never). This is a disk-growth
    control (§12 tracks growth going forward), not a functional requirement.
+10. **Re-point the transcoder directory** (Settings → Transcoder →
+    "Transcoder temporary directory") to `/transcode`, the emptyDir
+    `clusters/lab/apps/plex.yaml` mounts. The image's entrypoint sets this
+    preference *only when it is empty*, so the restored `Preferences.xml`
+    keeps whatever `TranscoderTempDirectory` the old container used — and
+    if that path does not exist in the pod, every transcode fails while
+    direct play keeps working, which makes it easy to miss. Confirm:
+
+    ```sh
+    grep -o 'TranscoderTempDirectory="[^"]*"' \
+      '/var/lib/rancher/k3s/storage/pvc-<uid>_media_plex/Library/Application Support/Plex Media Server/Preferences.xml'
+    ```
+
+    An empty result is fine — it means the entrypoint will set `/transcode`
+    itself on the next start.
 
 ---
 
