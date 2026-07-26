@@ -102,9 +102,14 @@ a copy — instant regardless of file size, and the seeding copy under
 
 Mount rules:
 
-- **rw**: `deluge` (writes the downloads), `sonarr`/`radarr`/`bazarr`
-  (write imports and subtitles into `/data/media`), `unpackerr` (extracts
-  archives in place before the `*arr`s import them).
+- **rw**: `deluge` (writes the downloads), `sonarr`/`radarr` (write
+  imports into `/data/media`), `unpackerr` (extracts archives in place
+  before the `*arr`s import them).
+- **rw, and only at `/data/media`**: `bazarr` — it writes subtitle files
+  beside the media and never reads or writes `/data/torrents`, so it gets
+  the media subtree alone. Same path in the container as on the host, so
+  this is a narrowing, not a remap: nothing about hardlinks or Remote Path
+  Mappings changes.
 - **ro**: `plex`, and only at `/data/media` — Plex only ever reads, never
   writes, the media tree, and has no business seeing `/data/torrents` at
   all.

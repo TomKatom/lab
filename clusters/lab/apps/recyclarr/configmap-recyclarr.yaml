@@ -1,0 +1,68 @@
+# Recyclarr's whole configuration, mounted read-only at
+# /config/recyclarr.yml by ../recyclarr.yaml (wave 2, one wave after this
+# overlay's own Application) — see ../README.md "Kustomize `-config` dirs".
+#
+# Neither address nor credential is inlined: `!env_var NAME` reads the
+# process environment, and the CronJob's container fills those four names
+# from media-common's `media-urls` ConfigMap and `arr-api-keys` Secret. The
+# tag is real in the pinned image — recyclarr 8.7.0 registers
+# `.WithTagMapping("!env_var", typeof(EnvironmentVariableTag))`
+# (Recyclarr.Core/Config/EnvironmentVariables/EnvironmentVariablesYamlBehavior.cs)
+# and fails the run with EnvironmentVariableNotDefinedException if the
+# variable is unset, so a missing binding is loud, not silent.
+#
+# Why the profiles are spelled out here rather than pulled in with
+# `include: - template: <id>`: recyclarr 8.x resolves template includes
+# against `includes.json` on the `v8` branch of recyclarr/config-templates
+# (ConfigTemplatesStrategy.DefaultReferences is ["v8", "master", "main"],
+# first match wins), and that file is `{"radarr": [], "sonarr": []}` on
+# `v8` — the include ids that exist on `master` (radarr-custom-formats-*,
+# sonarr-v4-*) are unreachable from this version. v8 ships whole configs
+# instead, so this mirrors the two official ones for HD-1080p:
+# sonarr/templates/web-1080p.yml and radarr/templates/hd-bluray-web.yml.
+#
+# Custom formats are not listed on purpose. In v8 a guide-backed
+# quality profile auto-syncs every default CF group that lists it
+# (ConfiguredCustomFormatProvider.FromDefaultGroups), so naming the
+# profile's trash_id pulls the guide's recommended custom formats and
+# their scores with it; hand-copying the CF list here would only freeze a
+# snapshot of the guide in git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recyclarr-config
+  namespace: media
+data:
+  recyclarr.yml: |
+    # yaml-language-server: $schema=https://schemas.recyclarr.dev/v8/config-schema.json
+    sonarr:
+      sonarr:
+        base_url: !env_var SONARR_URL
+        api_key: !env_var SONARR_API_KEY
+
+        quality_definition:
+          type: series
+
+        # TRaSH Guides "WEB-1080p", trash_id read from
+        # docs/json/sonarr/quality-profiles/web-1080p.json in
+        # TRaSH-Guides/Guides, the repo recyclarr itself clones.
+        quality_profiles:
+          - trash_id: 72dae194fc92bf828f32cde7744e51a1
+            reset_unmatched_scores:
+              enabled: true
+
+    radarr:
+      radarr:
+        base_url: !env_var RADARR_URL
+        api_key: !env_var RADARR_API_KEY
+
+        quality_definition:
+          type: movie
+
+        # TRaSH Guides "HD Bluray + WEB" — Radarr's 1080p counterpart to
+        # Sonarr's WEB-1080p above, trash_id read from
+        # docs/json/radarr/quality-profiles/hd-bluray-web.json.
+        quality_profiles:
+          - trash_id: d1d67249d3890e49bc12e275d989a7e9
+            reset_unmatched_scores:
+              enabled: true

@@ -1,0 +1,136 @@
+# Recyclarr — pushes the TRaSH Guides' quality definitions, quality
+# profiles and custom formats into Sonarr and Radarr on a schedule. A
+# CronJob, not a Deployment: it is a batch sync that runs and exits, with
+# nothing to serve in between — no Service, no Ingress, no PVC.
+#
+# Wave 2, one wave after ./recyclarr-config.yaml, so the recyclarr.yml
+# ConfigMap it mounts already exists when the first Job Pod starts (see
+# ./README.md "Sync waves within apps/").
+#
+# It never mounts /data — it only talks to the two *arr APIs (./README.md
+# "The /data mount").
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: recyclarr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            type: cronjob
+            cronjob:
+              # UTC, not Asia/Jerusalem. A CronJob's schedule is evaluated
+              # by the cluster's controller-manager, not inside the Pod, so
+              # the TZ that media-env injects below moves the container's
+              # log timestamps and nothing else. 05:00 UTC is deliberately
+              # in the small hours either way; if this ever needs to be
+              # local wall-clock time, set `cronjob.timeZone` rather than
+              # relying on the env.
+              schedule: "0 5 * * *"
+              # A sync takes seconds, but a hung run must never overlap the
+              # next one — two concurrent runs would push conflicting
+              # profile updates into the same *arr.
+              concurrencyPolicy: Forbid
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/recyclarr/recyclarr
+                  # renovate: datasource=docker depName=ghcr.io/recyclarr/recyclarr
+                  tag: "8.7.0@sha256:2d6107f758d882a59fe9d646aa54fa8a5a4fb7a40995125fade575652a3f7871"
+                # The image's own entrypoint starts a supercronic loop when
+                # given no arguments — that is the container-native way to
+                # schedule this, and it is exactly what a Kubernetes
+                # CronJob replaces. Overriding the entrypoint runs one sync
+                # and exits. `recyclarr` resolves through the image's PATH,
+                # which carries /app/recyclarr.
+                command:
+                  - recyclarr
+                  - sync
+                # Both halves of both connections come from media-common:
+                # the addresses from the media-urls ConfigMap, the keys from
+                # the arr-api-keys Secret. recyclarr.yml reads all four back
+                # with `!env_var` — see ./recyclarr/configmap-recyclarr.yaml.
+                env:
+                  SONARR_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SONARR_URL
+                  SONARR_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                  RADARR_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: RADARR_URL
+                  RADARR_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: RADARR_API_KEY
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                # Sized for the one thing that costs anything here: cloning
+                # the TRaSH Guides and config-templates repos into the
+                # emptyDir below on every run. The sync itself is a handful
+                # of API calls.
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                  limits:
+                    cpu: "1"
+                    memory: 512Mi
+        persistence:
+          # No PVC: RECYCLARR_CONFIG_DIR is /config in this image, and
+          # everything recyclarr puts there is derived — the guide repo
+          # clones under resources/, the logs, and the state/ cache that
+          # only exists to track profiles renamed inside an *arr. All of it
+          # is rebuilt on the next run, so an emptyDir per Job is the whole
+          # storage story.
+          config:
+            type: emptyDir
+            globalMounts:
+              - path: /config
+          # Mounted as a single file over the emptyDir above rather than as
+          # a directory, so recyclarr keeps a writable /config alongside a
+          # read-only config file.
+          recyclarr-config:
+            type: configMap
+            name: recyclarr-config
+            globalMounts:
+              - path: /config/recyclarr.yml
+                subPath: recyclarr.yml
+                readOnly: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

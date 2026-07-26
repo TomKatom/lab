@@ -40,10 +40,9 @@ data:
   RADARR_URL: http://radarr.media.svc.cluster.local:7878
   PLEX_URL: http://plex.media.svc.cluster.local:32400
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
-  # Declared ahead of the PRs that create these Services (bazarr/recyclarr,
-  # the request layer). Ports come from the phase plan's reference table
-  # and are unverified against a real render until then — each of those
-  # PRs must confirm its Service renders with this name and port, or fix
-  # the entry here.
   BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
+  # Declared ahead of the PR that creates this Service (the request
+  # layer). Port comes from the phase plan's reference table and is
+  # unverified against a real render until then — that PR must confirm
+  # its Service renders with this name and port, or fix the entry here.
   OVERSEERR_URL: http://overseerr.media.svc.cluster.local:5055
