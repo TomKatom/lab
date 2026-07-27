@@ -4,12 +4,27 @@
 # ./README.md for the mount table, sync waves, and the LSIO securityContext
 # exception this file follows.
 #
-# In-app listen port is not a manifest concern: Deluge's own core.conf sets
-# the torrent listen port, rewritten by docs/runbooks/media-migration.md §10
-# from the old server's 62348 to [51413, 51413] with random_port: false.
-# config/lab.yml's ports.torrent: 51413 is DNAT'd port-preserving from the
-# public IP to the node — the two LoadBalancer Services below are only the
-# cluster half of that contract; nothing here sets Deluge's listen port.
+# Deluge's preferences are declared here rather than clicked in: the
+# configMaps block at the bottom of this file holds /config/core.conf and
+# /config/ltconfig.conf verbatim, and the init-config container below
+# copies both onto the /config PVC before deluged starts. app-template
+# hashes every configMaps entry into a checksum/configMaps annotation on
+# the pod template, so editing a value here rolls the pod on the next Argo
+# sync all by itself — no Reloader is involved and none is installed.
+#
+# That makes the reconcile loop explicit, and it is the one thing to
+# understand before touching Deluge again: git wins at every daemon start,
+# and the WebUI's Preferences page is a scratchpad whose edits survive only
+# until the next restart. Deluge also rewrites both files at runtime with
+# its full key set plus a .bak, so the on-disk copies are legitimately
+# longer than the ones below and never diff clean against them — the
+# omitted keys inherit Deluge 2.2.0 defaults by design.
+#
+# The in-app torrent listen port is part of that contract now: core.conf
+# pins listen_ports [51413, 51413] with random_port: false, which is the
+# in-app half of config/lab.yml's ports.torrent: 51413 (DNAT'd
+# port-preserving from the public IP to the node). The two LoadBalancer
+# Services below are the cluster half.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -27,6 +42,72 @@ spec:
       valuesObject:
         controllers:
           app:
+            initContainers:
+              # Renders the two declarative config files onto the /config
+              # PVC and makes sure the pinned ltConfig egg is there, then
+              # exits.
+              #
+              # It writes core.conf, ltconfig.conf and the egg and nothing
+              # else, deliberately. state/ (the session — one .fastresume
+              # per torrent for the ~600 permaseeds), auth, and web.conf
+              # (the pwd_sha1/pwd_salt the *arrs authenticate against) are
+              # migrated state that only Deluge may touch. Nothing here
+              # edits a file in place either: state/*.fastresume is
+              # bencoded, and a length-prefixed string does not survive a
+              # sed.
+              init-config:
+                image:
+                  repository: docker.io/library/alpine
+                  # renovate: datasource=docker depName=docker.io/library/alpine
+                  tag: "3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
+                # Plain busybox: /bin/sh, wget (with ssl_client and the
+                # ca-certificates bundle, so the HTTPS fetch below needs
+                # nothing installed at runtime) and sha256sum are all in
+                # the base image.
+                command: ["/bin/sh", "-c"]
+                args:
+                  - |
+                    set -eu
+
+                    mkdir -p /config/plugins
+
+                    cp /config-src/core.conf /config/core.conf
+                    cp /config-src/ltconfig.conf /config/ltconfig.conf
+
+                    # ltConfig is third-party and not in the LSIO image, so
+                    # it is fetched once and pinned by checksum rather than
+                    # vendored into git. The -c test fails for a missing
+                    # file as well as a corrupt one, which is what makes
+                    # re-running this on every pod start a no-op.
+                    egg=/config/plugins/ltConfig-2.0.0.egg
+                    tmp=/config/plugins/.ltConfig-2.0.0.egg.tmp
+                    sha=c286427e0077c84b83b0ba88b964067e247c905eb1b94c0e982d382fa6f3ae09
+                    url=https://github.com/ratanakvlun/deluge-ltconfig/releases/download/v2.0.0/ltConfig-2.0.0.egg
+
+                    if ! printf '%s  %s\n' "$sha" "$egg" | sha256sum -c - >/dev/null 2>&1; then
+                      rm -f "$tmp"
+                      wget -q -O "$tmp" "$url"
+                      printf '%s  %s\n' "$sha" "$tmp" | sha256sum -c -
+                      chmod 0644 "$tmp"
+                      mv "$tmp" "$egg"
+                    fi
+                # Unlike the deluge container below, this one has no s6 to
+                # accommodate — it is a shell script writing files the
+                # daemon then reads as PUID/PGID 1000, so it keeps the full
+                # house securityContext and runs as 1000:1000 directly.
+                securityContext:
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    memory: 64Mi
             containers:
               app:
                 image:
@@ -86,6 +167,8 @@ spec:
         # seccompProfile fields below don't block a root start, so they're
         # kept; runAsUser/runAsGroup/runAsNonRoot and the container
         # securityContext are the only pieces the house block loses here.
+        # The exception is scoped to that container: the init container
+        # above keeps the full house block.
         defaultPodOptions:
           # Deluge writes one state/*.fastresume per torrent on SIGTERM;
           # ~400 of them do not finish inside the 30s default, and a SIGKILL
@@ -102,9 +185,12 @@ spec:
           # Three Services, not one: klipper (k3s's bundled LB) can't share
           # one port across TCP and UDP on a mixed-protocol Service, so the
           # torrent port is split into two single-protocol LoadBalancers.
-          # Fallback if bt-udp ever needs to go away: drop it and disable
-          # DHT on any private tracker in use — TCP-only inbound is
-          # acceptable, just slower to find peers.
+          # Dropping bt-udp is still the fallback if klipper ever refuses
+          # it, but it is a real degradation to accept under duress rather
+          # than the free swap this note used to describe: core.conf below
+          # already disables DHT, and UDP/51413 also carries µTP — a large
+          # share of live peer traffic — so losing it costs peers and
+          # inbound connectability, not just DHT.
           app:
             # Pins the Service name to `deluge`. app-template appends the
             # identifier to every Service name as soon as an app declares
@@ -149,6 +235,20 @@ spec:
             size: 2Gi
             globalMounts:
               - path: /config
+          # The rendered ConfigMap, mounted read-only and — via
+          # advancedMounts rather than globalMounts — into the init
+          # container alone. deluged must never see /config-src: the
+          # authoritative copies are the ones on the PVC, and a second,
+          # read-only core.conf visible to the daemon is only a way to
+          # confuse whoever debugs this next.
+          config-src:
+            type: configMap
+            identifier: config
+            advancedMounts:
+              app:
+                init-config:
+                  - path: /config-src
+                    readOnly: true
           # Broader than the old server, which bind-mounted only
           # /data/torrents into Deluge — keep the full /data tree anyway, to
           # match every sibling app's identical mount (see ./README.md
@@ -159,6 +259,180 @@ spec:
             hostPathType: Directory
             globalMounts:
               - path: /data
+        configMaps:
+          config:
+            data:
+              # Deluge config files are two concatenated JSON objects — a
+              # version header, then the body — not one. A plain
+              # single-object file does not load and Deluge silently falls
+              # back to defaults, so keep the header on both files below.
+              #
+              # Only intentional values are declared; Config.load() does
+              # `defaults.update(file_contents)`, so everything omitted
+              # keeps its Deluge 2.2.0 default.
+              #
+              # OPERATOR GATE (unconfirmed at authoring): the path values —
+              # download_location, torrentfiles_location and
+              # copy_torrent_file — are what the migration runbook's
+              # old-server inventory step tells the operator to record, and
+              # that recording cannot be read from here. Confirm all three
+              # against it before merging. A mismatch matters because
+              # download_location is both where the *arrs hardlink from and
+              # where the migrated session's fastresume data already says
+              # the files are.
+              #
+              # move_completed stays false and move_completed_path is
+              # pinned anyway, as a guard rail: if the move is ever toggled
+              # on in the WebUI, data relocates within the tree the
+              # hardlinks live on instead of into the Plex libraries.
+              #
+              # max_active_seeding: -1 is the value that matters most here.
+              # Deluge ships a desktop queue (5 seeding, 8 total), which
+              # leaves 595 of 600 permaseeds Queued rather than Seeding.
+              # Negative means unlimited; 0 would pause the whole session.
+              # max_active_downloading deliberately stays bounded — it is
+              # what stops a batch of *arr grabs from scattering writes
+              # across the 2-disk HDD stripe.
+              #
+              # auto_managed: true is not cosmetic either: only
+              # auto-managed torrents go on libtorrent's checking list, and
+              # only that list is serialised to one recheck at a time. It
+              # is the other half of terminationGracePeriodSeconds: 300
+              # above.
+              #
+              # max_upload_speed is in KiB/s: 100000 is ~819 Mbit/s of the
+              # 1 Gbit/s uplink, leaving headroom for Plex. It is the only
+              # deliberate throttle; do not "fix" it to -1.
+              #
+              # dht/lsd/utpex/upnp/natpmp off is private-tracker hygiene,
+              # and allow_remote: false keeps the daemon protocol on
+              # localhost — deluged and deluge-web share this container and
+              # the *arrs come in over the WebUI's JSON-RPC.
+              core.conf: |
+                {
+                  "file": 1,
+                  "format": 1
+                }{
+                  "listen_ports": [51413, 51413],
+                  "random_port": false,
+                  "listen_interface": "",
+                  "outgoing_interface": "",
+
+                  "dht": false,
+                  "lsd": false,
+                  "utpex": false,
+                  "upnp": false,
+                  "natpmp": false,
+                  "new_release_check": false,
+                  "send_info": false,
+                  "allow_remote": false,
+                  "enc_in_policy": 1,
+                  "enc_out_policy": 1,
+                  "enc_level": 2,
+
+                  "download_location": "/data/torrents",
+                  "move_completed": false,
+                  "move_completed_path": "/data/torrents",
+                  "copy_torrent_file": true,
+                  "del_copy_torrent_file": false,
+                  "torrentfiles_location": "/data/torrents-final",
+                  "pre_allocate_storage": false,
+                  "prioritize_first_last_pieces": false,
+                  "sequential_download": false,
+                  "super_seeding": false,
+
+                  "max_connections_global": 2500,
+                  "max_connections_per_torrent": 80,
+                  "max_upload_slots_global": -1,
+                  "max_connections_per_second": 100,
+                  "max_upload_speed": 100000,
+                  "max_download_speed": -1,
+                  "rate_limit_ip_overhead": true,
+
+                  "auto_managed": true,
+                  "max_active_seeding": -1,
+                  "max_active_downloading": 5,
+                  "max_active_limit": -1,
+                  "dont_count_slow_torrents": true,
+                  "queue_new_to_top": true,
+                  "add_paused": false,
+                  "stop_seed_at_ratio": false,
+                  "remove_seed_at_ratio": false,
+
+                  "enabled_plugins": ["Label", "ltConfig"]
+                }
+              # The libtorrent session settings Deluge exposes no preference
+              # for. Core.apply_session_setting(s) is not @export-ed, so an
+              # in-process plugin is the only way to reach them at all —
+              # hence the ltConfig egg the init container fetches.
+              #
+              # apply_on_start is what makes the dict below apply at daemon
+              # start instead of sitting inert.
+              #
+              # Every key here was checked to exist in the libtorrent this
+              # image links (RC_2_0, via ghcr.io/by275/libtorrent:2). Do not
+              # add one without checking it the same way:
+              # _normalize_settings() deletes unknown keys while iterating
+              # the dict, which raises RuntimeError on Python 3 and makes
+              # the whole plugin fail to enable ("Unable to enable plugin"
+              # in the pod log). The plugin's own WebUI page lists the live
+              # key set and is the ground truth for that check.
+              #
+              # Keep this disjoint from core.conf. Deluge's
+              # PreferencesManager pushes its own preferences into
+              # libtorrent at start and on every preference change, so any
+              # key set in both places flips back to the core.conf value.
+              #
+              # Bare ints are enums: seed_choking_algorithm 1 is
+              # fastest_upload, mixed_mode_algorithm 0 is prefer_tcp,
+              # suggest_mode 1 is suggest_read_cache. The disk values are
+              # tuned for HDD behind virtiofs — file_pool_size and
+              # piece_extent_affinity are the two that matter, and
+              # hashing_threads is pinned at 1 on purpose (parallel hashing
+              # on a 2-disk stripe turns a recheck into a seek storm).
+              # Notably absent: cache_size/cache_expiry, which libtorrent
+              # 2.x accepts and ignores — it has no disk cache any more.
+              ltconfig.conf: |
+                {
+                  "file": 1,
+                  "format": 1
+                }{
+                  "apply_on_start": true,
+                  "settings": {
+                    "file_pool_size": 500,
+                    "aio_threads": 8,
+                    "hashing_threads": 1,
+                    "checking_mem_usage": 2048,
+                    "max_queued_disk_bytes": 8388608,
+                    "piece_extent_affinity": true,
+                    "suggest_mode": 1,
+
+                    "send_buffer_watermark": 3145728,
+                    "send_buffer_watermark_factor": 150,
+                    "send_buffer_low_watermark": 1048576,
+                    "max_out_request_queue": 1500,
+                    "max_peer_recv_buffer_size": 5242880,
+
+                    "seed_choking_algorithm": 1,
+                    "allowed_fast_set_size": 0,
+                    "mixed_mode_algorithm": 0,
+                    "listen_queue_size": 500,
+                    "max_failcount": 1,
+                    "active_tracker_limit": 2000,
+                    "alert_queue_size": 10000
+                  }
+                }
+              # No label.conf is rendered here, on purpose. The Label plugin
+              # is enabled above and Sonarr/Radarr create their own labels
+              # through its API on first add, so pre-seeding the file buys
+              # nothing — while writing it would cost something real:
+              # label.conf also holds torrent_labels, the per-torrent
+              # assignment map for the ~600 migrated torrents, and a
+              # wholesale copy would wipe it. The label names are also
+              # still an open decision, coupled to the Category field in
+              # each *arr's Deluge client settings. If a later PR does want
+              # them in git, it has to merge into the existing file rather
+              # than copy over it.
   destination:
     server: https://kubernetes.default.svc
     namespace: media
