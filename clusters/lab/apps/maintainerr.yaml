@@ -1,5 +1,5 @@
 # Maintainerr — library retention. Rules match media in Plex against
-# Overseerr/Tautulli/*arr metadata (last watched, added date, requester,
+# Seerr/Tautulli/*arr metadata (last watched, added date, requester,
 # rating), collect the matches into a Plex collection that warns users before
 # anything happens, and delete on expiry. Wave 1: after media-common (wave 0)
 # has created the namespace and the media-env ConfigMap this consumes.

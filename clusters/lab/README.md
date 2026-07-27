@@ -12,7 +12,7 @@ everything here is reconciled from git; nothing is applied by hand.
   zone moves off the old server
   ([`docs/runbooks/dns-cutover.md`](../../docs/runbooks/dns-cutover.md)).
 - `apps/` — the media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr,
-  Unpackerr, Recyclarr, Plex, Tautulli, Overseerr, Maintainerr and
+  Unpackerr, Recyclarr, Plex, Tautulli, Seerr, Maintainerr and
   Homepage, each an `Application` against the shared `bjw-s/app-template`
   chart with inline values, all in one `media` namespace (Phase 6, live —
   see [`apps/README.md`](apps/README.md)).

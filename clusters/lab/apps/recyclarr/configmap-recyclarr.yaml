@@ -22,7 +22,7 @@
 #
 # ## Four profiles, split by who asked for the release
 #
-# Each instance carries two guide-backed profiles. Overseerr decides which
+# Each instance carries two guide-backed profiles. Seerr decides which
 # one a request lands on: the operator holds the Advanced Requests
 # permission and picks per request, everyone else silently gets the server
 # default. See docs/runbooks — Recyclarr only creates the profiles.

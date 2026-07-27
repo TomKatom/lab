@@ -71,7 +71,7 @@ spec:
                   # Radarr's own source, not just the wiki.
                   RADARR__AUTH__METHOD: External
                   # Must equal the old server's key: Prowlarr's app sync,
-                  # Unpackerr and Overseerr all cross-reference this value
+                  # Unpackerr and Seerr all cross-reference this value
                   # in the migrated databases. Lives in arr-api-keys,
                   # created by media-common — see ./README.md "Secrets and
                   # environment".

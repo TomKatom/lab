@@ -34,7 +34,7 @@
 # A homepage widget authenticates with the credential of the app it polls.
 # `arr-api-keys` holds exactly four — Sonarr, Radarr, Prowlarr, Bazarr — so
 # those four render live counters. Deluge's WebUI password, Plex's token,
-# Tautulli's and Overseerr's API keys all live inside each app's own migrated
+# Tautulli's and Seerr's API keys all live inside each app's own migrated
 # database rather than in git (docs/runbooks/media-migration.md §9), so those
 # tiles are links only. Adding a widget for one of them later means adding
 # its credential to a Secret in media-common and binding it here as another
@@ -67,8 +67,8 @@ data:
   services.yaml: |
     ---
     - Requests:
-        - Overseerr:
-            icon: overseerr.png
+        - Seerr:
+            icon: seerr.png
             href: https://requests.tomkatom.com
             description: Request portal, signed in with Plex
 

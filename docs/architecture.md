@@ -91,7 +91,7 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
            ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
            └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
-                                                     ├─ overseerr (requests) / maintainerr
+                                                     ├─ seerr (requests) / maintainerr
                                                      └─ tautulli / homepage
 ```
 
@@ -327,7 +327,7 @@ Each phase is its own PR. Full detail and current status in
 6. **Media apps** *(current)* — deployed and reconciling from
    [`clusters/lab/apps/`](../clusters/lab/apps/): Deluge, Prowlarr,
    Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli,
-   Overseerr, Maintainerr, Homepage, all in one `media` namespace on the
+   Seerr, Maintainerr, Homepage, all in one `media` namespace on the
    shared `/data` tree. What remains is **state migration** from the old
    server (operator-executed —
    [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,

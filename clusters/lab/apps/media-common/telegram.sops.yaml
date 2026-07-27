@@ -12,7 +12,7 @@
 # (#54); CI now greps every clusters/**/*.sops.yaml for non-`type:str`
 # values under stringData so it fails at PR time instead.
 #
-# Overseerr's "Media Available" agent and Tautulli's recently-added digest
+# Seerr's "Media Available" agent and Tautulli's recently-added digest
 # both post to this one group. Neither reads the Secret itself — both are
 # configured in their own UI during runbook §9, and this is the single
 # committed place the credential lives so a rotation has one home.

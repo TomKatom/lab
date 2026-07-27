@@ -30,7 +30,7 @@ Traefik on `:443`, Authelia forward-auth and external-dns.
 
 **Phase 6 — Media apps** is live in the `media` namespace, reconciled from
 [`clusters/lab/apps/`](clusters/lab/apps/): Deluge, Prowlarr, Sonarr,
-Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Overseerr,
+Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Seerr,
 Maintainerr and Homepage. **Migrating the old server's state onto them —
 media files, `*arr` databases, Plex identity, Deluge's session — is
 operator work still in progress**, per

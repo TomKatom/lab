@@ -1,7 +1,7 @@
 # apps
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
-Overseerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
+Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
 `media-common` config, discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
@@ -22,7 +22,7 @@ Phase 6 built this directory — see [`master-plan.md`](../../../master-plan.md)
 
 Every platform component gets its own namespace. This stack deliberately
 does not: `deluge`, `prowlarr`, `sonarr`, `radarr`, `bazarr`, `unpackerr`,
-`plex`, `overseerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
+`plex`, `seerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
 all land in a single `media` namespace.
 
 The reason is the shared secrets, not laziness. `media-common` (wave 0,
@@ -123,7 +123,7 @@ Mount rules:
 - **ro**: `plex`, and only at `/data/media` — Plex only ever reads, never
   writes, the media tree, and has no business seeing `/data/torrents` at
   all.
-- **nobody else.** `prowlarr`, `recyclarr`, `overseerr`, `tautulli`,
+- **nobody else.** `prowlarr`, `recyclarr`, `seerr`, `tautulli`,
   `maintainerr` and `homepage` never mount `/data` — none of them touch
   files, only APIs.
 
@@ -157,8 +157,8 @@ Authelia's existing ACL already covers every new host here with zero
 Authelia-side change: `access_control.default_policy: deny` plus one rule
 for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
 any hostname under the zone, new or old. The one deliberate exception is
-Overseerr's `requests.tomkatom.com` — it carries **no** forward-auth
-annotation at all, because end users authenticate through Overseerr's own
+Seerr's `requests.tomkatom.com` — it carries **no** forward-auth
+annotation at all, because end users authenticate through Seerr's own
 Plex OAuth login instead; an un-annotated Ingress means Authelia is never
 consulted for that host. Everything else admin-facing gets the
 annotation.
@@ -188,7 +188,7 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
   keys) — never `envFrom` for this one, since apps only ever need a
   subset of the four keys.
 - **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
-  Overseerr's and Tautulli's notification agents (configured in-app; the
+  Seerr's and Tautulli's notification agents (configured in-app; the
   Secret only holds the credential).
 - **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
   app that cares about time zone consumes the whole map via `envFrom`
@@ -293,7 +293,7 @@ deferred to Phase 8.
   other app's Secret/ConfigMap consumption assumes it already exists.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `overseerr`, `maintainerr`), together with `recyclarr-config`'s and
+  `seerr`, `maintainerr`), together with `recyclarr-config`'s and
   `homepage-config`'s own kustomize-source Applications.
 - **`recyclarr` and `homepage` charts — wave `"2"`**, one wave after their
   own `-config` overlays, so the ConfigMap each mounts already exists the
@@ -352,7 +352,7 @@ resolving publicly reached the **old server**, not this cluster.
 kubectl -n argocd get applications
 # every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
 # flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
-# overseerr, maintainerr, homepage(+-config)
+# seerr, maintainerr, homepage(+-config)
 
 kubectl -n media get pods
 ```
@@ -372,7 +372,7 @@ done
 
 curl -sI --resolve requests.tomkatom.com:443:10.10.10.10 \
   https://requests.tomkatom.com | head -1
-# HTTP/2 200 — Overseerr's own Plex-OAuth login, by design (no annotation)
+# HTTP/2 200 — Seerr's own Plex-OAuth login, by design (no annotation)
 ```
 
 A `200` from any of the eight means the forward-auth annotation is missing
@@ -426,9 +426,9 @@ transcode is software libx264 and direct play is the design assumption.
 ### 6. The full end-user loop
 
 The one check that exercises every app at once. Request a title in
-`requests.tomkatom.com` → Overseerr hands it to Sonarr/Radarr → Prowlarr's
+`requests.tomkatom.com` → Seerr hands it to Sonarr/Radarr → Prowlarr's
 indexers find it → Deluge downloads it → the `*arr` hardlink-imports it into
-`/data/media` → Plex's library updates → Overseerr flips it to **Available**
+`/data/media` → Plex's library updates → Seerr flips it to **Available**
 → **a message lands in the Telegram group**. Tautulli's recently-added
 digest follows on its own schedule.
 

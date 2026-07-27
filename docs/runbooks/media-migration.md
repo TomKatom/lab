@@ -40,7 +40,7 @@ migration, so start it the same day this runbook is picked up.
 | §6 Sonarr / Radarr | sonarr+radarr merged (PR6) | ″ |
 | §7 Bazarr | bazarr merged (PR7) | ″ |
 | §8 Plex | plex merged (PR8) | ″ |
-| §9 Overseerr / Tautulli / Maintainerr | plex + request-layer merged (PR8, PR9) | ″ |
+| §9 Seerr / Tautulli / Maintainerr | plex + request-layer merged (PR8, PR9) | ″ |
 | §10 Deluge | deluge merged (PR4) | **executed last** — only as part of §11's cutover |
 | §11 Delta syncs + pipeline cutover | every app above restored once | the final pass; runs §10 |
 | §12 Post-migration hardening | after §11 | cluster is now authoritative for pipeline state |
@@ -84,6 +84,13 @@ this runbook uses `overserr` deliberately; "correcting" it to `overseerr`
 gives you an rsync against a nonexistent source, which succeeds at copying
 nothing.
 
+⚠ **The old server runs Overseerr; the cluster runs Seerr.** Overseerr was
+archived in July 2026 when it merged with Jellyseerr into Seerr, so
+`clusters/lab/apps/seerr.yaml` deploys the successor and Seerr migrates the
+restored Overseerr config on its first start (§9). That means this one app
+is named differently on each side — source `/srv/overserr/config`,
+destination the `seerr` PVC — everywhere below.
+
 Confirm the layout still matches and size each config dir — the sizes are
 what the per-app PVC sizes in the Phase 6 reference table were bookkept
 against:
@@ -117,7 +124,7 @@ formality rather than a path rewrite.
 | Radarr | `/srv/radarr/config` | | |
 | Bazarr | `/srv/bazarr/config` | | key lives deeper than the others — §2.2 |
 | Plex | `/srv/plex/config` | | app-support subtree only — see §8 |
-| Overseerr | `/srv/overserr/config` | | **one `e`** — see the warning above |
+| Overseerr | `/srv/overserr/config` | | **one `e`** — see the warning above; restores into the cluster's `seerr` app (§9) |
 | Unpackerr | — | — | no state; its config becomes env in PR4 |
 
 **Nothing to migrate for four of the twelve `/srv` directories.** The
@@ -158,7 +165,7 @@ authoritative over whatever this step recorded.
 
 These four values become PR3's `clusters/lab/apps/media-common/
 arr-api-keys.sops.yaml` — pinned **as-is**, not rotated, so every existing
-cross-reference (Prowlarr's app-sync, Overseerr, Unpackerr) keeps working
+cross-reference (Prowlarr's app-sync, Seerr, Unpackerr) keeps working
 with zero key surgery after restore:
 
 | SOPS key (`arr-api-keys` Secret) | Value source |
@@ -597,9 +604,11 @@ Then, for `<app>` being restored:
    ```
 
    `<app>` is the same word on both sides for every app this template
-   covers, with **one exception: Overseerr's source is
-   `/srv/overserr/config/`** (§2.1's spelling warning). Plex does not use
-   this step at all — §8 copies a subtree, not the whole config dir.
+   covers, with **one exception: the request portal, where the source is
+   `/srv/overserr/config/` (§2.1's spelling warning) and the destination is
+   the `seerr` PVC** — old Overseerr, new Seerr, neither spelled like the
+   other. Plex does not use this step at all — §8 copies a subtree, not the
+   whole config dir.
 
    **Installing `rsync` on `k3s-node` (via the Ansible roles that build it,
    not by hand) removes this relay entirely** — worth doing before the
@@ -747,7 +756,7 @@ Specifics for both:
   env override (`SONARR__AUTH__APIKEY` / `RADARR__AUTH__APIKEY`, from PR3's
   `arr-api-keys` Secret) wins over `config.xml` at startup** — this is
   exactly why §2.2 pinned the SOPS value to equal the old key: if they
-  diverged, every dependent (Prowlarr's app-sync, Overseerr, Unpackerr)
+  diverged, every dependent (Prowlarr's app-sync, Seerr, Unpackerr)
   would start authenticating with the wrong key against the migrated app.
 - Re-point the download client (Settings → Download Clients → Deluge):
   Host `deluge.media.svc.cluster.local`, Port `8112`. The app's own REST API
@@ -949,15 +958,66 @@ stop.
 
 ---
 
-## 9. Overseerr / Tautulli / Maintainerr (after PR8, PR9)
+## 9. Seerr / Tautulli / Maintainerr (after PR8, PR9)
 
-**Overseerr** — follow §4 for `overseerr` (config PVC mounted at
-`/app/config`):
+**Seerr** — follow §4 for `seerr` (config PVC mounted at `/app/config`).
+This is the one app whose old and new names differ: the cluster runs Seerr,
+the archived Overseerr's successor, and it converts the old config on its
+first start. Two departures from the §4 template, both in step 4:
 
-- Restore `settings.json` and the sqlite db from **`/srv/overserr/config/`**
-  (one `e` — §2.1). The Plex auth token lives in `settings.json` and
-  survives because Plex's identity survived §8 — no re-authentication
-  needed.
+- **The source is `/srv/overserr/config/`** (one `e` — §2.1) and the
+  destination is the `seerr` PVC, so §4's relay runs with a different word
+  at each end:
+
+  ```sh
+  mkdir -p ~/migration-scratch/seerr
+  rsync -a old:/srv/overserr/config/ ~/migration-scratch/seerr/
+
+  tar cf - -C ~/migration-scratch/seerr . \
+    | ssh debian@k3s.lab.tomkatom.com \
+        'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_seerr'
+  ```
+
+  Everything else in step 4 still applies — the macOS `._*` sweep included.
+  `settings.json` and the sqlite db under `db/` are what carry the state.
+  The Plex auth token lives in `settings.json` and survives because Plex's
+  identity survived §8 — no re-authentication needed.
+
+- **Take a copy of the restored directory before scaling the pod back up.**
+  Seerr's first start runs `server/lib/overseerrMerge.ts`, which recognises
+  an Overseerr config by its missing `mediaServerType` and rewrites the
+  sqlite schema **in place**. There is no downgrade path afterwards, and an
+  interrupted rewrite leaves a half-migrated db. Pull it back off the VM
+  rather than leaving it beside the live PVC:
+
+  ```sh
+  ssh debian@k3s.lab.tomkatom.com \
+    'sudo tar cf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_seerr .' \
+    > ~/overseerr-config-pre-seerr.tar
+  ```
+
+  Keep it until the checks below pass; it goes back the same way the copy
+  above went in. `~/migration-scratch/seerr/` is the same bytes and can
+  serve instead — but §4 tells you to delete it (it holds the Plex token),
+  so do not rely on it surviving. `/srv/overserr` on the old server is a
+  second fallback: nothing in this runbook deletes it.
+
+Then, after §4's step 6 scales the Deployment back up:
+
+- Watch the migration run. It logs under the `Seerr Migration` label and
+  ends with `Yeah! Overseerr to Seerr migration completed successfully!`:
+
+  ```sh
+  kubectl -n media logs deploy/seerr -f
+  ```
+
+  It runs exactly once — `mediaServerType` is set by the time it finishes,
+  so every later restart skips it. A `Failed to …` line under that label
+  means the pod exited mid-migration: restore the tarball above over the
+  PVC directory before retrying, not on top of a partially migrated db.
+- The migration also renames the application title `Overseerr` → `Seerr`
+  and defaults the media server type to Plex. Users, requests, issues and
+  their Plex accounts come across with the db; nothing is re-entered.
 - Re-point Plex/Sonarr/Radarr hostnames (Settings → Services → each entry):
   `plex.media.svc.cluster.local:32400`, `sonarr.media.svc.cluster.local:8989`,
   `radarr.media.svc.cluster.local:7878`, with `SONARR_API_KEY`/
@@ -965,7 +1025,7 @@ stop.
 - Configure the Telegram agent in the UI (Settings → Notifications →
   Telegram): bot token = `TELEGRAM_BOT_TOKEN`, chat id = `TELEGRAM_CHAT_ID`
   (the group, §2.5), notification type **Media Available** enabled.
-- Verify Overseerr's own login still works unauthenticated by Authelia (its
+- Verify Seerr's own login still works unauthenticated by Authelia (its
   Ingress carries no forward-auth annotation by design — Plex OAuth is the
   end-user login, per the phase's decision).
 
@@ -977,7 +1037,7 @@ stop.
   should reconnect cleanly since the restored db already has the working
   auth token.
 - Configure the recently-added digest to the same Telegram group (Settings
-  → Notification Agents → Telegram, same bot token/chat id as Overseerr;
+  → Notification Agents → Telegram, same bot token/chat id as Seerr;
   enable the "Recently Added" trigger on whatever schedule is wanted).
 
 **Maintainerr** — fresh setup, nothing to restore (its rules are UI-only,
@@ -985,6 +1045,11 @@ no export/import path exists):
 
 - Add the Plex server: `plex.media.svc.cluster.local:32400`.
 - Add Sonarr/Radarr with `SONARR_API_KEY`/`RADARR_API_KEY`.
+- Rules that key off *who requested something* need the request portal too:
+  Settings → **Seerr** (this pinned version speaks Seerr natively, not just
+  the old Overseerr API), `http://seerr.media.svc.cluster.local:5055` with
+  an API key read out of Seerr's own Settings → General. Skip it if no rule
+  uses requester data.
 - Re-create whatever collection/cleanup rules mattered on the old server —
   there is no config to migrate here, only a checklist to redo by hand.
 
@@ -1195,7 +1260,7 @@ across:
 | Prowlarr | Settings → Indexers → **Test All** green; Apps → Sonarr/Radarr sync succeeds |
 | Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
 | Plex | `curl http://10.10.10.10:32400/identity` (over WG) returns the **same** `machineIdentifier` as the old server's `Preferences.xml` — no re-claim; a remote client shows **Direct Play**, zero transcode sessions |
-| Overseerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Overseerr flips **Available** → a **Telegram group** message arrives |
+| Seerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Seerr flips **Available** → a **Telegram group** message arrives |
 | Tautulli | The recently-added digest posts to the same Telegram group on its configured schedule; play history shows continuity from before the migration |
 | Maintainerr | At least one re-created rule executes against a test item without error |
 | Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |

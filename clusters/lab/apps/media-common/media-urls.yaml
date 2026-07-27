@@ -41,7 +41,7 @@ data:
   PLEX_URL: http://plex.media.svc.cluster.local:32400
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
   BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
-  OVERSEERR_URL: http://overseerr.media.svc.cluster.local:5055
+  SEERR_URL: http://seerr.media.svc.cluster.local:5055
   # Maintainerr and Homepage each render a Service too, and neither has an
   # entry on purpose: nothing in the stack calls them. This map exists to
   # stop one address being written down in several consumers, so a key with
