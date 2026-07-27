@@ -94,12 +94,29 @@ spec:
             file:
               enabled: true
 
-          # Everything under *.tomkatom.com is forward-auth protected by
-          # default; apps opt in per-Ingress via the Middleware, not here.
+          # Everything on tomkatom.com is forward-auth protected by default;
+          # apps opt in per-Ingress via the Middleware, not here.
+          #
+          # Both entries are needed and the second is not redundant:
+          # `*.tomkatom.com` matches exactly one label and never the bare
+          # domain, so without `tomkatom.com` beside it the apex matches no
+          # rule and falls through to `default_policy: deny` — which denies
+          # outright rather than sending the browser to the portal, so the
+          # host would look broken rather than protected. The apex is
+          # Homepage's Ingress (clusters/lab/apps/homepage.yaml), so this is
+          # load-bearing today, not a precaution.
+          #
+          # A list is the documented form and matches when *any* entry
+          # matches. Both are permitted here because Authelia requires every
+          # rule domain to be the session cookie domain or a subdomain of it
+          # (./authelia/session-extra-config.yaml sets `tomkatom.com`), and
+          # these are exactly those two shapes.
           access_control:
             default_policy: deny
             rules:
-              - domain: "*.tomkatom.com"
+              - domain:
+                  - "*.tomkatom.com"
+                  - "tomkatom.com"
                 policy: two_factor
 
           session:

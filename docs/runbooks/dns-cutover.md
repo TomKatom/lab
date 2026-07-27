@@ -270,13 +270,17 @@ dig +short tomkatom.com A                        # 145.239.3.55
 dig +short randomname-xyz123.tomkatom.com A      # 145.239.3.55 (wildcard now exists)
 dig +short vpn.tomkatom.com A                    # 145.239.3.55
 dig +short sonarr.tomkatom.com                   # CNAME → apex → 145.239.3.55
-curl -sI https://tomkatom.com | head -1          # HTTP/2 200 — Homepage, on the real chain
+curl -sI https://tomkatom.com | head -2          # HTTP/2 302 → auth.tomkatom.com
 ```
 
 That last line is the flip's user-visible result, and no `-k`: a TLS error
-there is precondition 7 having been wrong. Load it in a browser too — the
-apex is now a page people will be sent to, so "Traefik answers" is a weaker
-claim than it used to be.
+there is precondition 7 having been wrong. The `302` is Homepage behind
+forward-auth, which is correct — a response that is neither that redirect
+nor a page means Authelia's ACL is missing its `tomkatom.com` entry
+(`clusters/lab/platform/authelia.yaml`), not that DNS failed. Then log in
+through a browser and confirm the page actually renders: the apex is
+somewhere people will be sent, so "Traefik answers" is a weaker claim than
+it used to be.
 
 Then open a follow-up PR deleting the `import` block (it has done its job;
 leaving it is harmless but it reads like pending work). At this point every

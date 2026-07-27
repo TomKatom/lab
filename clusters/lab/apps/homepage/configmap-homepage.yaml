@@ -2,25 +2,29 @@
 # ../homepage.yaml (wave 2, one wave after this overlay's own Application) —
 # see ../README.md "Kustomize `-config` dirs".
 #
-# ## This page is for viewers, not for the operator
+# ## This page is for watching the library, not for running it
 #
-# It is the front door at `tomkatom.com` and it deliberately does not sit
-# behind Authelia (../homepage.yaml carries the Ingress side of that), so
-# everything here is public. That is what decides the content: the two
-# destinations a Plex user actually needs, three links for someone setting a
-# device up, and nothing else. No *arr, no Deluge, no Tautulli, no
-# Maintainerr — those are admin UIs behind Authelia on their own hostnames,
-# and listing them here would advertise them to the internet for nobody's
-# benefit.
+# It is the front door at `tomkatom.com`, behind Authelia like almost
+# everything else here (../homepage.yaml carries the Ingress side). What
+# decides the content is the audience, not the auth: the two destinations
+# someone reaches for, three links for setting a device up, and nothing
+# else. No *arr, no Deluge, no Tautulli, no Maintainerr — those are for
+# running the stack, they have their own hostnames, and mixing the two jobs
+# on one page is what this replaced.
 #
-# The same rule is why there is no live widget left. A homepage widget
-# authenticates with the credential of the app it polls and renders what
-# comes back to whoever is looking, so Sonarr's queue on an unauthenticated
-# page is a library inventory. The four *arr widgets left with the four *arr
-# tiles, and ../homepage.yaml consequently binds no `HOMEPAGE_VAR_*` at all:
-# nothing in this directory reads a Secret or a cluster-internal address any
-# more. Every `href:` is a public hostname, which is what the browser needs
-# regardless.
+# The live widgets went with those tiles, and are worth a separate note
+# because they were the only thing here that ever held a credential. A
+# homepage widget authenticates as the app it polls and renders the result
+# to whoever is looking, so the four *arr counters were the page reading
+# `arr-api-keys` on every load. They are gone, and ../homepage.yaml
+# consequently binds no `HOMEPAGE_VAR_*` at all: **nothing in this directory
+# reads a Secret or a cluster-internal address.** Forward-auth is the
+# boundary; a page with no credential behind it is what keeps that boundary
+# from being the only thing standing between a bad day and an API key.
+#
+# Every `href:` is a public hostname rather than a Service address, because
+# the browser is what follows it — that is unrelated to the above and true
+# either way.
 #
 # ## The look
 #
@@ -55,10 +59,11 @@ data:
     theme: dark
     color: stone
     headerStyle: clean
-    # Public page: hideVersion drops the build number (and with it the
-    # footer's outbound update check), disableIndexing asks crawlers to
-    # leave it alone. Reachable by anyone who knows the name is the
-    # intent; listed in a search engine is not.
+    # hideVersion drops the footer build number and, with it, the outbound
+    # update check that renders it — worth having regardless of who can
+    # reach the page. disableIndexing is inert while forward-auth is on
+    # (a crawler gets the 302, never the page); it is one line that keeps
+    # the apex out of a search index if that annotation is ever removed.
     hideVersion: true
     disableIndexing: true
     disableCollapse: true
@@ -91,8 +96,9 @@ data:
     ---
     # The wordmark and a clock, and nothing else. `resources` (the node's
     # CPU and memory) was the other half of this file while the page was
-    # the operator's dashboard; host telemetry on a public page is worth
-    # nothing to a viewer and something to a stranger.
+    # the operator's dashboard — it answers a question nobody opening this
+    # page is asking, and the place to ask it is Phase 7's observability
+    # stack rather than a header widget.
     - greeting:
         text_size: 4xl
         text: tomkatom
@@ -131,28 +137,28 @@ data:
 
   # Container discovery, off. Homepage would read a Docker socket to
   # auto-discover services; there is no Docker here (k3s runs containerd) and
-  # mounting a container runtime socket into a web dashboard on a public
-  # hostname is not a trade worth making. The file exists only because
-  # /api/validate and /api/hash both read it.
+  # handing a container runtime socket to a web dashboard is not a trade
+  # worth making at any exposure. The file exists only because /api/validate
+  # and /api/hash both read it.
   docker.yaml: |
     ---
     # No Docker hosts configured.
 
   # Kubernetes discovery, off. With no `mode:` key getKubeConfig returns null
   # (src/utils/config/kubernetes.js) and homepage never contacts the API
-  # server, so its ServiceAccount needs no RBAC at all. Turning this on would
-  # mean granting read access to Ingresses cluster-wide and would surface
-  # every admin hostname on a page anyone can load; the services.yaml above
-  # is explicit instead.
+  # server, so its ServiceAccount needs no RBAC at all. Turning it on would
+  # mean granting Ingress read access cluster-wide *and* would put every
+  # admin host back on the page automatically, undoing the one decision this
+  # file exists to make. services.yaml above is explicit instead.
   kubernetes.yaml: |
     ---
     # No `mode:` key, so discovery stays off.
 
   # Proxmox stats, off. Reachable in principle (the host is 10.10.10.1) but
-  # it would need an API token in git, and node metrics have no business on
-  # this page for the same reason `resources` left widgets.yaml. Declared
-  # because /api/validate reads proxmox.yaml on every page load and a missing
-  # file exits the process.
+  # it would need an API token in git, and it belongs to the same question
+  # `resources` was asking when it left widgets.yaml — Phase 7's job, not
+  # this page's. Declared because /api/validate reads proxmox.yaml on every
+  # page load and a missing file exits the process.
   proxmox.yaml: |
     ---
     # No Proxmox nodes configured.

@@ -153,32 +153,32 @@ metadata:
     traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
 ```
 
-Authelia's existing ACL already covers every new host here with zero
-Authelia-side change: `access_control.default_policy: deny` plus one rule
-for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
-any hostname under the zone, new or old.
+Authelia's ACL covers every host here — `access_control.default_policy:
+deny` plus one `two_factor` rule (`platform/authelia.yaml`) listing
+`*.tomkatom.com` **and** `tomkatom.com`.
 
-**Two Ingresses here deliberately carry no annotation at all**, and both
-for the same reason — they are the two hosts aimed at people who hold a
-Plex account and no Authelia identity, so forward-auth would lock out
-exactly the audience they exist for. An un-annotated Ingress means Traefik
-never consults the middleware for that host.
+⚠ **That second entry is not redundant, and it is what makes an
+apex-hosted app possible at all.** A wildcard label matches exactly one
+label and never the bare domain, so a host on the apex with the annotation
+but without the ACL entry matches no rule, falls through to
+`default_policy: deny`, and is denied outright rather than redirected to
+the login page — protected-looking in the manifest, broken in the browser.
+Homepage sits on the apex (`homepage.yaml`), so both files are load-bearing
+today; they change together.
 
-- **Seerr, `requests.tomkatom.com`** — end users authenticate through
-  Seerr's own Plex OAuth login.
-- **Homepage, `tomkatom.com`** — the front door: public hostnames and
-  public plex.tv links, no Secret read, no app polled, `disableIndexing`
-  set. Losing the *arr widgets is part of the same decision, not a
-  separate one: a homepage widget renders what the credential it holds
-  returns, so a queue counter on an unauthenticated page is a library
-  inventory.
+**One Ingress here deliberately carries no annotation: Seerr's
+`requests.tomkatom.com`.** End users authenticate through Seerr's own Plex
+OAuth login instead, and an un-annotated Ingress means Traefik never
+consults the middleware for that host. Everything else, Homepage included,
+gets the annotation.
 
-Everything else admin-facing gets the annotation. Note the apex is also
-the one host here that Authelia's `*.tomkatom.com` rule would *not* match
-even if it were annotated — a wildcard label does not cover the bare
-domain, and `default_policy: deny` would then deny it outright. Anything
-apex-hosted that ever does need protecting needs an Authelia ACL rule of
-its own in the same commit.
+Homepage is worth one further note, because its *content* is scoped by
+audience rather than by auth: it carries no admin tile and no live widget,
+which is also why it reads no Secret. A homepage widget authenticates as
+the app it polls, so the four *arr counters were the page holding
+`arr-api-keys` on every load; forward-auth is the boundary, and a page
+with no credential behind it keeps that boundary from being the only
+thing in the way.
 
 ## Single `source:`, always
 
@@ -381,7 +381,7 @@ Every Deployment pod reads `1/1 Running`. Recyclarr is a CronJob, so it
 appears only as `Completed` Job pods (or not at all between runs) — that is
 correct, not a missing app.
 
-### 2. Auth boundary: seven protected hosts, two that must not be
+### 2. Auth boundary: eight protected hosts, one that must not be
 
 ```sh
 for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr; do
@@ -390,24 +390,34 @@ for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr; do
 done
 # each: HTTP/2 302  location: https://auth.tomkatom.com/?rd=...
 
+curl -sI --resolve tomkatom.com:443:10.10.10.10 https://tomkatom.com \
+  | grep -iE '^HTTP|^location' | tr -d '\r'
+# HTTP/2 302  location: https://auth.tomkatom.com/?rd=https%3A%2F%2Ftomkatom.com%2F
+# Homepage — the eighth protected host, and the only one whose policy comes
+# from the ACL's `tomkatom.com` entry rather than its `*.tomkatom.com` one.
+
 curl -sI --resolve requests.tomkatom.com:443:10.10.10.10 \
   https://requests.tomkatom.com | head -1
 # HTTP/2 200 — Seerr's own Plex-OAuth login, by design (no annotation)
-
-curl -sI --resolve tomkatom.com:443:10.10.10.10 https://tomkatom.com | head -1
-# HTTP/2 200 — Homepage, the front door, also by design (no annotation)
 ```
 
-A `200` from any of the seven means the forward-auth annotation is missing
-from that Ingress; a `302` from `requests.` or from the apex means one was
-added that should not be there. Note there is no `-k` anywhere above: a TLS
-error is itself the certificate check failing — and the apex line is the
-only one that exercises the `tomkatom.com` SAN added to
-`platform/traefik/wildcard-certificate.yaml`, since every other host is
-covered by the wildcard.
+A `200` from any of the eight means the forward-auth annotation is missing
+from that Ingress; a `302` from `requests.` means one was added that should
+not be there.
 
-`--resolve` is doing more work on the apex line than anywhere else: until
-the cutover runs, `tomkatom.com` is the *one* name in this file that
+**The apex line has a third outcome the others cannot produce.** Anything
+that is neither a `302` to `auth.` nor a `200` — a bare denial with no
+`location` header — means the annotation is present but the ACL's
+`tomkatom.com` entry is not, so the host is falling through to
+`default_policy: deny`. Check `platform/authelia.yaml` before the Ingress.
+
+Note there is no `-k` anywhere above: a TLS error is itself the certificate
+check failing — and the apex line is the only one that exercises the
+`tomkatom.com` SAN on `platform/traefik/wildcard-certificate.yaml`, since
+every other host is covered by the wildcard.
+
+`--resolve` is also doing more work on the apex line than anywhere else:
+until the cutover runs, `tomkatom.com` is the *one* name in this file that
 resolves publicly, and it resolves to the old server. Drop the flag there
 and the check quietly passes against production.
 

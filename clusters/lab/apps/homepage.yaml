@@ -1,9 +1,10 @@
 # Homepage — the front door at the apex, `tomkatom.com`. One page aimed at
-# the people who watch the library: Plex, the request portal, and enough
-# help to get a device set up. Not an operator dashboard; the admin UIs
-# stay behind Authelia on their own hostnames and are not named here or in
-# the page itself. ./homepage/configmap-homepage.yaml carries the content
-# and the reasoning behind what is on it.
+# watching the library rather than running it: Plex, the request portal,
+# and enough help to get a device set up. The admin UIs are not on it and
+# not named on it — they have their own hostnames. Behind Authelia like
+# almost everything else here, so "front door" means the first page after
+# login, not a public one. ./homepage/configmap-homepage.yaml carries the
+# content and the reasoning behind what is on it.
 #
 # Wave 2, one wave after ./homepage-config.yaml, so the homepage-config
 # ConfigMap it mounts already exists when the first Pod starts (see
@@ -166,23 +167,22 @@ spec:
               http:
                 port: 3000
         ingress:
-          # No forward-auth annotation, and that is the point of the page:
-          # the viewers it is for authenticate to Plex and to Seerr with a
-          # Plex account and hold no Authelia identity at all, so putting
-          # Authelia in front would lock out everyone it is written for.
-          # This is the second of exactly two un-annotated Ingresses in the
-          # stack, ./seerr.yaml being the first — see ./README.md
-          # "Ingress: chart-rendered, not a `-config` dir". Traefik never
-          # consults the middleware for a host that does not ask for it.
+          # Forward-auth, like every other host in this stack except Seerr's
+          # `requests.` — the page is written for viewers, but it is not
+          # published to strangers. Reaching it means holding an Authelia
+          # identity and passing 2FA.
           #
-          # What that costs is bounded by the content, not by the setting:
-          # the page holds public hostnames and public plex.tv links, reads
-          # no Secret, polls no app, and asks crawlers not to index it
-          # (`disableIndexing`, ./homepage/configmap-homepage.yaml). Adding
-          # anything here that a stranger should not read means adding the
-          # annotation back in the same commit — at which point it is no
-          # longer this page.
+          # ⚠ This annotation is only half of the protection on *this* host.
+          # Authelia's ACL is what decides the policy, and its
+          # `*.tomkatom.com` rule matches exactly one label — never the bare
+          # domain. `clusters/lab/platform/authelia.yaml` therefore lists
+          # `tomkatom.com` beside the wildcard; drop that entry and this
+          # host stops matching any rule, falls through to
+          # `default_policy: deny`, and is denied outright rather than sent
+          # to the login page. The two files change together or not at all.
           app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
             hosts:
               - host: tomkatom.com
                 paths:
