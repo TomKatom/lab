@@ -106,20 +106,33 @@ spec:
                     enabled: true
                     type: TCP
                     port: 32400
-                # Sized for direct play, which is what this library is
-                # actually served as — the steady-state cost is little more
-                # than reading files off disk and pushing them at the
-                # network. The spike is a library scan (metadata fetch,
-                # thumbnail and intro detection across the whole tree),
-                # which is bursty and parallel; the limit is there to keep
-                # a scan from starving the *arrs on the same node, not
-                # because playback needs it.
+                # Direct play, which is most of what this library is served
+                # as, costs little more than reading files off disk and
+                # pushing them at the network — the request floor reflects
+                # that steady state, not a transcode.
+                #
+                # The limit has to cover two different bursts. One is a
+                # library scan (metadata fetch, thumbnail and intro
+                # detection across the whole tree), bursty and parallel.
+                # The other is transcoding: the E5-1650v4 is a server Xeon
+                # with no integrated GPU, so there is no QuickSync path and
+                # every transcode this pod ever does is software libx264 —
+                # CPU-bound. A single occasional 1080p transcode (or a
+                # subtitle burn-in, which forces the same full re-encode)
+                # typically runs 150-250% CPU on hardware this class;
+                # audio-only transcodes are cheap by comparison since the
+                # video stream is direct-streamed untouched. 6 cores gives
+                # room for a transcode plus scan overlap, or two concurrent
+                # transcodes, while still leaving half the node's logical
+                # threads for the *arrs during that burst. Memory headroom
+                # covers the scan and per-stream transcode buffers, which
+                # are a few hundred MB each — the spike is CPU, not RAM.
                 resources:
                   requests:
-                    cpu: "1"
-                    memory: 2Gi
+                    cpu: 500m
+                    memory: 1Gi
                   limits:
-                    cpu: "4"
+                    cpu: "6"
                     memory: 6Gi
         service:
           # Exactly one Service, so app-template names it `plex` after the
