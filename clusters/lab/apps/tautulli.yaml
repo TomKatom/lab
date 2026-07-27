@@ -1,0 +1,120 @@
+# Tautulli — Plex watch-history and statistics, plus the Telegram
+# "recently added" digest. Wave 1: after media-common (wave 0) has created
+# the namespace and the media-env ConfigMap this consumes.
+#
+# Talks to Plex over the API only, and touches no files — no /data mount of
+# any kind (see ./README.md "The /data mount"). The Plex server it points
+# at is stored in its own database rather than in env, so it is configured
+# in the UI after the history db is restored; that is
+# docs/runbooks/media-migration.md §9, not a manifest concern.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tautulli
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000". The home-operations
+        # image is confirmed rootless at this exact pinned digest (its
+        # image config declares `User: nobody:nogroup`), so no per-app
+        # exception is needed the way Deluge's LSIO image requires one.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/home-operations/tautulli
+                  # renovate: datasource=docker depName=ghcr.io/home-operations/tautulli
+                  tag: "2.17.2@sha256:7592e192e2dd5297054a80c0f1e8b2593f7675af75c5020806b30c712e159406"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # /status is anonymous in Tautulli's own source at this
+                  # exact pinned tag (v2.17.2): webstart.py turns
+                  # `tools.auth_basic` off for the `/status` branch, and
+                  # webserve.py's `status()` handler carries no
+                  # `@requireAuth()` decorator — which is the only thing
+                  # that puts `auth.require` in the request config and so
+                  # the only thing webauth.check_auth acts on. Safe to
+                  # probe regardless of whether the restored config has
+                  # Tautulli's own login enabled.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /status
+                    port: 8181
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /status
+                    port: 8181
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /status
+                    port: 8181
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        service:
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 8181
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: tautulli.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 5Gi
+            globalMounts:
+              - path: /config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
