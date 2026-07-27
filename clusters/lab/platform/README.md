@@ -24,6 +24,13 @@ Cluster platform services, synced before any media app depends on them:
   (file users + TOTP, SQLite) in front of the *arr/Deluge UIs.
   **Implemented (Phase 5).** See "Protecting a service with forward-auth"
   below.
+- `apps.yaml` — **not a platform component**, but the media stack's
+  entrypoint: a chart-free `Application` at sync-wave `"3"` (after every
+  platform wave) whose `source.path` is `clusters/lab/apps` with
+  `directory.recurse: false`. `root-app` applies it as an ordinary
+  top-level `platform/*.yaml` manifest, and it in turn discovers every
+  `clusters/lab/apps/*.yaml` Application — see
+  [`../apps/README.md`](../apps/README.md). **Implemented (Phase 6).**
 - `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
   here later (Phase 7).
 
@@ -46,6 +53,13 @@ three-piece convention:
 - `<component>/` — the kustomize overlay itself: CRs plus a ksops-encrypted
   Secret. **Not** scanned by `root-app` directly — pulled in only via the
   sibling `<component>-config.yaml` Application.
+
+`apps.yaml` is the one file here that is none of those three: it is a
+top-level Application like the first kind, but its source is a *directory
+of Applications* (`clusters/lab/apps`) rather than a Helm chart, so it
+repeats this same `recurse: false` discovery contract one layer down for
+the media stack. Adding an app is dropping a file into
+`clusters/lab/apps/`; nothing here changes.
 
 ## Issuing a certificate
 
@@ -204,10 +218,14 @@ like. Worth being precise about, because the cutover depends on it:
   is a different thing). A name that already has a record external-dns does
   not own is unreachable to it — see `policy: sync` below.
 - **What it does guard is the one unconditional write: creating a name the
-  zone does not have yet.** `auth.tomkatom.com` and `plex.tomkatom.com`
-  resolve to nothing today, so those are real creates — and a create makes
-  a new-server service resolve publicly while the old server is still the
-  one in production. That timing, not safety, is what the flag buys now.
+  zone does not have yet.** `auth.tomkatom.com` and the media hosts that
+  were never CNAME'd (`bazarr.`, `tautulli.`, `maintainerr.`, `home.`,
+  `requests.`) resolve to nothing today, so those are real creates — and a
+  create makes a new-server service resolve publicly while the old server
+  is still the one in production. That timing, not safety, is what the flag
+  buys now. (`plex.tomkatom.com` is not on that list and never will be:
+  Plex has no Ingress, so external-dns never sees it — plex.tv brokers
+  clients straight to the DNAT'd `145.239.3.55:32400`.)
 
 So the flag comes off exactly once, as a deliberate step in
 [`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md),

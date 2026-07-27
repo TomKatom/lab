@@ -83,6 +83,16 @@ env:
     value: "002"
 ```
 
+**The exception costs two halves of the house block, not one.** Alongside
+`runAsUser`/`runAsGroup`/`runAsNonRoot`, `deluge.yaml` also carries no
+container-level `capabilities.drop: ["ALL"]`: `s6` needs `CAP_CHOWN`,
+`CAP_SETUID`, `CAP_SETGID` and `CAP_DAC_OVERRIDE` to chown `/config` and
+`/data` and then drop from root to `PUID`/`PGID`, so dropping ALL breaks
+its startup rather than hardening it. What Deluge does keep is everything
+that doesn't block a root start — `fsGroup`, `fsGroupChangePolicy` and
+`seccompProfile: RuntimeDefault`. Any image needing the same treatment
+should lose exactly those two pieces and no more.
+
 If any other image later turns out to need root at container start
 (verify at authoring time — the `home-operations` images used elsewhere in
 this stack are confirmed rootless), give it the same shape of per-app note
@@ -321,6 +331,135 @@ only exists where there's:
   this stack that CI's kustomize step deliberately skips building (no
   `SOPS_AGE_KEY` in that job), the same way every platform `-config`
   overlay with a `.sops.yaml` file is skipped.
+
+## Media pipeline smoke test
+
+The phase-level acceptance check, in the same shape as
+[`platform/README.md`](../platform/README.md#smoke-testing-forward-auth-end-to-end)'s
+whoami procedure: run it after the migration runbook's restores, after any
+`app-template` chart bump, and any time the pipeline needs re-proving end
+to end.
+
+**Every check here is internal, over WireGuard.** Hostnames are resolved
+at the node with `curl --resolve`, never through public DNS — until
+[`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md)
+runs, every host below is NXDOMAIN publicly, and a check that "passes" by
+resolving publicly reached the **old server**, not this cluster.
+
+### 1. Everything is Synced, Healthy and Running
+
+```sh
+kubectl -n argocd get applications
+# every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
+# flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
+# overseerr, maintainerr, homepage(+-config)
+
+kubectl -n media get pods
+```
+
+Every Deployment pod reads `1/1 Running`. Recyclarr is a CronJob, so it
+appears only as `Completed` Job pods (or not at all between runs) — that is
+correct, not a missing app.
+
+### 2. Auth boundary: eight protected hosts, one that must not be
+
+```sh
+for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr home; do
+  printf '%-14s %s\n' "$h" "$(curl -sI --resolve "$h.tomkatom.com:443:10.10.10.10" \
+    "https://$h.tomkatom.com" | grep -iE '^HTTP|^location' | tr -d '\r' | paste -sd' ' -)"
+done
+# each: HTTP/2 302  location: https://auth.tomkatom.com/?rd=...
+
+curl -sI --resolve requests.tomkatom.com:443:10.10.10.10 \
+  https://requests.tomkatom.com | head -1
+# HTTP/2 200 — Overseerr's own Plex-OAuth login, by design (no annotation)
+```
+
+A `200` from any of the eight means the forward-auth annotation is missing
+from that Ingress; a `302` from `requests.` means one was added that should
+not be there. Note there is no `-k` anywhere above: a TLS error is itself
+the wildcard-certificate check failing.
+
+### 3. Hardlink proof (the master-plan acceptance)
+
+An imported file must be **one inode with two names** — once under
+`/data/torrents`, once under `/data/media`. If it is two inodes, the import
+copied instead of linking and the library is silently double-counting disk.
+
+```sh
+ssh debian@k3s.lab.tomkatom.com '
+  f=$(find /data/media -type f -links +1 -print -quit)
+  stat -c "%h links  inode %i  %n" "$f"
+  find /data/torrents -samefile "$f"
+'
+# link count >= 2, and the same inode surfaces under /data/torrents/...
+```
+
+### 4. Deluge is reachable from the outside and seeding
+
+```sh
+ssh debian@k3s.lab.tomkatom.com 'ss -lntu | grep 51413'
+# two rows: LISTEN on tcp/51413 and UNCONN on udp/51413 (the two klipper
+# LoadBalancer Services), matching config/lab.yml's ports.torrent
+```
+
+In the Deluge WebUI, an active private-tracker torrent shows a recent
+successful announce, and the tracker's own site reports the client address
+as **`145.239.3.55`** — the host's public IP, which egress masquerade makes
+Deluge announce from. A private address there means the NAT contract broke.
+
+### 5. Plex: migrated identity, direct play, zero transcodes
+
+```sh
+curl -s http://10.10.10.10:32400/identity   # over WG — Plex has no Ingress
+```
+
+`machineIdentifier` must equal the value
+[`media-migration.md`](../../../docs/runbooks/media-migration.md) §8
+recorded from the old server's `Preferences.xml` — same identity means no
+re-claim
+and an intact watch history. Then play something to a remote client and
+confirm in Plex's dashboard (or Tautulli) that the session reads **Direct
+Play** with **zero** transcode sessions: this node has no GPU, so every
+transcode is software libx264 and direct play is the design assumption.
+
+### 6. The full end-user loop
+
+The one check that exercises every app at once. Request a title in
+`requests.tomkatom.com` → Overseerr hands it to Sonarr/Radarr → Prowlarr's
+indexers find it → Deluge downloads it → the `*arr` hardlink-imports it into
+`/data/media` → Plex's library updates → Overseerr flips it to **Available**
+→ **a message lands in the Telegram group**. Tautulli's recently-added
+digest follows on its own schedule.
+
+Anything that stalls mid-chain localises immediately: no grab is a Prowlarr
+or indexer problem, a grab with no import is a download-client path or
+category problem, an import with no Plex update is the library-scan path
+(virtiofs has no reliable inotify — the `*arr`→Plex Connect notification is
+what refreshes it), and a Plex update with no Telegram message is the
+notification agent.
+
+### 7. external-dns is still inert, and still blind to the old server
+
+Until the cutover runbook runs, this must all still be true:
+
+```sh
+kubectl -n external-dns logs deploy/external-dns --tail=200 \
+  | grep -iE 'changing record|create|up to date'
+# would-create lines for the never-existing hosts only — auth., bazarr.,
+# tautulli., maintainerr., home., requests. Nothing for sonarr./radarr./
+# prowlarr./deluge. (taken CNAMEs, blocked by the ownership gate), and no
+# actual writes at all (--dry-run).
+
+dig +short tomkatom.com A                        # 94.75.211.144 — old server
+dig +short requests.tomkatom.com                 # empty — NXDOMAIN
+dig +short _externaldns.a-auth.tomkatom.com TXT  # empty — nothing written yet
+```
+
+A `Changing record.` line naming a taken host, or any `_externaldns.*` TXT
+existing, means the ownership contract is not behaving as read — stop and
+re-read [`platform/README.md`](../platform/README.md#dns-records-from-ingresses-inert)
+before going near the cutover.
 
 ## Migrating state from the old server
 

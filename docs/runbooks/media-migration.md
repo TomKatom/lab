@@ -492,27 +492,55 @@ repeating it six times. Every restore is: stop Argo from fighting you, stop
 the pod, copy config in, fix ownership, start the pod back up, hand control
 back to Argo.
 
-Reach the Argo CD CLI over WireGuard the same way its UI is reached
-(`docs/bootstrap.md`) — `kubectl port-forward` to the in-cluster service,
-then log in against the forwarded port:
+Everything below is driven with `kubectl` over WireGuard, not the Argo CD
+CLI:
 
-```sh
-kubectl -n argocd port-forward svc/argocd-server 8080:443 &
-argocd login localhost:8080 --insecure   # once per shell session
-```
+> ⚠ **`argocd` is not installed on `k3s-node`**, despite the Ansible
+> `argocd` role that is supposed to put it there — found while running §5
+> and §6 for real, and unexplained. Every `argocd app set` this procedure
+> used to call is written below as the `kubectl -n argocd patch
+> application` it performs anyway (the CLI only PATCHes the same
+> `Application` CR). Nothing here is blocked by the gap, but fix it before
+> someone reaches for `argocd app list --core` and finds nothing. Reaching
+> the CLI from your own machine over a `kubectl -n argocd port-forward
+> svc/argocd-server 8080:443` (`docs/bootstrap.md`) works and is equally
+> valid — the patches below are simply the form that needs no CLI at all.
 
 Then, for `<app>` being restored:
 
-1. **Take the Application out of auto-sync first — before anything else:**
+1. **Pause auto-sync — on the parent `apps` Application first, then on
+   `<app>` — before anything else:**
 
    ```sh
-   argocd app set <app> --sync-policy none
+   kubectl -n argocd patch application apps --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":null}}}'
+   kubectl -n argocd patch application <app> --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":null}}}'
    ```
 
-   ⚠ **The trap:** if you scale the Deployment down while `selfHeal` is
-   still on, Argo reverts the scale-down on its next reconcile — you end up
-   fighting your own GitOps controller, and the pod flaps back up mid-copy.
-   Disabling sync-policy first is not optional.
+   ⚠ **The trap, and it has two layers.** Scale the Deployment down while
+   `selfHeal` is on and Argo reverts the scale-down on its next reconcile —
+   you end up fighting your own GitOps controller, and the pod flaps back
+   up mid-copy. But **pausing `<app>` on its own does not hold**: this is an
+   app-of-apps (`root-app` → `apps` → `<app>`) with `selfHeal` at every
+   level, so the parent `apps` Application reconciles
+   `clusters/lab/apps/<app>.yaml` — which still says `automated:` in git —
+   back over your patch within about a second, and *that* revert is what
+   re-arms the child's own self-heal to scale the Deployment straight back
+   up. Pausing `apps` as well is what makes the pause stick.
+
+   **Leave `root-app` alone.** It is an unrelated sibling covering
+   `platform/` (Traefik, Authelia, cert-manager, external-dns); nothing in
+   this runbook needs it paused, and pausing it stops platform drift
+   correction for no benefit.
+
+   Confirm the pause actually took, rather than assuming:
+
+   ```sh
+   kubectl -n argocd get application apps <app> \
+     -o custom-columns=NAME:.metadata.name,AUTOMATED:.spec.syncPolicy.automated
+   # both rows read <none>
+   ```
 
 2. Scale the Deployment to zero (releases the PVC's writer, and the app's
    sqlite DBs, so the copy in step 4 lands on a clean, unlocked file):
@@ -531,15 +559,41 @@ Then, for `<app>` being restored:
    # e.g. /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>
    ```
 
-4. From inside the k3s VM (`ssh debian@k3s.lab.tomkatom.com`), pull the old
-   app's config directly from the old server into that path. The VM's
-   egress is masqueraded through the host (`docs/architecture.md`'s
-   single-IP NAT model), so it reaches the old server's public IP directly
-   — no extra hop through the Proxmox host is needed for this smaller,
-   config-sized copy:
+4. Copy the old app's config into that directory — **relayed through your
+   own machine**, not pulled from the VM. The obvious one-liner
+   (`rsync -a old:/srv/<app>/config/ …`, run on `k3s-node`) cannot work,
+   for two independent reasons found while running §5 and §6 for real:
+
+   - **`rsync` is not installed on `k3s-node`** (Debian trixie base image),
+     so there is no binary to run there.
+   - **`ssh k3s` has no route to `old`** — no key and no host entry for it.
+     §3.1 deliberately provisioned that path on the *Proxmox host*, for the
+     bulk transfer, and nowhere else.
+
+   Your own machine already reaches both sides, so relay: `rsync` to pull,
+   plain `tar` over `ssh` to push (the far end has no `rsync` to talk to).
 
    ```sh
-   rsync -a old:/srv/<app>/config/ /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>/
+   mkdir -p ~/migration-scratch/<app>
+   rsync -a old:/srv/<app>/config/ ~/migration-scratch/<app>/
+
+   tar cf - -C ~/migration-scratch/<app> . \
+     | ssh debian@k3s.lab.tomkatom.com \
+         'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>'
+   ```
+
+   The remote `sudo` is not optional:
+   `/var/lib/rancher/k3s/storage/` itself is not world-traversable, even
+   though the leaf PVC directory under it is.
+
+   ⚠ **On macOS, clear the AppleDouble litter before step 5.** BSD `tar`
+   writes a `._*` sidecar into the archive for every file carrying extended
+   attributes, and they arrive as junk in the app's config dir — the real
+   restores deleted **593** of them for Sonarr and **646** for Radarr:
+
+   ```sh
+   ssh debian@k3s.lab.tomkatom.com \
+     'sudo find /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app> -name "._*" -delete'
    ```
 
    `<app>` is the same word on both sides for every app this template
@@ -547,11 +601,20 @@ Then, for `<app>` being restored:
    `/srv/overserr/config/`** (§2.1's spelling warning). Plex does not use
    this step at all — §8 copies a subtree, not the whole config dir.
 
+   **Installing `rsync` on `k3s-node` (via the Ansible roles that build it,
+   not by hand) removes this relay entirely** — worth doing before the
+   bigger copies, since Plex's config alone is 2.7 GB and every byte
+   currently makes a round trip through your laptop.
+
+   Delete the scratch copy once the push has succeeded — it is a full copy
+   of an app's database, API keys included.
+
 5. Fix ownership — the copy above lands as whatever the old server's uid/gid
    was (§2.4):
 
    ```sh
-   chown -R 1000:1000 /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>/
+   ssh debian@k3s.lab.tomkatom.com \
+     'sudo chown -R 1000:1000 /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>/'
    ```
 
 6. Scale back up and verify (app-specific checks are in §5–§10; §13 has the
@@ -570,11 +633,60 @@ Then, for `<app>` being restored:
    curl -sI --resolve <app>.tomkatom.com:443:10.10.10.10 https://<app>.tomkatom.com
    ```
 
-7. Hand control back to Argo:
+   ⚠ **The UI checklists in §5–§9 cannot be done with `curl`, and a browser
+   does not have `--resolve`.** Four of these hostnames already resolve —
+   **to the old server**, which is still production:
+
+   | Name | Public DNS today | What a browser gets |
+   |---|---|---|
+   | `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` | `CNAME → tomkatom.com → 94.75.211.144` | **the old app**, with no error and nothing to tip you off |
+   | `bazarr.` `tautulli.` `maintainerr.` `home.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
+
+   So you can complete an entire §5/§6 checklist against **production** and
+   change nothing on the cluster. Override the names locally instead, on the
+   machine running the browser, while on WireGuard — in `/etc/hosts`:
+
+   ```
+   10.10.10.10  auth.tomkatom.com
+   10.10.10.10  sonarr.tomkatom.com radarr.tomkatom.com prowlarr.tomkatom.com
+   10.10.10.10  deluge.tomkatom.com bazarr.tomkatom.com tautulli.tomkatom.com
+   10.10.10.10  maintainerr.tomkatom.com home.tomkatom.com requests.tomkatom.com
+   ```
+
+   One address may carry many names on a line, but **`/etc/hosts` has no
+   line-continuation syntax** — a trailing `\` is parsed as part of a
+   hostname, not as "continued below", and the entries after it silently do
+   not resolve.
+
+   **`auth.tomkatom.com` has to be in that list.** Every protected host 302s
+   the *browser* to it, and it is NXDOMAIN publicly, so without the override
+   the login redirect dead-ends and nothing above it is reachable either.
+
+   The `*.lab.tomkatom.com` management names (`pve.`, `k3s.`) need no
+   override — they are real public A records pointing at internal addresses.
+   The app names are not in that scheme, and there is no split-horizon
+   resolver here by design.
+
+   **Remove these entries at DNS cutover** (`dns-cutover.md`), or they will
+   mask a broken public record later: your browser will keep working off the
+   override long after everyone else's has stopped.
+
+7. Hand control back to Argo — child first, then the parent:
 
    ```sh
-   argocd app set <app> --sync-policy automated --auto-prune --self-heal
+   kubectl -n argocd patch application <app> --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+   kubectl -n argocd patch application apps --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+
+   kubectl -n argocd get application apps <app> \
+     -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
+   # both Synced / Healthy again
    ```
+
+   Order matters only in that resuming `<app>` first means `apps` finds no
+   drift to correct when it resumes — by then the child's `syncPolicy`
+   already matches what git says.
 
 ---
 
@@ -585,16 +697,24 @@ Follow §4 for `prowlarr`. Specifics:
 - The env-pinned `PROWLARR_API_KEY` (from the `arr-api-keys` Secret, PR3)
   already equals the old key (§2.2) — nothing else needs to move for
   Prowlarr's own identity.
-- In the restored UI, re-point every **Apps** entry (Settings → Apps) at the
-  cluster DNS names, not the old server's addresses:
+- Re-point every **Apps** entry (Settings → Apps) at the cluster DNS names,
+  not the old server's addresses. The UI works, and so does Prowlarr's own
+  API — `PUT /api/v1/applications/<id>` with only `baseUrl` changed is what
+  the real restore used; send the masked `"********"` `apiKey` field back
+  verbatim, which Prowlarr reads as "unchanged", exactly as its own UI does.
+  The addresses:
   - Sonarr: `http://sonarr.media.svc.cluster.local:8989`
   - Radarr: `http://radarr.media.svc.cluster.local:7878`
 - If any indexer used a FlareSolverr proxy, re-point it too:
   `http://flaresolverr.media.svc.cluster.local:8191`. PR5 marks FlareSolverr
   optional — if it wasn't deployed, remove the proxy reference from the
   indexer instead.
-- Verify: Settings → Indexers → **Test All** green; Settings → Apps → each
-  app shows a successful sync test.
+- Verify: Settings → Apps → each app shows a successful sync test, and
+  Settings → Indexers → **Test All**. A red indexer here is almost always
+  pre-existing credential rot — an expired session cookie, a dead tracker —
+  rather than a migration fault: nothing in this restore touches indexer
+  credentials. Judge it against how that indexer behaved on the old server
+  before spending time on it.
 
 ---
 
@@ -603,6 +723,26 @@ Follow §4 for `prowlarr`. Specifics:
 Near-identical twins — follow §4 once for `sonarr`, once for `radarr`.
 Specifics for both:
 
+- ⚠ **First thing after the pod comes up, before any other UI work: set
+  Settings → Indexers → Options → RSS Sync Interval to `0`** (which disables
+  it) on both apps. The restored database brings its indexers *and* its
+  enabled RSS sync across with it, and the old server's Prowlarr is still
+  publicly reachable — so within ~15 minutes the restored app starts
+  grabbing releases **in parallel with the old server still doing the same
+  job**: duplicate snatches against private trackers (which count them),
+  duplicate downloads, and a `/data/media` on the cluster that drifts from
+  the copy §11's final delta has to reconcile. **Restore the interval in
+  §11**, as part of the cutover — not before, and **write down the value you
+  are replacing** so there is something to restore it to. (On the real
+  restore, Sonarr's had come across as `0` already and Radarr's as `30`, so
+  the two apps do not necessarily match.)
+
+- **Expected while the old server is still live — don't chase either:** the
+  queue shows orphaned items belonging to the *old* Deluge, and health
+  checks complain about the download client until the re-point below (and
+  about an empty Deluge until §10 restores its session). Both clear
+  themselves at cutover.
+
 - The restored config dir includes the sqlite DB and `config.xml`. **The
   env override (`SONARR__AUTH__APIKEY` / `RADARR__AUTH__APIKEY`, from PR3's
   `arr-api-keys` Secret) wins over `config.xml` at startup** — this is
@@ -610,7 +750,18 @@ Specifics for both:
   diverged, every dependent (Prowlarr's app-sync, Overseerr, Unpackerr)
   would start authenticating with the wrong key against the migrated app.
 - Re-point the download client (Settings → Download Clients → Deluge):
-  Host `deluge.media.svc.cluster.local`, Port `8112`.
+  Host `deluge.media.svc.cluster.local`, Port `8112`. The app's own REST API
+  is an equally good route and is what the real restore used — `PUT
+  /api/v3/downloadclient/<id>` with only the `host` field changed and
+  `X-Api-Key` set to the value in `arr-api-keys`.
+
+  Either way, **the save's live client test fails until §10 restores
+  Deluge's own config**, with Deluge rejecting the `TvCategory` /
+  `MovieCategory` field as "Label plugin not activated" — the Label plugin
+  is enabled in Deluge's config, which does not exist on the cluster yet.
+  That error is itself proof the host and port are right: nothing reached
+  Deluge would have produced it. Persist the change anyway (`?forceSave=true`
+  on the API call, or the UI's save-regardless prompt) and re-test after §10.
 - Verify root folders are unchanged (Settings → Media Management → Root
   Folders): **`/data/media/tv` for Sonarr, `/data/media/movies` for
   Radarr** — the old server's actual layout (§2.4), and identical on the
@@ -636,7 +787,20 @@ Specifics for both:
 
 ## 7. Bazarr (after PR7)
 
-Follow §4 for `bazarr`. The one honest gap in this whole runbook:
+Follow §4 for `bazarr`. Specifics:
+
+- ⚠ **First, disable the scheduled subtitle search** (Settings → Scheduler →
+  the "Search for Missing Subtitles" tasks → Never/disabled). This is
+  Bazarr's version of §6's RSS-sync race: the old server's Bazarr is still
+  running the same searches against the same providers, so leaving both on
+  burns limited provider quota re-fetching subtitles the old server is
+  fetching too, and writes them into a `/data/media` tree §11's final delta
+  then has to reconcile. **Re-enable it in §11**, with the `*arr`s' RSS
+  sync.
+  A manual search on a single title still works meanwhile — that is how the
+  verification at the end of this section is done.
+
+The one honest gap in this whole runbook:
 
 - **Bazarr's API key lives only in its own config — there is no env
   override for it**, unlike Sonarr/Radarr/Prowlarr. That means after
@@ -660,9 +824,26 @@ Follow §4 for `bazarr`. The one honest gap in this whole runbook:
 
 ## 8. Plex (after PR8)
 
-Plex's restore is ordered differently from §4 because of one hard
-requirement: **stop the old Plex server before copying anything**, so its
-database isn't captured mid-write.
+⚠ **This is the one restore that is a real, one-way, user-visible cutover.
+Schedule it deliberately.** Everything before it is reversible — the old
+server keeps serving while a cluster app is restored alongside it. Plex is
+not, for three reasons that compound:
+
+- **It needs no DNS at all**, so nothing gates it. plex.tv brokers clients
+  straight to `145.239.3.55:32400`, already DNAT'd to the node
+  (`config/lab.yml`'s `ports.plex`), and Plex has no Ingress and no DNS
+  record — `clusters/lab/apps/plex.yaml` deliberately declares none. There
+  is no "restore it now, expose it later" step.
+- **The old Plex must be stopped first** — two servers must never share one
+  machine identity, and the copy below has to capture a database that is
+  not being written to.
+- **So the moment this section completes, end users are streaming from the
+  cluster**, against a library frozen at the last rsync (§3) until §11's
+  deltas catch it up. Anything grabbed on the old server in between is
+  missing until then.
+
+Plex's restore is therefore ordered differently from §4, starting with that
+stop.
 
 1. `ssh old` and stop Watchtower first, then Plex:
 
@@ -925,10 +1106,23 @@ restore is not independent of the cutover sequence.
 
 4. Now run §10 (Deluge) — the old server's session is stopped and its
    source data is frozen, exactly what §10 assumes.
-5. **The media pipeline is now served by the cluster** — every request that
+
+5. **Re-enable what §6 and §7 deliberately switched off.** Both mitigations
+   existed only to stop the cluster racing a still-running old server; that
+   server is now stopped, and leaving them off means the pipeline quietly
+   does nothing.
+
+   - Sonarr and Radarr: Settings → Indexers → Options → **RSS Sync
+     Interval** back to the value recorded in §6.
+   - Bazarr: re-enable the scheduled subtitle searches disabled in §7.
+   - Re-test each `*arr`'s Deluge download client (Settings → Download
+     Clients → Test). With §10 done, the "Label plugin not activated" error
+     from §6 is gone and the test passes.
+
+6. **The media pipeline is now served by the cluster** — every request that
    used to flow through the old docker-compose stack flows through `media`
    namespace pods instead.
-6. **Public DNS cutover remains entirely separate** — see
+7. **Public DNS cutover remains entirely separate** — see
    [`dns-cutover.md`](dns-cutover.md). Nothing above changes what
    `tomkatom.com` resolves to; that stays the old server's IP until an
    operator deliberately runs that runbook.
