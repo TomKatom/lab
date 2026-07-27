@@ -1032,6 +1032,33 @@ Then, after §4's step 6 scales the Deployment back up:
 - Configure the Telegram agent in the UI (Settings → Notifications →
   Telegram): bot token = `TELEGRAM_BOT_TOKEN`, chat id = `TELEGRAM_CHAT_ID`
   (the group, §2.5), notification type **Media Available** enabled.
+- **Turn off password sign-in: Settings → Users → uncheck "Enable Local
+  Sign-In", save.** Do this before the DNS cutover publishes
+  `requests.tomkatom.com`, not after. This is the only host in the stack a
+  stranger can reach, its Ingress carries no forward-auth by design, and
+  `main.localLogin` ships `true` — so until it is off, `/api/v1/auth/local`
+  is an email-and-password endpoint on the public internet with no rate
+  limit in front of it (Traefik cannot supply one here; see
+  `clusters/lab/apps/seerr.yaml`). With it off the route returns
+  `Password sign-in is disabled.` before reading the credential, leaving
+  Plex OAuth as the only way in.
+
+  The restored Overseerr `settings.json` carries `localLogin: true`, so the
+  migration hands you this switched **on** regardless of how the old server
+  had it — check it here rather than assuming. Confirm from outside the UI:
+
+  ```sh
+  curl -s -o /dev/null -w '%{http_code}\n' \
+    --resolve requests.tomkatom.com:443:10.10.10.10 \
+    -X POST https://requests.tomkatom.com/api/v1/auth/local \
+    -H 'Content-Type: application/json' -d '{}'
+  ```
+
+  Expect `500` with `Password sign-in is disabled.` in the body — Seerr
+  returns 500 for both the disabled case and a missing-field case, so read
+  the body, not the code. Leave "Enable New Plex Sign-In" **on**: that is
+  what lets a Plex user with library access onboard themselves, which is
+  the reason this host is not behind Authelia in the first place.
 - Verify Seerr's own login still works unauthenticated by Authelia (its
   Ingress carries no forward-auth annotation by design — Plex OAuth is the
   end-user login, per the phase's decision).
@@ -1267,7 +1294,7 @@ across:
 | Prowlarr | Settings → Indexers → **Test All** green; Apps → Sonarr/Radarr sync succeeds |
 | Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
 | Plex | `curl http://10.10.10.10:32400/identity` (over WG) returns the **same** `machineIdentifier` as the old server's `Preferences.xml` — no re-claim; a remote client shows **Direct Play**, zero transcode sessions |
-| Seerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Seerr flips **Available** → a **Telegram group** message arrives |
+| Seerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Seerr flips **Available** → a **Telegram group** message arrives. Separately: `POST /api/v1/auth/local` answers **`Password sign-in is disabled.`** (§9) — the only host here a stranger can reach, so this is the perimeter |
 | Tautulli | The recently-added digest posts to the same Telegram group on its configured schedule; play history shows continuity from before the migration |
 | Maintainerr | At least one re-created rule executes against a test item without error |
 | Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |

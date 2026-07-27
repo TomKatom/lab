@@ -12,6 +12,31 @@
 # Cloudflare proxy, and the apex/wildcard need to resolve straight to the
 # host for the same reason as everything else on this box.
 #
+# Orange-clouding the HTTP-only names (`requests.`, the apex) has been looked
+# at and rejected twice; the reasons are recorded here so it does not get
+# re-proposed as free hardening:
+#
+#   1. It hides nothing. The origin IP is published by design elsewhere —
+#      `PLEX_ADVERTISE_URL` in clusters/lab/apps/plex.yaml hands it to
+#      plex.tv, which hands it to every client; Traefik's `ingressEndpoint.ip`
+#      carries it; and the grey `*` record below answers with it for any name
+#      external-dns has not explicitly created. Proxying two names out of a
+#      zone that resolves to the origin everywhere else is not concealment.
+#   2. It fails closed on the wrong SSL/TLS mode, loudly. Traefik deliberately
+#      keeps :80 off the Service and off the node (clusters/lab/platform/
+#      traefik.yaml), and only :443 is DNAT'd — so under Cloudflare's
+#      "Flexible" mode, which dials the origin on port 80, every proxied name
+#      returns 521 with nothing to debug at the origin. Only Full (strict)
+#      works, and that is a zone-level dashboard setting this repo does not
+#      manage, so the config would depend on a toggle git cannot see.
+#
+# If edge filtering is ever actually wanted, the coherent version is all HTTP
+# names proxied, `*` narrowed or dropped, :443 restricted to Cloudflare's
+# published ranges, the SSL mode pinned here as a `cloudflare_zone_setting`,
+# and Traefik configured to trust `CF-Connecting-IP` — which would also be
+# what finally gives this cluster a real client IP (see traefik.yaml). That is
+# a project, not a checkbox, and it still leaves Plex on the naked IP.
+#
 # external-dns (Phase 5) manages per-service records (sonarr., auth., ...)
 # dynamically. It runs `policy: sync`, which does delete — what keeps it off
 # these Tofu-owned records is ownership, not policy: external-dns only

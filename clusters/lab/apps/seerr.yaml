@@ -29,6 +29,27 @@
 # Ingress means Traefik never consults the forward-auth middleware for this
 # host. See ./README.md "Ingress: chart-rendered, not a `-config` dir".
 #
+# ⚠ Because Plex OAuth is the whole perimeter here, `main.localLogin` must be
+# OFF. It ships `true` (server/lib/settings/index.ts at the pinned tag), which
+# leaves /api/v1/auth/local accepting an email and password — an unrate-limited
+# credential endpoint on the one host in this stack a stranger can reach. With
+# it false the route returns before touching the password path, so Plex OAuth
+# becomes the only way in and there is nothing left to spray.
+#
+# "Unrate-limited" is a property of this cluster, not an oversight: klipper
+# masquerades every external connection, so Traefik sees one source address
+# for the whole internet and a rateLimit middleware here would cap all
+# requesters together rather than per client. The reasoning is on
+# ../platform/traefik.yaml's `service.spec`. Closing the endpoint is
+# therefore the mitigation, not a supplement to one.
+#
+# It is a settings.json value, not a manifest one: Seerr has no env var for it
+# and this repo does not template its config, so it cannot be asserted here.
+# That makes it the one security property of this app git does not enforce —
+# docs/runbooks/media-migration.md §9 turns it off after the config restore
+# (the restored Overseerr settings.json will carry `true`) and §13's
+# acceptance row re-checks it.
+#
 # The Plex server, the Sonarr/Radarr connections and the Telegram agent are
 # all stored in Seerr's own settings.json and database rather than in
 # env, so they come across with the migrated config in

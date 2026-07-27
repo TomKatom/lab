@@ -49,6 +49,23 @@ spec:
             # answers a LoadBalancer Service by binding its ports on the
             # node — that is what puts Traefik behind the existing
             # :443 DNAT at 10.10.10.10.
+            #
+            # ⚠ Consequence worth knowing before writing any per-client rule:
+            # klipper's forwarder MASQUERADEs unconditionally — its `entry`
+            # script pairs every `-j DNAT` with a `-j MASQUERADE` on the way
+            # out, with no externalTrafficPolicy branch. So Traefik sees the
+            # svclb Pod's address as the source of *every* external request
+            # and the real client IP never reaches this cluster. Nothing in
+            # front sets `X-Forwarded-For` either, since Traefik is the edge.
+            #
+            # Any Traefik middleware keyed on the client — rateLimit,
+            # ipAllowList, inFlightReq — therefore treats the whole internet
+            # as one client, which turns a per-IP limit into a global one
+            # that a single abuser can trip for everybody. Making those work
+            # needs a real source of client IP first: either a proxy in
+            # front whose header Traefik is configured to trust, or a load
+            # balancer that preserves the source address (klipper cannot).
+            # Until then, per-client rules belong in the app, not here.
             type: LoadBalancer
         ingressClass:
           # Also a chart default, restated for the same reason: Phase 6 app

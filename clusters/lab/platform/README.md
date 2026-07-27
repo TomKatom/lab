@@ -146,21 +146,10 @@ metadata:
     traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
 ```
 
-That's it for any host on a subdomain — `access_control.default_policy:
-deny` plus the `two_factor` rule in `authelia.yaml` covers them, so a new
-Ingress is protected the moment the annotation lands. Three things worth
-knowing:
+That's it — `access_control.default_policy: deny` plus a `*.tomkatom.com`
+rule in `authelia.yaml` already covers every host, so a new Ingress is
+protected the moment the annotation lands. Two things worth knowing:
 
-- **A host on the bare apex needs an ACL entry as well as the
-  annotation.** `*.tomkatom.com` matches exactly one label and never
-  `tomkatom.com` itself, so an apex Ingress carrying the annotation but
-  missing from the ACL matches no rule, falls through to
-  `default_policy: deny`, and is denied outright — no redirect to the
-  portal, so it reads as broken rather than as protected. The rule
-  therefore lists both forms today, because Homepage is on the apex
-  (`../apps/homepage.yaml`). Authelia permits both because each is either
-  the session cookie domain or a subdomain of it, which is its stated
-  requirement for a rule domain.
 - **Don't add this annotation to Authelia's own Ingress**
   (`authelia/ingress-auth.yaml`). The portal must stay reachable
   unauthenticated — putting it behind its own forward-auth is a lockout

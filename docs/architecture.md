@@ -293,13 +293,13 @@ which hangs `tofu plan`/`apply` on every run.
   posture, `enable_firewall` kill-switch); NAT via Ansible. The
   `restrict_management` toggle keeps SSH/API rules open-to-any until
   WireGuard is verified (anti-lockout); reseller console is the fallback.
-- Least exposure: every HTTP host sits behind **Authelia** (TOTP), the apex
-  included — its ACL lists `tomkatom.com` beside `*.tomkatom.com`, since a
-  wildcard label never matches the bare domain. Exactly one Ingress is
-  deliberately un-annotated: Seerr's `requests.`, where end users
-  authenticate through its own Plex OAuth. Plex itself uses plex.tv auth on
-  its own port, outside Traefik/Authelia entirely. See
-  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md).
+- Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
+  plex.tv auth on its own port, outside Traefik/Authelia. Exactly two
+  Ingresses are deliberately un-annotated, both aimed at people who hold a
+  Plex account and no Authelia identity: Seerr's `requests.` (its own Plex
+  OAuth) and Homepage on the apex (a page of public links, no credential
+  read and no app polled — see
+  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md)).
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
   `gitleaks` in CI blocks anything that slips through, and the age private
   key is held out-of-band (password manager), as the `SOPS_AGE_KEY` repo
