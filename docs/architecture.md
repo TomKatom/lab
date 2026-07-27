@@ -6,10 +6,17 @@ were made. This document is meant to stay in sync with what's actually
 implemented as each phase lands; where the two disagree, trust this file
 and the code, and update `master-plan.md`'s decision log if a call changed.
 
-**Status:** Phase 3 (configure) — `infra/tofu/` (Phase 2) is applied, and
-Ansible (Phase 3) is substantially complete and applied live: WireGuard
-management plane, single-IP NAT/DNAT, host + VM hardening, the `tank` ZFS
-stripe, the virtiofs share, and k3s are all up on the server. Every apply
+**Status:** Phase 6 (media apps). Phases 2–5 are applied and live —
+`infra/tofu/`'s VM/firewall/DNS, Ansible's WireGuard management plane,
+single-IP NAT/DNAT, host + VM hardening, the `tank` ZFS stripe, the
+virtiofs share and k3s, and the Argo CD platform layer (cert-manager,
+Traefik, Authelia, external-dns). The media stack in
+[`clusters/lab/apps/`](../clusters/lab/apps/) is deployed and reconciling;
+**migrating the old server's state onto it is operator work in progress**
+([`docs/runbooks/media-migration.md`](runbooks/media-migration.md)), and
+**public DNS still points at the old server** — external-dns stays
+`--dry-run` until the separate, operator-triggered
+[`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md). Every apply
 goes through the gated CI pipeline described in
 [CI/CD](#cicd--gitops-flow) below; the first Tofu apply was the one manual,
 operator-run step (dead-man switch, see
@@ -77,13 +84,15 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
      ├─ local-path PVs        ← VM NVMe disk (app configs/DBs)
      │
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
-          platform/                       apps/ (media, Helm app-template)
-           ├─ cert-manager (DNS-01, *.tomkatom.com)  ├─ plex     (direct-play, own port)
-           ├─ external-dns (Cloudflare)              ├─ prowlarr (indexers)
-           ├─ traefik (ingress :443)                 ├─ sonarr / radarr / bazarr
-           ├─ authelia (auth.tomkatom.com)           ├─ deluge   (OVH IP via NAT, torrent port)
-           ├─ ksops secrets (kustomize)              └─ overseerr (requests, optional)
-           └─ monitoring/ (placeholder → later)
+          platform/                       apps/ (media ns, Helm app-template)
+           ├─ cert-manager (DNS-01, *.tomkatom.com)  ├─ media-common (shared secrets/env)
+           ├─ external-dns (Cloudflare, --dry-run)   ├─ plex      (direct-play, own port)
+           ├─ traefik (ingress :443)                 ├─ prowlarr / flaresolverr (indexers)
+           ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
+           ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
+           └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
+                                                     ├─ overseerr (requests) / maintainerr
+                                                     └─ tautulli / homepage
 ```
 
 ## Tooling
@@ -312,11 +321,17 @@ Each phase is its own PR. Full detail and current status in
    `qemu-guest-agent` in the VM (see [Guest agent](#guest-agent) below) —
    Phase 2 deliberately leaves this out, since the VM has no OS config yet.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.
-5. **Platform apps** — cert-manager, external-dns, Traefik, Authelia. All
-   live. external-dns runs `--dry-run` until the zone moves off the old
-   server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
-6. **Media apps** *(current)* — Prowlarr → Sonarr/Radarr/Bazarr → Deluge →
-   Plex → Overseerr.
+5. **Platform apps** *(done)* — cert-manager, external-dns, Traefik,
+   Authelia. All live. external-dns runs `--dry-run` until the zone moves
+   off the old server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
+6. **Media apps** *(current)* — deployed and reconciling from
+   [`clusters/lab/apps/`](../clusters/lab/apps/): Deluge, Prowlarr,
+   Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli,
+   Overseerr, Maintainerr, Homepage, all in one `media` namespace on the
+   shared `/data` tree. What remains is **state migration** from the old
+   server (operator-executed —
+   [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,
+   separately and later, the **public DNS cutover**.
 7. **Observability** *(later)* — kube-prometheus-stack + Loki.
 8. **Backups** *(later)* — `vzdump` → NFS on a separate box.
 

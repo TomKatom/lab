@@ -10,6 +10,11 @@ cluster, in two independent flips:
    external-dns starts writing a record per Ingress instead of only logging
    what it would write. This one is purely additive.
 
+Between the two there is one thing neither flip does for you: **deleting the
+old server's four hand-made `CNAME`s** (§6a). They are not in git, external-dns
+cannot touch them, and while they exist it silently declines to create the
+records that replace them.
+
 Everything in Phase 5 was built so that neither flip can be a surprise. This
 runbook is the forward procedure; §9 is the rollback ladder.
 
@@ -29,9 +34,15 @@ before you begin, the zone is shared and can change under you):
 | `tomkatom.com` | `A 94.75.211.144` | old server |
 | `sonarr` / `radarr` / `prowlarr` / `deluge` | `CNAME → tomkatom.com` | old server |
 | `*.tomkatom.com` | **NXDOMAIN** | nothing — there is no wildcard *record* (the old server has a wildcard *certificate*, which is a different thing) |
-| `vpn` / `auth` / `plex` | **NXDOMAIN** | nothing |
+| `vpn` / `auth` / `bazarr` / `tautulli` / `maintainerr` / `home` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
 | `*.lab.tomkatom.com` | `A` (internal addresses) | new server, WireGuard-only, already Tofu-managed and ungated |
 | `_externaldns.*` | **NXDOMAIN** | nothing — external-dns has written zero records since it was deployed |
+
+`plex.tomkatom.com` is absent from that table on purpose: **Plex has no
+Ingress and needs no record at all.** Remote clients are brokered by
+plex.tv straight to `145.239.3.55:32400`, which the host already DNATs to
+the node, so external-dns never sees a Plex host and never creates one —
+before or after this cutover.
 
 ```sh
 dig +short tomkatom.com A
@@ -61,15 +72,21 @@ external-dns can be un-inerted on a zone it shares with a production server
 at all.
 
 So the only unconditional write external-dns has is a `Create` for a name
-with **no** record at all. Today that means `auth.` and `plex.`. That is
-what `--dry-run` is standing in for, and it is a timing guard (do not make
-new-server services resolve before you mean to), not a safety guard.
+with **no** record at all. Today that means the six cluster hosts nothing
+else claims — `auth.`, `bazarr.`, `tautulli.`, `maintainerr.`, `home.` and
+`requests.`. That is what `--dry-run` is standing in for, and it is a
+timing guard (do not make new-server services resolve before you mean to),
+not a safety guard.
 
 **Corollary that shapes the whole procedure:** the four names the old server
-serves are already `CNAME`s, so external-dns will *never* adopt them, even
-after cutover. They keep resolving through the apex — correctly, once the
-apex points at the new server — but they stay hand-managed until someone
-deletes them (§8).
+serves are already `CNAME`s, so external-dns will *never* adopt them — and,
+less obviously, **it will never *create* them either, for as long as those
+CNAMEs exist.** `appendTakenDNSNameChanges` drops the `Create` because a
+record it does not own is already sitting at the name; nothing is logged as
+refused, the host simply never appears. So the CNAMEs do not just survive
+the cutover, they suppress it for those four hosts. Deleting them by hand is
+therefore a required step of this runbook, not decommissioning cleanup —
+§6a.
 
 ---
 
@@ -220,23 +237,74 @@ written nothing.
 
 ## 6. Flip 2 — remove `--dry-run`
 
+### 6a. Pre-flight: free the four taken names
+
+**Do this before removing the flag, and only once the old server has
+stopped serving.** `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` are
+unowned `CNAME`s to the apex. External-dns will not create an A record at a
+name where a record it does not own already sits (§1), and it says nothing
+when it declines — so left in place, these four hosts would simply never
+appear on the new server's side of the zone, while every other host would.
+Nothing downstream would look broken; they would keep resolving to whatever
+the apex points at.
+
+They are also the only four this applies to. Every other cluster host is
+NXDOMAIN (§0) and needs no preparation.
+
+Delete them by hand in the Cloudflare dashboard (`tomkatom.com` → DNS →
+Records → the four `CNAME` rows → Delete), or with the token from §4:
+
+```sh
+for h in sonarr radarr prowlarr deluge; do
+  ID=$(curl -s -H "Authorization: Bearer $CF_TOKEN" \
+    "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records?type=CNAME&name=$h.tomkatom.com" \
+    | jq -r '.result[0].id // empty')
+  [ -n "$ID" ] || { echo "$h: no CNAME, nothing to do"; continue; }
+  curl -s -X DELETE -H "Authorization: Bearer $CF_TOKEN" \
+    "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records/$ID" | jq -r '.success'
+  echo "$h deleted"
+done
+
+for h in sonarr radarr prowlarr deluge; do
+  printf '%-24s %s\n' "$h.tomkatom.com" "$(dig +short "$h.tomkatom.com" | tr '\n' ' ')"
+done   # all four empty — NXDOMAIN
+```
+
+**A NXDOMAIN window is expected and normal here**, from this delete until
+external-dns's first live sync after §6b lands. Those four are admin UIs,
+reachable over WireGuard against `10.10.10.10` throughout (the `curl
+--resolve` form used everywhere in this repo), so the window costs nothing
+but do not be surprised by it — and do not "fix" it by re-creating a CNAME,
+which puts the suppression straight back.
+
+Confirmation that the gate has actually cleared, while still in dry-run:
+those four names now show up as would-creates where before they were absent
+entirely.
+
+```sh
+kubectl -n external-dns logs deploy/external-dns --tail=200 | grep -i 'sonarr\|radarr\|prowlarr\|deluge'
+```
+
+### 6b. Remove the flag
+
 One-line PR against `clusters/lab/platform/external-dns.yaml`: delete the
 `extraArgs: ["--dry-run"]` block. Merge, and Argo applies it within a sync
 cycle.
 
-Expect it to create records for **only** the hosts that have no record today
-— `auth.`, `plex.`, and any other Phase 6 host that was never CNAME'd. The
-four CNAME'd hosts get nothing, by §1's ownership gate; the log line for a
-run with nothing to do is `All records are already up to date`.
+With §6a done, expect it to create an A + ownership TXT for **all ten**
+cluster hosts — `auth. sonarr. radarr. bazarr. prowlarr. deluge. tautulli.
+maintainerr. home. requests.` — and nothing else. The log line for a run
+with nothing left to do is `All records are already up to date`.
 
 ```sh
 kubectl -n external-dns logs deploy/external-dns | grep -E 'Changing record|up to date'
 ```
 
 There should be **no** `Changing record.` line naming `tomkatom.com`,
-`sonarr.tomkatom.com`, or any other name from the §4 snapshot. If there is,
-re-add `--dry-run` immediately (§9) — the ownership contract is not behaving
-as read, and nothing below is trustworthy.
+`vpn.tomkatom.com`, or any other name from the §4 snapshot that is not one
+of those ten. If there is, re-add `--dry-run` immediately (§9) — the
+ownership contract is not behaving as read, and nothing below is
+trustworthy.
 
 ---
 
@@ -249,21 +317,29 @@ years of Ingress churn from touching records external-dns did not create.
 record-type infix: the TXT for an A record at `auth.tomkatom.com` is
 `_externaldns.` + `a-` + the host.
 
+The set is exactly the hosts with an Ingress — every `*.tomkatom.com` host
+this cluster serves, and no more. **`plex` is not among them**: Plex has no
+Ingress, so external-dns never creates a record for it, and remote access
+is brokered by plex.tv straight to `145.239.3.55:32400` (§0).
+
 ```sh
-for h in auth plex; do
+for h in auth sonarr radarr bazarr prowlarr deluge tautulli maintainerr home requests; do
   echo "== $h"
   dig +short "$h.tomkatom.com" A                        # 145.239.3.55
   dig +short "_externaldns.a-$h.tomkatom.com" TXT       # heritage=external-dns,external-dns/owner=lab-k3s,...
 done
 ```
 
-**Nothing else grew one.** The old server's records and Tofu's records must
-have no ownership TXT at all — that absence is the only thing keeping
-`policy: sync` off them:
+The four that were CNAMEs until §6a must now read as plain A records with an
+ownership TXT beside them, like every other row. An empty A **and** an empty
+TXT for one of them means external-dns still sees something at that name —
+re-check that §6a's delete actually took.
+
+**Nothing else grew one.** Tofu's records must have no ownership TXT at all
+— that absence is the only thing keeping `policy: sync` off them:
 
 ```sh
-for h in tomkatom.com sonarr.tomkatom.com radarr.tomkatom.com \
-         prowlarr.tomkatom.com deluge.tomkatom.com vpn.tomkatom.com; do
+for h in tomkatom.com vpn.tomkatom.com; do
   for pfx in a- cname-; do
     printf '%-40s %s\n' "_externaldns.$pfx$h" \
       "$(dig +short "_externaldns.$pfx$h" TXT)"
@@ -275,8 +351,9 @@ Every line must show an empty value.
 
 **Diff the whole zone against the snapshot.** Re-run §4's `curl` into
 `~/tomkatom-zone-after.tsv` and `diff` them. The only new rows should be one
-A + one TXT per newly-created host, and the only changed row the apex's
-content. Anything else is unexplained and worth chasing before you walk away.
+A + one TXT per cluster host, the only removed rows §6a's four `CNAME`s, and
+the only changed row the apex's content. Anything else is unexplained and
+worth chasing before you walk away.
 
 > **Never delete an ownership TXT by hand.** external-dns then forgets it
 > owns the record and stops managing it, rather than cleaning it up — you
@@ -286,13 +363,10 @@ content. Anything else is unexplained and worth chasing before you walk away.
 
 ## 8. After the cutover
 
-- **The old server's four `CNAME`s are now orphans on this zone**, resolving
-  correctly (through the apex) but managed by nobody and invisible to
-  external-dns, which will never clean up records it does not own. When the
-  old server is decommissioned, **delete them by hand** in the Cloudflare
-  dashboard as part of that work. Once a name is free, external-dns creates
-  and owns an A record for it on the next sync — so expect a brief window
-  where the name is NXDOMAIN, and do it at a quiet moment.
+- **The old server's four `CNAME`s are gone** — §6a deleted them, and
+  external-dns now owns a plain A record at each of those names. Nothing is
+  left on this zone that external-dns cannot see; if a future host is ever
+  hand-created as a CNAME again, the same suppression comes back with it.
 - **Retire `vpn.lab.tomkatom.com`** in favour of the now-live
   `vpn.tomkatom.com` (`infra/tofu/locals.tf` says so at the record's
   definition). WireGuard peer configs naming the old endpoint need updating
@@ -332,3 +406,9 @@ content. Anything else is unexplained and worth chasing before you walk away.
    rebuild by hand. This is why §4 is not optional.
 4. **A name the old server needs stopped resolving** — check for a duplicate
    apex A record first (§5a's trap); that is by far the most likely cause.
+5. **One of §6a's four names is still NXDOMAIN** long after §6b merged —
+   external-dns has not created it. Check the logs for that host and confirm
+   the `CNAME` really is gone (a second, forgotten record at the same name is
+   enough to re-arm the ownership gate). Re-creating the CNAME restores
+   resolution immediately but permanently blocks external-dns from owning the
+   name; only do that if the name must resolve *now*.

@@ -22,11 +22,31 @@ phase lands.
 
 ## Status
 
-Phases 1 (repo scaffold) and 2 (Provision — Tofu) are done and applied.
-Currently in **Phase 3 — Configure (Ansible)**, substantially complete and
-applied live: WireGuard management plane, single-IP NAT/DNAT, host + VM
-hardening, the `tank` ZFS stripe, the virtiofs share, and k3s are all up on
-the server. See the phased plan in
+Phases 1–5 are done and applied live. The VM, its disks and the Proxmox
+filter firewall are provisioned (Tofu); WireGuard, single-IP NAT/DNAT,
+host + VM hardening, the `tank` ZFS stripe, the virtiofs share and k3s are
+configured (Ansible); Argo CD runs the platform layer — cert-manager,
+Traefik on `:443`, Authelia forward-auth and external-dns.
+
+**Phase 6 — Media apps** is live in the `media` namespace, reconciled from
+[`clusters/lab/apps/`](clusters/lab/apps/): Deluge, Prowlarr, Sonarr,
+Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Overseerr,
+Maintainerr and Homepage. **Migrating the old server's state onto them —
+media files, `*arr` databases, Plex identity, Deluge's session — is
+operator work still in progress**, per
+[`docs/runbooks/media-migration.md`](docs/runbooks/media-migration.md).
+
+Two things are deliberately still pending:
+
+- **Public DNS has not moved.** `tomkatom.com` and the `sonarr./radarr./
+  prowlarr./deluge.` CNAMEs still resolve to the old server, and
+  external-dns runs `--dry-run` so it writes nothing. Every new hostname is
+  NXDOMAIN publicly and is reached over WireGuard only. Moving the zone is
+  a separate, operator-triggered runbook —
+  [`docs/runbooks/dns-cutover.md`](docs/runbooks/dns-cutover.md).
+- Phases 7 (observability) and 8 (backups) have not started.
+
+See the phased plan in
 [`master-plan.md`](master-plan.md#phased-implementation-each-phase--its-own-pr).
 
 ## Secrets
