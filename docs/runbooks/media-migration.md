@@ -643,24 +643,31 @@ Then, for `<app>` being restored:
    ```
 
    ⚠ **The UI checklists in §5–§9 cannot be done with `curl`, and a browser
-   does not have `--resolve`.** Four of these hostnames already resolve —
-   **to the old server**, which is still production:
+   does not have `--resolve`.** Five of these names already resolve — **to
+   the old server**, which is still production:
 
    | Name | Public DNS today | What a browser gets |
    |---|---|---|
    | `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` | `CNAME → tomkatom.com → 94.75.211.144` | **the old app**, with no error and nothing to tip you off |
-   | `bazarr.` `tautulli.` `maintainerr.` `home.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
+   | `tomkatom.com` (the apex — Homepage's host here) | `A 94.75.211.144` | **the old server's front page** |
+   | `bazarr.` `tautulli.` `maintainerr.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
 
    So you can complete an entire §5/§6 checklist against **production** and
    change nothing on the cluster. Override the names locally instead, on the
    machine running the browser, while on WireGuard — in `/etc/hosts`:
 
    ```
-   10.10.10.10  auth.tomkatom.com
+   10.10.10.10  auth.tomkatom.com tomkatom.com
    10.10.10.10  sonarr.tomkatom.com radarr.tomkatom.com prowlarr.tomkatom.com
    10.10.10.10  deluge.tomkatom.com bazarr.tomkatom.com tautulli.tomkatom.com
-   10.10.10.10  maintainerr.tomkatom.com home.tomkatom.com requests.tomkatom.com
+   10.10.10.10  maintainerr.tomkatom.com requests.tomkatom.com
    ```
+
+   The apex override is the one to remove again when you are done: leaving
+   `tomkatom.com` pinned to `10.10.10.10` means everyday browsing of the
+   still-live old server silently goes to the cluster instead. The other
+   names cost nothing to leave in place — they either belong to the cluster
+   already or are NXDOMAIN.
 
    One address may carry many names on a line, but **`/etc/hosts` has no
    line-continuation syntax** — a trailing `\` is parsed as part of a

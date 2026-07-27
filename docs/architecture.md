@@ -85,14 +85,14 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
      │
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
           platform/                       apps/ (media ns, Helm app-template)
-           ├─ cert-manager (DNS-01, *.tomkatom.com)  ├─ media-common (shared secrets/env)
+           ├─ cert-manager (DNS-01, wildcard+apex)   ├─ media-common (shared secrets/env)
            ├─ external-dns (Cloudflare, --dry-run)   ├─ plex      (direct-play, own port)
            ├─ traefik (ingress :443)                 ├─ prowlarr / flaresolverr (indexers)
            ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
            └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
                                                      ├─ seerr (requests) / maintainerr
-                                                     └─ tautulli / homepage
+                                                     └─ tautulli / homepage (apex)
 ```
 
 ## Tooling
@@ -294,7 +294,12 @@ which hangs `tofu plan`/`apply` on every run.
   `restrict_management` toggle keeps SSH/API rules open-to-any until
   WireGuard is verified (anti-lockout); reseller console is the fallback.
 - Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
-  plex.tv auth on its own port, outside Traefik/Authelia.
+  plex.tv auth on its own port, outside Traefik/Authelia. Exactly two
+  Ingresses are deliberately un-annotated, both aimed at people who hold a
+  Plex account and no Authelia identity: Seerr's `requests.` (its own Plex
+  OAuth) and Homepage on the apex (a page of public links, no credential
+  read and no app polled — see
+  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md)).
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
   `gitleaks` in CI blocks anything that slips through, and the age private
   key is held out-of-band (password manager), as the `SOPS_AGE_KEY` repo

@@ -1,11 +1,41 @@
-# Homepage — the dashboard the whole stack hangs off: one page of links plus
-# live counters pulled from the *arrs' APIs.
+# Homepage — the front door at the apex, `tomkatom.com`. One page aimed at
+# the people who watch the library: Plex, the request portal, and enough
+# help to get a device set up. Not an operator dashboard; the admin UIs
+# stay behind Authelia on their own hostnames and are not named here or in
+# the page itself. ./homepage/configmap-homepage.yaml carries the content
+# and the reasoning behind what is on it.
 #
 # Wave 2, one wave after ./homepage-config.yaml, so the homepage-config
 # ConfigMap it mounts already exists when the first Pod starts (see
 # ./README.md "Sync waves within apps/").
 #
-# It never mounts /data — it only reads APIs (./README.md "The /data mount").
+# It never mounts /data (./README.md "The /data mount") and, since the *arr
+# widgets left with the *arr tiles, it no longer reads a Secret or a
+# cluster-internal address either — there is not one `HOMEPAGE_VAR_*` left
+# in this file.
+#
+# ## The apex, and the two things that follow from it
+#
+# The host below is `tomkatom.com` itself, not a `home.` subdomain. That is
+# the address a viewer can be told once and remember, and it is already the
+# name this cluster answers on: `docs/runbooks/dns-cutover.md` §5 points the
+# apex A record at the node in flip 1, one flip before external-dns starts
+# publishing per-Ingress records at all. So this page is live from the first
+# cutover step rather than the last. Nothing else in the stack wants the
+# apex, and `home.tomkatom.com` has never resolved, so there is no
+# redirect-from-the-old-name to keep.
+#
+# 1. **The apex is not covered by the wildcard.** `*.tomkatom.com` matches
+#    one label and no fewer, so `tomkatom.com` needs its own SAN —
+#    `clusters/lab/platform/traefik/wildcard-certificate.yaml` now lists
+#    both names on the one Certificate that Traefik's default TLSStore
+#    serves. Drop that SAN and this host answers on Traefik's self-signed
+#    default with a browser warning in front of it.
+# 2. **external-dns will not create the apex record, and must not.** It is
+#    Tofu's (`infra/tofu/cloudflare.tf`, `local.dns_a_records`), carries no
+#    ownership TXT, and external-dns declines a Create at any name already
+#    holding a record it does not own. This Ingress therefore adds nothing
+#    to the zone — the record it needs is one Tofu already manages.
 #
 # ⚠ The config files are mounted with subPath, which Kubernetes does not
 # update in place. Editing clusters/lab/apps/homepage/ and letting Argo sync
@@ -85,57 +115,11 @@ spec:
                   #   the exact form upstream's own Kubernetes install docs
                   #   use, for the same reason.
                   #
-                  #   home.tomkatom.com — what Traefik forwards from the
-                  #   browser. Without it, every widget on the page fails
-                  #   while the page itself still renders.
+                  #   tomkatom.com — what Traefik forwards from the browser.
+                  #   Without it the page itself still renders and every
+                  #   /api/* call behind it 400s.
                   - name: HOMEPAGE_ALLOWED_HOSTS
-                    value: "$(MY_POD_IP):3000,home.tomkatom.com"
-                  # Both halves of every widget come from media-common: the
-                  # address from the media-urls ConfigMap, the key from the
-                  # arr-api-keys Secret. services.yaml reads them back as
-                  # {{HOMEPAGE_VAR_…}} — see
-                  # ./homepage/configmap-homepage.yaml. Nothing addressed
-                  # here is written as a literal Service address.
-                  - name: HOMEPAGE_VAR_SONARR_URL
-                    valueFrom:
-                      configMapKeyRef:
-                        name: media-urls
-                        key: SONARR_URL
-                  - name: HOMEPAGE_VAR_SONARR_API_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: arr-api-keys
-                        key: SONARR_API_KEY
-                  - name: HOMEPAGE_VAR_RADARR_URL
-                    valueFrom:
-                      configMapKeyRef:
-                        name: media-urls
-                        key: RADARR_URL
-                  - name: HOMEPAGE_VAR_RADARR_API_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: arr-api-keys
-                        key: RADARR_API_KEY
-                  - name: HOMEPAGE_VAR_PROWLARR_URL
-                    valueFrom:
-                      configMapKeyRef:
-                        name: media-urls
-                        key: PROWLARR_URL
-                  - name: HOMEPAGE_VAR_PROWLARR_API_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: arr-api-keys
-                        key: PROWLARR_API_KEY
-                  - name: HOMEPAGE_VAR_BAZARR_URL
-                    valueFrom:
-                      configMapKeyRef:
-                        name: media-urls
-                        key: BAZARR_URL
-                  - name: HOMEPAGE_VAR_BAZARR_API_KEY
-                    valueFrom:
-                      secretKeyRef:
-                        name: arr-api-keys
-                        key: BAZARR_API_KEY
+                    value: "$(MY_POD_IP):3000,tomkatom.com"
                 envFrom:
                   - configMapRef:
                       name: media-env
@@ -182,11 +166,25 @@ spec:
               http:
                 port: 3000
         ingress:
+          # No forward-auth annotation, and that is the point of the page:
+          # the viewers it is for authenticate to Plex and to Seerr with a
+          # Plex account and hold no Authelia identity at all, so putting
+          # Authelia in front would lock out everyone it is written for.
+          # This is the second of exactly two un-annotated Ingresses in the
+          # stack, ./seerr.yaml being the first — see ./README.md
+          # "Ingress: chart-rendered, not a `-config` dir". Traefik never
+          # consults the middleware for a host that does not ask for it.
+          #
+          # What that costs is bounded by the content, not by the setting:
+          # the page holds public hostnames and public plex.tv links, reads
+          # no Secret, polls no app, and asks crawlers not to index it
+          # (`disableIndexing`, ./homepage/configmap-homepage.yaml). Adding
+          # anything here that a stranger should not read means adding the
+          # annotation back in the same commit — at which point it is no
+          # longer this page.
           app:
-            annotations:
-              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
             hosts:
-              - host: home.tomkatom.com
+              - host: tomkatom.com
                 paths:
                   - path: /
                     pathType: Prefix

@@ -15,7 +15,8 @@ everything here is reconciled from git; nothing is applied by hand.
   Unpackerr, Recyclarr, Plex, Tautulli, Seerr, Maintainerr and
   Homepage, each an `Application` against the shared `bjw-s/app-template`
   chart with inline values, all in one `media` namespace (Phase 6, live —
-  see [`apps/README.md`](apps/README.md)).
+  see [`apps/README.md`](apps/README.md)). Homepage holds the apex,
+  `tomkatom.com`; everything else lives on a subdomain of it.
 
 `root-app` does not watch `apps/` itself. `platform/apps.yaml` — an
 ordinary top-level `platform/*.yaml` manifest, so `root-app` picks it up

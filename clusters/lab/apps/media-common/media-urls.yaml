@@ -1,16 +1,16 @@
 # The cluster-internal address of every app in the stack, in one place.
 #
 # These apps talk to each other constantly — Unpackerr polls Sonarr and
-# Radarr, Recyclarr pushes profiles to both, Homepage widgets read all of
-# them — and each consumer needs the same `http://<svc>.media.svc.cluster
+# Radarr, Recyclarr pushes profiles to both, Prowlarr syncs indexers into
+# both — and each consumer needs the same `http://<svc>.media.svc.cluster
 # .local:<port>` string. Inlining it per consumer means one port change is
 # a multi-file edit with no way to tell whether every copy was found.
 #
 # Consumed per key via `env.valueFrom.configMapKeyRef`, exactly like the
 # `arr-api-keys` Secret and for the same reason: an app needs a subset,
 # and the generic key here maps onto whatever env name that app happens to
-# want (Unpackerr's `UN_SONARR_0_URL`, Homepage's `HOMEPAGE_VAR_*`). This
-# is deliberately NOT `media-env` — that one is `envFrom`-ed whole by every
+# want (Unpackerr's `UN_SONARR_0_URL`, Recyclarr's `SONARR_URL`). This is
+# deliberately NOT `media-env` — that one is `envFrom`-ed whole by every
 # app because every app wants TZ, which is not true of these.
 #
 # This is a contract, not a description. The value here and the `service:`
@@ -40,10 +40,12 @@ data:
   RADARR_URL: http://radarr.media.svc.cluster.local:7878
   PLEX_URL: http://plex.media.svc.cluster.local:32400
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
-  BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
   SEERR_URL: http://seerr.media.svc.cluster.local:5055
-  # Maintainerr and Homepage each render a Service too, and neither has an
-  # entry on purpose: nothing in the stack calls them. This map exists to
-  # stop one address being written down in several consumers, so a key with
-  # no consumer would be a claim nothing keeps honest. Add one the same day
-  # something needs it.
+  # Bazarr, Maintainerr and Homepage each render a Service too, and none of
+  # them has an entry on purpose: nothing in the stack dials them. Bazarr's
+  # was here until Homepage stopped being an operator dashboard and its
+  # widgets went with the *arr tiles (../homepage.yaml) — that was Bazarr's
+  # only caller, in git or out of it, since Bazarr reads the *arrs and
+  # nothing reads Bazarr. This map exists to stop one address being written
+  # down in several consumers, so a key with no consumer is a claim nothing
+  # keeps honest. Add one back the same day something needs it.

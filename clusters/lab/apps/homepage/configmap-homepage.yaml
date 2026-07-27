@@ -2,6 +2,34 @@
 # ../homepage.yaml (wave 2, one wave after this overlay's own Application) —
 # see ../README.md "Kustomize `-config` dirs".
 #
+# ## This page is for viewers, not for the operator
+#
+# It is the front door at `tomkatom.com` and it deliberately does not sit
+# behind Authelia (../homepage.yaml carries the Ingress side of that), so
+# everything here is public. That is what decides the content: the two
+# destinations a Plex user actually needs, three links for someone setting a
+# device up, and nothing else. No *arr, no Deluge, no Tautulli, no
+# Maintainerr — those are admin UIs behind Authelia on their own hostnames,
+# and listing them here would advertise them to the internet for nobody's
+# benefit.
+#
+# The same rule is why there is no live widget left. A homepage widget
+# authenticates with the credential of the app it polls and renders what
+# comes back to whoever is looking, so Sonarr's queue on an unauthenticated
+# page is a library inventory. The four *arr widgets left with the four *arr
+# tiles, and ../homepage.yaml consequently binds no `HOMEPAGE_VAR_*` at all:
+# nothing in this directory reads a Secret or a cluster-internal address any
+# more. Every `href:` is a public hostname, which is what the browser needs
+# regardless.
+#
+# ## The look
+#
+# settings.yaml keeps homepage's own stock theme (`stone`, dark) and
+# custom.css adds a single accent over it — the name is the colour orange,
+# so orange is what the page is lit with. Every selector in there is one of
+# homepage's semantic hooks; the file says which, and what to check first if
+# a version bump ever renames one.
+#
 # ## Every file homepage can ask for has to be here
 #
 # checkAndCopyConfig (src/utils/config/config.js at the pinned v1.13.2) copies
@@ -14,31 +42,6 @@
 # (/api/validate reads six of them, including proxmox.yaml, on every page
 # load) plus custom.css and custom.js (/api/hash). All nine are declared
 # below, including the ones that are deliberately empty.
-#
-# ## No cluster-internal address is written here
-#
-# Every widget URL is `{{HOMEPAGE_VAR_<APP>_URL}}` and every widget key is
-# `{{HOMEPAGE_VAR_<APP>_API_KEY}}`; substituteEnvironmentVars replaces both
-# from the process environment before js-yaml ever parses the file, and
-# ../homepage.yaml fills those names from media-common's `media-urls`
-# ConfigMap and `arr-api-keys` Secret. No cluster-internal Service address
-# is spelled out anywhere in this directory — see ../README.md "Secrets and
-# environment".
-#
-# The `href:` values are the opposite case: they are what the browser
-# navigates to, so they are the public hostnames from each app's own Ingress,
-# not the cluster-internal Service addresses.
-#
-# ## Only the four *arrs get a live widget
-#
-# A homepage widget authenticates with the credential of the app it polls.
-# `arr-api-keys` holds exactly four — Sonarr, Radarr, Prowlarr, Bazarr — so
-# those four render live counters. Deluge's WebUI password, Plex's token,
-# Tautulli's and Seerr's API keys all live inside each app's own migrated
-# database rather than in git (docs/runbooks/media-migration.md §9), so those
-# tiles are links only. Adding a widget for one of them later means adding
-# its credential to a Secret in media-common and binding it here as another
-# HOMEPAGE_VAR_*; the address half is already available in `media-urls`.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -48,112 +51,88 @@ data:
   settings.yaml: |
     ---
     title: tomkatom
-    headerStyle: boxed
+    description: Films and series, on demand.
     theme: dark
-    color: slate
-    # Keyed by the group names in services.yaml below; homepage matches
-    # them by name, so the two lists have to be renamed together.
+    color: stone
+    headerStyle: clean
+    # Public page: hideVersion drops the build number (and with it the
+    # footer's outbound update check), disableIndexing asks crawlers to
+    # leave it alone. Reachable by anyone who knows the name is the
+    # intent; listed in a search engine is not.
+    hideVersion: true
+    disableIndexing: true
+    disableCollapse: true
+    useEqualHeights: true
+    # Keyed by the group names in services.yaml and bookmarks.yaml below.
+    # Naming a group here also moves it into homepage's `#layout-groups`
+    # container and fixes the render order to this key order, so the two
+    # lists have to be renamed together.
     layout:
-      Requests:
+      Start here:
         style: row
-        columns: 1
-      Library:
+        columns: 2
+      Help:
         style: row
         columns: 3
-      Acquisition:
-        style: row
-        columns: 5
 
   services.yaml: |
     ---
-    - Requests:
-        - Seerr:
-            icon: seerr.png
-            href: https://requests.tomkatom.com
-            description: Request portal, signed in with Plex
-
-    - Library:
+    - Start here:
         - Plex:
             icon: plex.png
             href: https://app.plex.tv
-            description: Streaming — brokered by plex.tv, no local hostname
-        - Tautulli:
-            icon: tautulli.png
-            href: https://tautulli.tomkatom.com
-            description: Watch history and statistics
-        - Maintainerr:
-            icon: maintainerr.png
-            href: https://maintainerr.tomkatom.com
-            description: Library retention rules
-
-    - Acquisition:
-        - Sonarr:
-            icon: sonarr.png
-            href: https://sonarr.tomkatom.com
-            description: TV
-            widget:
-              type: sonarr
-              url: "{{HOMEPAGE_VAR_SONARR_URL}}"
-              key: "{{HOMEPAGE_VAR_SONARR_API_KEY}}"
-              enableQueue: true
-        - Radarr:
-            icon: radarr.png
-            href: https://radarr.tomkatom.com
-            description: Movies
-            widget:
-              type: radarr
-              url: "{{HOMEPAGE_VAR_RADARR_URL}}"
-              key: "{{HOMEPAGE_VAR_RADARR_API_KEY}}"
-              enableQueue: true
-        - Prowlarr:
-            icon: prowlarr.png
-            href: https://prowlarr.tomkatom.com
-            description: Indexers
-            widget:
-              type: prowlarr
-              url: "{{HOMEPAGE_VAR_PROWLARR_URL}}"
-              key: "{{HOMEPAGE_VAR_PROWLARR_API_KEY}}"
-        - Bazarr:
-            icon: bazarr.png
-            href: https://bazarr.tomkatom.com
-            description: Subtitles
-            widget:
-              type: bazarr
-              url: "{{HOMEPAGE_VAR_BAZARR_URL}}"
-              key: "{{HOMEPAGE_VAR_BAZARR_API_KEY}}"
-        - Deluge:
-            icon: deluge.png
-            href: https://deluge.tomkatom.com
-            description: Downloads and seeding
+            description: Everything in the library, ready to play
+        - Requests:
+            icon: seerr.png
+            href: https://requests.tomkatom.com
+            description: Ask for a film or series — sign in with Plex
 
   widgets.yaml: |
     ---
-    # Reads the node's own CPU and memory through systeminformation. No
-    # `disk:` entry: homepage never mounts /data (../README.md "The /data
-    # mount"), so the only filesystem it could report on is its own
-    # container root, which measures nothing anyone cares about.
-    - resources:
-        cpu: true
-        memory: true
+    # The wordmark and a clock, and nothing else. `resources` (the node's
+    # CPU and memory) was the other half of this file while the page was
+    # the operator's dashboard; host telemetry on a public page is worth
+    # nothing to a viewer and something to a stranger.
+    - greeting:
+        text_size: 4xl
+        text: tomkatom
 
-    - search:
-        provider: duckduckgo
-        target: _blank
+    - datetime:
+        text_size: sm
+        format:
+          dateStyle: long
+          timeStyle: short
+          hourCycle: h23
 
   bookmarks.yaml: |
     ---
-    - Reference:
-        - TRaSH Guides:
-            - abbr: TR
-              href: https://trash-guides.info/
-        - Servarr Wiki:
-            - abbr: SW
-              href: https://wiki.servarr.com/
+    # Everything a new viewer needs and cannot get from the two tiles
+    # above. status.plex.tv earns its place: sign-in to both Plex and the
+    # request portal is brokered by plex.tv, so a plex.tv outage looks
+    # exactly like this server being broken.
+    #
+    # The icons are Material Design Icons tinted with homepage's
+    # `mdi-<name>-<#hex>` form, which it renders as a CSS mask filled with
+    # that colour (src/components/resolvedicon.jsx) — the accent, not a
+    # third copy of the Plex logo. Quoted because the value contains a `#`.
+    - Help:
+        - Get the app:
+            - icon: "mdi-cellphone-link-#f97316"
+              href: "https://www.plex.tv/media-server-downloads/#plex-app"
+              description: Plex for TV, phone, tablet and browser
+        - Support:
+            - icon: "mdi-help-circle-outline-#f97316"
+              href: https://support.plex.tv/
+              description: Playback, account and device help
+        - Plex status:
+            - icon: "mdi-heart-pulse-#f97316"
+              href: https://status.plex.tv/
+              description: Sign-in runs through plex.tv
 
   # Container discovery, off. Homepage would read a Docker socket to
   # auto-discover services; there is no Docker here (k3s runs containerd) and
-  # mounting a container runtime socket into a web dashboard behind a single
-  # reverse proxy is not a trade worth making. The file exists only because
+  # mounting a container runtime socket into a web dashboard on a public
+  # hostname is not a trade worth making. The file exists only because
   # /api/validate and /api/hash both read it.
   docker.yaml: |
     ---
@@ -162,21 +141,192 @@ data:
   # Kubernetes discovery, off. With no `mode:` key getKubeConfig returns null
   # (src/utils/config/kubernetes.js) and homepage never contacts the API
   # server, so its ServiceAccount needs no RBAC at all. Turning this on would
-  # mean granting read access to Ingresses cluster-wide; the services.yaml
-  # above is explicit instead.
+  # mean granting read access to Ingresses cluster-wide and would surface
+  # every admin hostname on a page anyone can load; the services.yaml above
+  # is explicit instead.
   kubernetes.yaml: |
     ---
     # No `mode:` key, so discovery stays off.
 
   # Proxmox stats, off. Reachable in principle (the host is 10.10.10.1) but
-  # it would need an API token in git, and node metrics belong to Phase 7's
-  # observability work, not to a link dashboard. Declared because
-  # /api/validate reads proxmox.yaml on every page load and a missing file
-  # exits the process.
+  # it would need an API token in git, and node metrics have no business on
+  # this page for the same reason `resources` left widgets.yaml. Declared
+  # because /api/validate reads proxmox.yaml on every page load and a missing
+  # file exits the process.
   proxmox.yaml: |
     ---
     # No Proxmox nodes configured.
 
-  # Read by /api/hash on every page load. Empty, but they must exist.
-  custom.css: ""
+  # Read by /api/hash on every page load, alongside custom.css below.
   custom.js: ""
+
+  # Everything below is the accent layer over homepage's stock stone/dark
+  # theme. Each selector is one of homepage's own semantic hooks — the
+  # `#page_wrapper` / `#widgets-wrap` / `#footer` ids and the `.service-*`
+  # and `.bookmark-*` classes it puts on the markup for exactly this
+  # purpose, plus `--bg-color`, the variable its own globals.css reads.
+  # `#page_wrapper` is the specificity anchor rather than `#services`,
+  # because naming a group in settings.yaml's `layout` moves it into
+  # `#layout-groups` instead; `#page_wrapper` wraps every arrangement.
+  #
+  # A homepage major bump can still rename any of them, and the failure is
+  # silent — the page renders in flat grey with no error anywhere. If that
+  # happens, read this file against the new src/components before anything
+  # else. Only the dark theme is styled, because settings.yaml pins it.
+  custom.css: |
+    :root {
+      --katom-400: 251 146 60;
+      --katom-500: 249 115 22;
+      --katom-600: 234 88 12;
+    }
+
+    /* html, body and #__next all paint rgb(var(--bg-color)), so one
+       override darkens the lot; the glows then go on #__next, the last of
+       the three to paint. */
+    html.dark {
+      --bg-color: 22 19 17;
+      --scrollbar-thumb: rgb(var(--katom-600) / 0.5);
+      --scrollbar-track: rgb(255 255 255 / 0.04);
+    }
+
+    html.dark #__next {
+      background-image:
+        radial-gradient(58rem 38rem at 6% -14%, rgb(var(--katom-500) / 0.2), transparent 62%),
+        radial-gradient(46rem 34rem at 97% 2%, rgb(var(--katom-600) / 0.14), transparent 58%);
+      background-repeat: no-repeat;
+      background-attachment: fixed;
+    }
+
+    /* The wordmark: the one place the accent is allowed to be loud. */
+    #widgets-wrap .information-widget-greeting span {
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background-image: linear-gradient(96deg, rgb(250 250 249) 6%, rgb(var(--katom-400)) 56%, rgb(var(--katom-500)) 94%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+
+    #widgets-wrap .information-widget-datetime span {
+      color: rgb(214 211 209 / 0.5);
+    }
+
+    #information-widgets {
+      padding-top: 2rem;
+    }
+
+    /* Group headings label the page rather than compete with it. */
+    #page_wrapper .service-group-name,
+    #page_wrapper .bookmark-group-name {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: rgb(var(--katom-400) / 0.9);
+    }
+
+    #page_wrapper .bookmark-group {
+      margin-top: 1.75rem;
+    }
+
+    /* The two destinations, deliberately larger than a stock tile: there
+       are only two of them and they are the whole point of the page. */
+    #page_wrapper .service-card {
+      padding: 0.35rem;
+      border: 1px solid rgb(255 255 255 / 0.07);
+      border-radius: 0.9rem;
+      background-color: rgb(255 255 255 / 0.035);
+      box-shadow:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.05),
+        0 20px 45px -30px rgb(0 0 0 / 0.9);
+    }
+
+    #page_wrapper .service-card:hover {
+      border-color: rgb(var(--katom-500) / 0.55);
+      background-color: rgb(var(--katom-500) / 0.09);
+      box-shadow:
+        inset 0 1px 0 0 rgb(255 255 255 / 0.07),
+        0 22px 45px -26px rgb(var(--katom-600) / 0.6);
+    }
+
+    #page_wrapper .service-name {
+      padding: 1.3rem 0.75rem;
+      font-size: 1rem;
+      letter-spacing: -0.01em;
+    }
+
+    #page_wrapper .service-description {
+      margin-top: 0.3rem;
+      font-size: 0.8rem;
+      line-height: 1.35;
+    }
+
+    /* ResolvedIcon sets width and height inline (32px), so the logo needs
+       !important to grow with the card around it. */
+    #page_wrapper .service-icon {
+      width: 5rem;
+    }
+
+    #page_wrapper .service-icon img {
+      width: 2.5rem !important;
+      height: 2.5rem !important;
+    }
+
+    /* The help links speak the same language, turned down. */
+    #page_wrapper .bookmark > a {
+      border: 1px solid rgb(255 255 255 / 0.06);
+      border-radius: 0.7rem;
+      background-color: rgb(255 255 255 / 0.03);
+    }
+
+    #page_wrapper .bookmark > a:hover {
+      border-color: rgb(var(--katom-500) / 0.45);
+      background-color: rgb(var(--katom-500) / 0.07);
+    }
+
+    #page_wrapper .bookmark-icon {
+      background-color: rgb(var(--katom-500) / 0.12);
+      border-radius: 0.6rem 0 0 0.6rem;
+    }
+
+    #page_wrapper .bookmark-name {
+      font-size: 0.8rem;
+    }
+
+    ::selection {
+      background-color: rgb(var(--katom-500) / 0.35);
+    }
+
+    #inner_wrapper :focus-visible {
+      outline: 2px solid rgb(var(--katom-400));
+      outline-offset: 2px;
+      border-radius: 0.7rem;
+    }
+
+    /* The footer's last control is the revalidate refresh — settings.yaml
+       pinning both theme and colour already suppresses the two toggles
+       beside it. It means nothing to a viewer, and a config change here
+       needs a Deployment rollout anyway (../homepage.yaml). Hiding it is
+       cosmetic only: /api/revalidate stays reachable and still does what
+       it always did, which is re-render this one page. */
+    #footer #style {
+      display: none;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #page_wrapper .service-card,
+      #page_wrapper .bookmark > a {
+        transition: none;
+      }
+    }
+
+    @media (max-width: 640px) {
+      #page_wrapper .service-name {
+        padding: 1rem 0.5rem;
+      }
+
+      #page_wrapper .service-icon {
+        width: 4rem;
+      }
+    }

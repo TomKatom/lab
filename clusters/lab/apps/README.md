@@ -143,7 +143,7 @@ House Ingress style is unchanged from `platform/` (see
 [`platform/README.md`](../platform/README.md#exposing-a-service)): no
 `ingressClassName`, no `tls:` block — Traefik is the cluster default
 `IngressClass` and its default `TLSStore` already serves the
-`*.tomkatom.com` wildcard for any host that doesn't ask for its own
+`wildcard-tomkatom-tls` Secret for any host that doesn't ask for its own
 certificate. Every admin-facing host carries exactly this annotation to
 sit behind Authelia:
 
@@ -156,12 +156,29 @@ metadata:
 Authelia's existing ACL already covers every new host here with zero
 Authelia-side change: `access_control.default_policy: deny` plus one rule
 for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
-any hostname under the zone, new or old. The one deliberate exception is
-Seerr's `requests.tomkatom.com` — it carries **no** forward-auth
-annotation at all, because end users authenticate through Seerr's own
-Plex OAuth login instead; an un-annotated Ingress means Authelia is never
-consulted for that host. Everything else admin-facing gets the
-annotation.
+any hostname under the zone, new or old.
+
+**Two Ingresses here deliberately carry no annotation at all**, and both
+for the same reason — they are the two hosts aimed at people who hold a
+Plex account and no Authelia identity, so forward-auth would lock out
+exactly the audience they exist for. An un-annotated Ingress means Traefik
+never consults the middleware for that host.
+
+- **Seerr, `requests.tomkatom.com`** — end users authenticate through
+  Seerr's own Plex OAuth login.
+- **Homepage, `tomkatom.com`** — the front door: public hostnames and
+  public plex.tv links, no Secret read, no app polled, `disableIndexing`
+  set. Losing the *arr widgets is part of the same decision, not a
+  separate one: a homepage widget renders what the credential it holds
+  returns, so a queue counter on an unauthenticated page is a library
+  inventory.
+
+Everything else admin-facing gets the annotation. Note the apex is also
+the one host here that Authelia's `*.tomkatom.com` rule would *not* match
+even if it were annotated — a wildcard label does not cover the bare
+domain, and `default_policy: deny` would then deny it outright. Anything
+apex-hosted that ever does need protecting needs an Authelia ACL rule of
+its own in the same commit.
 
 ## Single `source:`, always
 
@@ -184,9 +201,12 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
 - **Secret `arr-api-keys`** — `SONARR_API_KEY`, `RADARR_API_KEY`,
   `PROWLARR_API_KEY`, `BAZARR_API_KEY`. Consumed by name, per key, via
   `env.valueFrom.secretKeyRef` wherever an app needs one of them (e.g.
-  Unpackerr's `UN_SONARR_0_API_KEY`, Homepage's `HOMEPAGE_VAR_*` widget
-  keys) — never `envFrom` for this one, since apps only ever need a
-  subset of the four keys.
+  Sonarr's own `SONARR__AUTH__APIKEY`, Unpackerr's
+  `UN_SONARR_0_API_KEY`) — never `envFrom` for this one, since apps only
+  ever need a subset of the four keys. `BAZARR_API_KEY` is the odd one:
+  Bazarr has no env override for its own key and nothing in the cluster
+  calls Bazarr, so it is injected nowhere and exists only as the recorded
+  copy of a value the migrated `config.yaml` has to match (`bazarr.yaml`).
 - **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
   Seerr's and Tautulli's notification agents (configured in-app; the
   Secret only holds the credential).
@@ -361,10 +381,10 @@ Every Deployment pod reads `1/1 Running`. Recyclarr is a CronJob, so it
 appears only as `Completed` Job pods (or not at all between runs) — that is
 correct, not a missing app.
 
-### 2. Auth boundary: eight protected hosts, one that must not be
+### 2. Auth boundary: seven protected hosts, two that must not be
 
 ```sh
-for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr home; do
+for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr; do
   printf '%-14s %s\n' "$h" "$(curl -sI --resolve "$h.tomkatom.com:443:10.10.10.10" \
     "https://$h.tomkatom.com" | grep -iE '^HTTP|^location' | tr -d '\r' | paste -sd' ' -)"
 done
@@ -373,12 +393,23 @@ done
 curl -sI --resolve requests.tomkatom.com:443:10.10.10.10 \
   https://requests.tomkatom.com | head -1
 # HTTP/2 200 — Seerr's own Plex-OAuth login, by design (no annotation)
+
+curl -sI --resolve tomkatom.com:443:10.10.10.10 https://tomkatom.com | head -1
+# HTTP/2 200 — Homepage, the front door, also by design (no annotation)
 ```
 
-A `200` from any of the eight means the forward-auth annotation is missing
-from that Ingress; a `302` from `requests.` means one was added that should
-not be there. Note there is no `-k` anywhere above: a TLS error is itself
-the wildcard-certificate check failing.
+A `200` from any of the seven means the forward-auth annotation is missing
+from that Ingress; a `302` from `requests.` or from the apex means one was
+added that should not be there. Note there is no `-k` anywhere above: a TLS
+error is itself the certificate check failing — and the apex line is the
+only one that exercises the `tomkatom.com` SAN added to
+`platform/traefik/wildcard-certificate.yaml`, since every other host is
+covered by the wildcard.
+
+`--resolve` is doing more work on the apex line than anywhere else: until
+the cutover runs, `tomkatom.com` is the *one* name in this file that
+resolves publicly, and it resolves to the old server. Drop the flag there
+and the check quietly passes against production.
 
 ### 3. Hardlink proof (the master-plan acceptance)
 
@@ -447,9 +478,10 @@ Until the cutover runbook runs, this must all still be true:
 kubectl -n external-dns logs deploy/external-dns --tail=200 \
   | grep -iE 'changing record|create|up to date'
 # would-create lines for the never-existing hosts only — auth., bazarr.,
-# tautulli., maintainerr., home., requests. Nothing for sonarr./radarr./
-# prowlarr./deluge. (taken CNAMEs, blocked by the ownership gate), and no
-# actual writes at all (--dry-run).
+# tautulli., maintainerr., requests. Nothing for sonarr./radarr./prowlarr./
+# deluge. (taken CNAMEs) and nothing for the bare apex either (Homepage's
+# host; Tofu's record, equally unowned) — all five blocked by the same
+# ownership gate. And no actual writes at all (--dry-run).
 
 dig +short tomkatom.com A                        # 94.75.211.144 — old server
 dig +short requests.tomkatom.com                 # empty — NXDOMAIN
