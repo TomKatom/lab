@@ -1063,16 +1063,37 @@ Then, after §4's step 6 scales the Deployment back up:
   Ingress carries no forward-auth annotation by design — Plex OAuth is the
   end-user login, per the phase's decision).
 
-**Tautulli** — follow §4 for `tautulli` (config PVC 5Gi at `/config`):
+**Tautulli** — **fresh setup, nothing to restore.** The old server never ran
+Tautulli, so there is no `tautulli.db` and no watch history to carry over;
+history starts accumulating from the first stream the cluster serves. Do not
+follow §4 here — there is no config to copy in, and the parts that would have
+been re-entered by hand are declared in `clusters/lab/apps/tautulli.yaml`
+instead:
 
-- Restore the history db (`tautulli.db`) from the old config dir.
-- Re-point Plex (Settings → Plex Media Server): host
-  `plex.media.svc.cluster.local`, port `32400`. Run "Verify Server" — it
-  should reconnect cleanly since the restored db already has the working
-  auth token.
+- **The Plex connection needs no UI step.** `TAUTULLI_PMS_IP`, `PMS_PORT`,
+  `PMS_SSL`, `PMS_IDENTIFIER`, `PMS_TOKEN`, `API_KEY` and
+  `FIRST_RUN_COMPLETE` are all set as environment variables, and Tautulli
+  reads those ahead of its config.ini while refusing to let the UI save over
+  them. A fresh pod comes up already pointed at Plex with the setup wizard
+  skipped. Settings → Plex Media Server will show the values greyed into
+  place; saving that page is a no-op and logs "set by environment variable".
+- **The two credentials are already filled** in
+  `clusters/lab/apps/media-common/tautulli-credentials.sops.yaml`; the file
+  header keeps the commands that produce them, for whenever either is
+  rotated. Nothing fails loudly if one is ever wrong — the Secret applies,
+  the pod starts and the probes pass, because `/status` answers without
+  touching Plex. The only symptoms are an unauthorized PMS request in
+  `kubectl -n media logs deploy/tautulli` and a Libraries page that stays
+  empty, so check those rather than the pod's health.
+- Confirm it connected: Settings → Plex Media Server shows the server name,
+  and the Libraries page lists the real libraries within a minute or two
+  (`refresh_libraries_on_startup` defaults on).
 - Configure the recently-added digest to the same Telegram group (Settings
   → Notification Agents → Telegram, same bot token/chat id as Seerr;
-  enable the "Recently Added" trigger on whatever schedule is wanted).
+  enable the "Recently Added" trigger on whatever schedule is wanted). This
+  one genuinely is UI-only: Tautulli keeps notification agents in its
+  database rather than config.ini, so there is no environment override for
+  them the way there is for everything above.
 
 **Maintainerr** — fresh setup, nothing to restore (its rules are UI-only,
 no export/import path exists):

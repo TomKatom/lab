@@ -210,6 +210,14 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
 - **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
   Seerr's and Tautulli's notification agents (configured in-app; the
   Secret only holds the credential).
+- **Secret `tautulli-credentials`** — `PLEX_TOKEN`, `TAUTULLI_API_KEY`,
+  both consumed by `tautulli.yaml` as environment variables. Tautulli
+  reads `TAUTULLI_<SETTING>` ahead of its config.ini and refuses to save
+  that setting from the UI while the variable is set, which makes its
+  whole Plex connection declarable the way the *arrs' API keys are. Scoped
+  to Tautulli rather than shared as a `plex` Secret because it is the only
+  environment consumer of a Plex token — Seerr and Maintainerr
+  authenticate to Plex from their own databases.
 - **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
   app that cares about time zone consumes the whole map via `envFrom`
   rather than naming the single key.

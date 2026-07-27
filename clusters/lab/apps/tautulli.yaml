@@ -3,10 +3,14 @@
 # the namespace and the media-env ConfigMap this consumes.
 #
 # Talks to Plex over the API only, and touches no files — no /data mount of
-# any kind (see ./README.md "The /data mount"). The Plex server it points
-# at is stored in its own database rather than in env, so it is configured
-# in the UI after the history db is restored; that is
-# docs/runbooks/media-migration.md §9, not a manifest concern.
+# any kind (see ./README.md "The /data mount").
+#
+# The Plex connection is declared here, in `env` below, rather than walked
+# through the setup wizard: Tautulli takes `TAUTULLI_<SETTING>` overrides
+# for any config.ini setting and will not let the UI save over one. What
+# stays in the UI is what Tautulli keeps in its database instead of
+# config.ini — notification agents and newsletters, so the Telegram digest
+# is still a checklist step in docs/runbooks/media-migration.md §9.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -53,6 +57,62 @@ spec:
                 envFrom:
                   - configMapRef:
                       name: media-env
+                # Tautulli reads `TAUTULLI_<SETTING>` ahead of config.ini for
+                # every setting it has, and refuses to write that setting back
+                # from the UI while the variable is set — `get_setting` checks
+                # the environment first and `set_setting` returns early with
+                # "set by environment variable. Setting not saved to config."
+                # (plexpy/config.py at this pinned tag). That is the same
+                # git-wins contract the *arrs get from `SONARR__AUTH__APIKEY`,
+                # so the Plex connection belongs here rather than in a setup
+                # wizard somebody has to remember to re-run after the config
+                # PVC is lost. Everything Tautulli owns — its history
+                # database, its notification agents — still lives in the PVC;
+                # only the settings named below are pinned.
+                env:
+                  - name: TAUTULLI_PMS_IP
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_HOST
+                  - name: TAUTULLI_PMS_PORT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_PORT
+                  # Plain HTTP inside the cluster; both ends are on the pod
+                  # network. This also decides `pms_url`, which Tautulli
+                  # derives as http://<PMS_IP>:<PMS_PORT> whenever SSL is off
+                  # (plexpy/plextv.py `get_server_resources`) — so there is no
+                  # separate URL setting to keep in step with the two above.
+                  - name: TAUTULLI_PMS_SSL
+                    value: "0"
+                  # Plex's machineIdentifier, read off the running server with
+                  # `curl -s http://10.10.10.10:32400/identity`. Tautulli
+                  # treats this as an input and never discovers it for itself:
+                  # `get_server_resources` passes CONFIG.PMS_IDENTIFIER into
+                  # `get_server_connections`, which logs "no pms_identifier
+                  # provided" and returns nothing when it is empty. Not a
+                  # secret — it is the same identifier plex.tv hands to every
+                  # client it brokers.
+                  - name: TAUTULLI_PMS_IDENTIFIER
+                    value: "078e68e829013377bfc40670acad0ad24d4eb604"
+                  - name: TAUTULLI_PMS_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: tautulli-credentials
+                        key: PLEX_TOKEN
+                  - name: TAUTULLI_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: tautulli-credentials
+                        key: TAUTULLI_API_KEY
+                  # Skips the first-run wizard outright. The wizard exists to
+                  # collect exactly the connection declared above, so leaving
+                  # it armed would mean a fresh pod serving a setup page that
+                  # cannot tell it anything it does not already have.
+                  - name: TAUTULLI_FIRST_RUN_COMPLETE
+                    value: "1"
                 probes:
                   # /status is anonymous in Tautulli's own source at this
                   # exact pinned tag (v2.17.2): webstart.py turns

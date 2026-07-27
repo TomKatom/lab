@@ -39,6 +39,15 @@ data:
   SONARR_URL: http://sonarr.media.svc.cluster.local:8989
   RADARR_URL: http://radarr.media.svc.cluster.local:7878
   PLEX_URL: http://plex.media.svc.cluster.local:32400
+  # The same Plex Service, split into the two fields Tautulli wants.
+  # Tautulli has no "server URL" setting to point at PLEX_URL: it composes
+  # its own from a host and a port held separately (`PMS_IP`/`PMS_PORT`,
+  # which it joins into `pms_url` itself in plexpy/plextv.py), so a
+  # consumer that only ever gets the joined string would have to take it
+  # apart again. Three keys, one Service, one port number — change all of
+  # them together or none.
+  PLEX_HOST: plex.media.svc.cluster.local
+  PLEX_PORT: "32400"
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
   SEERR_URL: http://seerr.media.svc.cluster.local:5055
   # Bazarr, Maintainerr and Homepage each render a Service too, and none of
