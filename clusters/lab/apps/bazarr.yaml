@@ -1,0 +1,155 @@
+# Bazarr — subtitle acquisition for the Sonarr and Radarr libraries. It
+# reads each *arr's API for what exists, fetches subtitles from the
+# providers, and writes the .srt beside the video file. Wave 1: after
+# media-common (wave 0) has created the namespace and the media-env
+# ConfigMap this consumes.
+#
+# Bazarr has no env override for its API key (unlike the *arrs'
+# SONARR__AUTH__APIKEY): its key lives in config.yaml only, so
+# arr-api-keys' BAZARR_API_KEY is consumed by the apps that *call* Bazarr,
+# never injected here. The migrated config.yaml carries the old server's
+# key — an operator step in docs/runbooks/media-migration.md, not a
+# manifest concern.
+#
+# Deliberate narrowing of the house /data mount (./README.md "The /data
+# mount"): only /data/media, not the whole tree. The old server's
+# `docker inspect` inventory shows Bazarr bind-mounted exactly
+# /data/media -> /data/media and nothing else, which matches what it does
+# — it writes subtitle files next to the media it is given and never
+# touches /data/torrents. Container path stays identical to the host path,
+# so no Remote Path Mapping is needed against what Sonarr/Radarr report.
+# Still rw: subtitles are written into the media tree.
+#
+# bazarr.tomkatom.com is a taken name on the still-live old server, the
+# same as sonarr/radarr; external-dns here runs --dry-run and can never
+# touch that record. See docs/runbooks/dns-cutover.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bazarr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # Pod-level PodSecurityContext (no `capabilities` field) here, the
+        # container-level one (has `capabilities`, no `fsGroup`) below —
+        # see ./README.md "Identity: everything runs as 1000:1000". The
+        # home-operations image's own config declares `User:
+        # nobody:nogroup` (read off the pinned digest's image config at
+        # authoring time), so it starts rootless and tolerates
+        # runAsNonRoot/runAsUser 1000 without the Deluge-style exception.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/home-operations/bazarr
+                  # renovate: datasource=docker depName=ghcr.io/home-operations/bazarr
+                  tag: "1.6.0@sha256:cd63bbd0986c93e238eb8b9442604d249f0d4080099b389f822abe2062044417"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # Not /ping: Bazarr is not an *arr fork and serves no
+                  # such route. /api/system/ping is its own deliberately
+                  # unauthenticated liveness route — at this exact pinned
+                  # version its namespace is declared
+                  # `Namespace('System Ping', description='Unauthenticated
+                  # endpoint to check Bazarr availability')` with no
+                  # @authenticate decorator, and the API blueprint is
+                  # registered at `base_url + /api` (bazarr/app/server.py),
+                  # so the full path is /api/system/ping. Checked against
+                  # Bazarr's source at tag v1.6.0, not the wiki. Auth is
+                  # per-endpoint, not a global before_request hook, so this
+                  # stays anonymous regardless of the migrated config's
+                  # auth setting.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/system/ping
+                    port: 6767
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/system/ping
+                    port: 6767
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /api/system/ping
+                    port: 6767
+                # Lighter than the *arrs: no library scanning, no
+                # indexer fan-out — Bazarr wakes on a schedule, queries
+                # providers and writes small files.
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        service:
+          # Exactly one Service, so app-template names it after the release
+          # (`bazarr`) rather than appending the identifier — which is what
+          # BAZARR_URL in media-common/media-urls.yaml points at. Adding a
+          # second Service here renames this one silently; add
+          # `forceRename: bazarr` in the same edit if that ever happens.
+          # See ./README.md "A Service's name depends on how many Services
+          # its app declares".
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 6767
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: bazarr.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 2Gi
+            globalMounts:
+              - path: /config
+          media:
+            type: hostPath
+            hostPath: /data/media
+            hostPathType: Directory
+            globalMounts:
+              - path: /data/media
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

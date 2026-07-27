@@ -1,0 +1,279 @@
+# Recyclarr's whole configuration, mounted read-only at
+# /config/recyclarr.yml by ../recyclarr.yaml (wave 2, one wave after this
+# overlay's own Application) — see ../README.md "Kustomize `-config` dirs".
+#
+# Neither address nor credential is inlined: `!env_var NAME` reads the
+# process environment, and the CronJob's container fills those four names
+# from media-common's `media-urls` ConfigMap and `arr-api-keys` Secret. The
+# tag is real in the pinned image — recyclarr 8.7.0 registers
+# `.WithTagMapping("!env_var", typeof(EnvironmentVariableTag))`
+# (Recyclarr.Core/Config/EnvironmentVariables/EnvironmentVariablesYamlBehavior.cs)
+# and fails the run with EnvironmentVariableNotDefinedException if the
+# variable is unset, so a missing binding is loud, not silent.
+#
+# Why the profiles are spelled out rather than pulled in with
+# `include: - template: <id>`: recyclarr 8.x resolves template includes
+# against `includes.json` on the `v8` branch of recyclarr/config-templates
+# (ConfigTemplatesStrategy.DefaultReferences is ["v8", "master", "main"],
+# first match wins), and that file is `{"radarr": [], "sonarr": []}` on
+# `v8` — the include ids that exist on `master` (radarr-custom-formats-*,
+# sonarr-v4-*) are unreachable from this version.
+#
+#
+# ## Four profiles, split by who asked for the release
+#
+# Each instance carries two guide-backed profiles. Overseerr decides which
+# one a request lands on: the operator holds the Advanced Requests
+# permission and picks per request, everyone else silently gets the server
+# default. See docs/runbooks — Recyclarr only creates the profiles.
+#
+#             | operator                  | everyone else
+#   ----------+---------------------------+-------------------------
+#   Sonarr    | WEB-2160p                 | WEB-1080p
+#   Radarr    | Remux + WEB 2160p         | [SQP] SQP-1 (2160p)
+#
+#
+# ## Four mechanics that are not obvious from the YAML
+#
+# 0. Custom formats reach a profile from three places, and only one of them
+#    is this file. ConfiguredCustomFormatProvider.GetAll walks
+#    `custom_formats` (unused here), then the guide profile's own
+#    `formatItems`, then auto-synced default groups, then the `add:` list
+#    below. `formatItems` is why most groups need no mention: the guide
+#    profiles already carry the CFs that match the qualities they enable.
+#    Anything added here was checked to contribute something those first
+#    two sources do not.
+#
+# 1. CF groups carry their own `quality_profiles.include` whitelist, and
+#    `default: true` groups auto-sync to any listed profile with no mention
+#    here (ConfiguredCustomFormatProvider.FromDefaultGroups). That is why
+#    there is no `skip:` block and why Golden Rule HD lands only on the
+#    1080p lane while Golden Rule UHD lands only on the 2160p ones. An
+#    `add:` entry with no `assign_scores_to` is still filtered through that
+#    include list (DetermineProfiles -> ResolveImplicitProfiles), so naming
+#    a group is not the same as forcing it everywhere.
+#
+# 2. Naming a `default: true` group under `add:` *removes* it from
+#    auto-sync (FromDefaultGroups skips explicitlyAddedGroups). Any
+#    `assign_scores_to` on such a group must therefore list every profile
+#    that should keep it, not just the ones being added.
+#
+# 3. Every `max:` override carries a `preferred:`.
+#    QualitySizePlanComponent.ValidateQualitySizeOrder fails the entire
+#    plan on preferred > max, and the guide ships preferred at 995 (series)
+#    / 1999 (movie).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recyclarr-config
+  namespace: media
+data:
+  recyclarr.yml: |
+    # yaml-language-server: $schema=https://schemas.recyclarr.dev/v8/config-schema.json
+    sonarr:
+      sonarr:
+        base_url: !env_var SONARR_URL
+        api_key: !env_var SONARR_API_KEY
+
+        # TRaSH scores repacks/propers through the [Required] Repack/Proper
+        # CF group, which only works if Sonarr's own preference is neutral.
+        media_management:
+          propers_and_repacks: do_not_prefer
+
+        # The two lanes use disjoint qualities, so each cap hits exactly one
+        # of them. 1 MB/min = 0.1333 Mbps.
+        quality_definition:
+          type: series
+          qualities:
+            # Operator lane. min 60 = 8 Mbps, comfortably under every real
+            # 4K WEB-DL (Netflix/Disney+ ~16 Mbps, Apple TV+ ~25-30) and
+            # over the 4-6 Mbps band where re-encodes live. max 250 =
+            # 33 Mbps, above Apple TV+, so it only catches mislabelled files.
+            - name: WEBDL-2160p
+              min: 60
+              preferred: 249
+              max: 250
+            - name: WEBRip-2160p
+              min: 60
+              preferred: 249
+              max: 250
+            # Shared lane. max 60 = 8 Mbps, ~2.7 GB for a 45-minute episode.
+            # The guide's min of 15 stands so short-form stays eligible.
+            - name: WEBDL-1080p
+              preferred: 59
+              max: 60
+            - name: WEBRip-1080p
+              preferred: 59
+              max: 60
+
+        quality_profiles:
+          - trash_id: d1498e7d189fbe6c7110ceaabb7473e6  # WEB-2160p
+            reset_unmatched_scores:
+              enabled: true
+          - trash_id: 72dae194fc92bf828f32cde7744e51a1  # WEB-1080p
+            reset_unmatched_scores:
+              enabled: true
+
+        custom_format_groups:
+          add:
+            # Re-declared only to pick up BR-DISK (BTN), the one non-default
+            # member worth having on a private tracker. Re-declaring costs
+            # nothing else: ResolveCfsForGroup re-supplies required and
+            # default members, and the omitted assign_scores_to keeps the
+            # guide's include list, which covers both lanes. LQ (-10000)
+            # lives here and is what blacklists MeGusta — its release-group
+            # spec is `^(MeGusta)$`.
+            - trash_id: 59c3af66780d08332fdc64e68297098f  # [Unwanted] Unwanted Formats
+              select:
+                - 6f808933a71bd9666531610cb8c059cc  # BR-DISK (BTN)
+
+            # Include list is 2160p-only, so this reaches WEB-2160p alone.
+            - trash_id: e0b2774083df4265f25c9e5bc6c80940  # [HDR Formats] DV Boost
+
+            # Prefers season packs; fewer torrents to carry and better for
+            # ratio. Include list covers both lanes.
+            - trash_id: d920fd959d220306888f40b6f38e1578  # [Optional] Season Packs
+
+            # TRaSH scopes audio tiering to remux profiles, so WEB-2160p is
+            # absent from the include list and has to be named. Deliberately
+            # off the 1080p lane, which feeds clients whose decode support is
+            # unknown. Living-room chain is a Shield into an Atmos/DTS:X
+            # soundbar; the bedroom B4 has no DTS decoder (no LG set has had
+            # one since 2017) and will audio-transcode DTS-HD MA, which is
+            # cheap on CPU in a way video transcoding on this box is not.
+            - trash_id: e9a1944a254e6f8a9da63083f7ae15cb  # [Audio] Audio Formats
+              assign_scores_to:
+                - name: "WEB-2160p"
+
+            # [Release Groups] HQ (b4a4353e3b3e6789dbef07677ff23686) is
+            # deliberately absent. Both profiles already carry WEB Tier
+            # 01-03 and WEB Scene in their own formatItems; the group would
+            # only add Remux and HD Bluray tiers, which cannot match a
+            # release in a WEB-only profile. That is why the guide scopes it
+            # to Base Profile — it is for hand-built profiles, not these.
+
+    radarr:
+      radarr:
+        base_url: !env_var RADARR_URL
+        api_key: !env_var RADARR_API_KEY
+
+        media_management:
+          propers_and_repacks: do_not_prefer
+
+        # SQP-1 asks for `sqp-streaming` and the remux lane needs `movie`,
+        # but quality_definition is per-instance. `movie` wins: sqp-streaming
+        # has no Remux-2160p row at all, so that lane would go unmanaged and
+        # drift outside git. The SQP caps are mirrored by hand instead, so
+        # both lanes end up with guide-equivalent limits.
+        quality_definition:
+          type: movie
+          qualities:
+            # Operator lane only — no sqp-streaming equivalent exists.
+            # max 400 MB/min is roughly 48 GB for a two-hour film.
+            - name: Remux-2160p
+              min: 187.4
+              preferred: 399
+              max: 400
+            # Everything below is sqp-streaming's own numbers, verbatim.
+            - name: Bluray-2160p
+              min: 102
+              preferred: 203.4
+              max: 204.4
+            - name: WEBDL-2160p
+              min: 34.5
+              preferred: 221.2
+              max: 222.2
+            - name: WEBRip-2160p
+              min: 34.5
+              preferred: 221.2
+              max: 222.2
+            - name: Bluray-1080p
+              min: 33.8
+              preferred: 153
+              max: 154
+            - name: WEBDL-1080p
+              min: 12.5
+              preferred: 101
+              max: 102
+            - name: WEBRip-1080p
+              min: 12.5
+              preferred: 101
+              max: 102
+            - name: Bluray-720p
+              min: 25.2
+              preferred: 101
+              max: 102
+            - name: WEBDL-720p
+              min: 12.5
+              preferred: 84.7
+              max: 85.7
+            - name: WEBRip-720p
+              min: 12.5
+              preferred: 84.7
+              max: 85.7
+            # HDTV-* and Remux-1080p keep the guide's `movie` values; no
+            # profile here enables them.
+
+        quality_profiles:
+          - trash_id: fd161a61e3ab826d3a22d53f935696dd  # Remux + WEB 2160p
+            reset_unmatched_scores:
+              enabled: true
+          # score_set is left implicit on purpose: the guide profile carries
+          # trash_score_set `sqp-1-2160p` and QualityProfilePlanComponent
+          # adopts it when the config does not override. min_format_score
+          # 1000 likewise comes from the guide.
+          - trash_id: 5128baeb2b081b72126bc8482b2a86a0  # [SQP] SQP-1 (2160p)
+            reset_unmatched_scores:
+              enabled: true
+
+        custom_format_groups:
+          add:
+            # Belt and braces, and the only entry here that is currently a
+            # no-op: SQP-1's own formatItems already score
+            # DV (w/o HDR fallback) at -10000. It is stated anyway because
+            # it is a deliberate decision rather than an inherited default —
+            # Profile 5 carries no HDR10 base layer and renders washed out
+            # on non-DV displays, and this host has no GPU to tone-map with
+            # for guests whose TVs cannot decode DV. Without the line, an
+            # upstream change to SQP-1's formatItems would drop the guard
+            # silently. Kept off the operator lane on purpose: the B4 and
+            # the Shield both handle DV.
+            - trash_id: 7fc2751eef7e6bdc70b74136e5e35c76  # [HDR Formats] DV (w/o HDR fallback)
+              assign_scores_to:
+                - name: "[SQP] SQP-1 (2160p)"
+
+            # Include list covers both lanes, which is fine: with P5 blocked
+            # on the shared lane a boosted DV release is P7/P8 and falls
+            # back to HDR10 on any display.
+            - trash_id: 1616617ab3a14397a2b2321bcbda44d1  # [HDR Formats] DV Boost
+
+            - trash_id: f4f1474b963b24cf983455743aa9906c  # [Optional] Movie Versions
+              select_all: true
+
+            # Two groups are deliberately absent.
+            #
+            # [Unwanted] Unwanted Formats (a3ac6af01d78e4f21fcb75f601ac96df)
+            # is a default group that already auto-syncs to Remux + WEB
+            # 2160p, and it would add nothing to SQP-1, whose formatItems
+            # already carry LQ, LQ (Release Title), BR-DISK, AV1 and 3D at
+            # -10000. Naming it would only risk mechanic 2 in the header.
+            # LQ is what blacklists MeGusta — release-group spec
+            # `^(MeGusta)$` — and both lanes have it.
+            #
+            # [Release Groups] HQ (b2f2af430f73f3ad1f9948f33e0f0cf8) is
+            # inert here. Remux + WEB 2160p already lists Remux Tier 01-03
+            # and WEB Tier 01-03 in its formatItems, SQP-1 lists the WEB and
+            # Bluray tiers in its own, and all the group adds on top are
+            # tiers for qualities neither profile enables — Bluray tiers on
+            # a Remux/WEB profile, Remux tiers on a profile with no Remux
+            # quality at all. On SQP-1 those Remux tiers would also score
+            # 1850-1950 by falling back to the default set, above every
+            # legitimate release it can actually grab.
+            #
+            # [Audio] Audio Formats needs no entry either: it is a default
+            # group whose include list holds Remux + WEB 2160p but not
+            # SQP-1, so it auto-syncs to exactly the lane that wants it.
+            # SQP-1 scores audio through its own formatItems instead, where
+            # TrueHD/DTS-HD sit at -10000 and DD+ ATMOS at 135 — lossless is
+            # rejected by design, which also keeps the B4's missing DTS
+            # decoder out of the picture on the shared lane.
