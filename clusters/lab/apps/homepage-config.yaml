@@ -1,0 +1,27 @@
+# homepage-config — the nine config files Homepage reads, as one ConfigMap.
+# Wave 1, one wave ahead of the chart Application in ./homepage.yaml, so the
+# ConfigMap exists before the first Pod starts.
+#
+# No CreateNamespace: media-common (wave 0) is the only Application in this
+# directory that creates the `media` namespace — see ./README.md "Sync waves
+# within apps/".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homepage-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps/homepage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

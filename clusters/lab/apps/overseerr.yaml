@@ -1,0 +1,160 @@
+# Overseerr — the request portal end users see. They browse, request a movie
+# or a show, and Overseerr hands the approved request to Sonarr or Radarr.
+# Wave 1: after media-common (wave 0) has created the namespace and the
+# media-env ConfigMap this consumes.
+#
+# ⚠ This is the one Ingress in the stack with NO forward-auth annotation, and
+# that is deliberate — do not "fix" it. Every other host here is
+# admin-facing and sits behind Authelia, but requests.tomkatom.com is for
+# end users who have a Plex account and nothing else: Overseerr's own login
+# is Plex OAuth, and it enforces it on every route except /api/v1/status.
+# Putting Authelia in front would mean every requester also needed an
+# Authelia identity, which defeats the point of the portal. An un-annotated
+# Ingress means Traefik never consults the forward-auth middleware for this
+# host. See ./README.md "Ingress: chart-rendered, not a `-config` dir".
+#
+# The Plex server, the Sonarr/Radarr connections and the Telegram agent are
+# all stored in Overseerr's own settings.json and database rather than in
+# env, so they come across with the migrated config in
+# docs/runbooks/media-migration.md §9 — not a manifest concern.
+#
+# requests.tomkatom.com is NXDOMAIN publicly until the DNS cutover, so end
+# users cannot reach this until then; internal verification is
+# `curl --resolve` over WireGuard. See docs/runbooks/dns-cutover.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: overseerr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000".
+        #
+        # Unlike the home-operations images, this one declares no `User` at
+        # all and so runs as root by default — but it needs no root
+        # privilege, and the full house block was confirmed by running the
+        # exact pinned digest as 1000:1000 over an empty writable mount:
+        # it came up, wrote its database and served
+        # `/api/v1/status` normally. No LSIO-style exception is needed.
+        #
+        # fsGroup is what makes that work on a fresh PVC. The image ships a
+        # populated /app/config (a DOCKER marker plus empty db/ and logs/
+        # directories) and mounting a volume there hides all of it, so
+        # Overseerr starts against a genuinely empty directory and TypeORM
+        # recreates db/ on the way to opening the SQLite file. That only
+        # succeeds if the mount is group-writable by 1000, which fsGroup
+        # arranges.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: docker.io/sctx/overseerr
+                  # renovate: datasource=docker depName=docker.io/sctx/overseerr
+                  tag: "1.35.0@sha256:6197516c9d7b58ccf113455e32aafb94df5d91995fe50e8c2cae6ba6c7c7b7de"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # /api/v1/status is the only route Overseerr serves
+                  # anonymously — checked by running the pinned digest and
+                  # curling it (200 with the version payload) alongside
+                  # /api/v1/settings/main (401). Everything else redirects
+                  # to or rejects without the Plex OAuth session, so this is
+                  # the only path that answers before anyone has logged in.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/status
+                    port: 5055
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/status
+                    port: 5055
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/status
+                    port: 5055
+                # A request portal for a handful of users: the work is TMDB
+                # lookups and the periodic availability sync against Plex
+                # and the *arrs, none of it heavy. The memory ceiling is
+                # sized for Node's heap plus the on-disk image cache being
+                # written through, not for concurrency.
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        service:
+          # Exactly one Service, so app-template names it `overseerr` after
+          # the release rather than appending the identifier — which is what
+          # OVERSEERR_URL in media-common/media-urls.yaml points at. Adding a
+          # second Service here renames this one silently; add
+          # `forceRename: overseerr` in the same edit if that ever happens.
+          # See ./README.md "A Service's name depends on how many Services
+          # its app declares".
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 5055
+        ingress:
+          # No `annotations:` block at all — see the header. This is the
+          # deliberate exception to the forward-auth rule, not an omission.
+          app:
+            hosts:
+              - host: requests.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # /app/config, not /config: this image has no configurable prefix
+          # beyond the CONFIG_DIRECTORY env var, and its default is
+          # `<workdir>/config` with the workdir at /app. The old server bind
+          # mounted the same path (runbook §2.1), so the migrated tree drops
+          # in unchanged.
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 2Gi
+            globalMounts:
+              - path: /app/config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

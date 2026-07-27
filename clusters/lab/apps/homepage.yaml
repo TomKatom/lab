@@ -1,0 +1,248 @@
+# Homepage — the dashboard the whole stack hangs off: one page of links plus
+# live counters pulled from the *arrs' APIs.
+#
+# Wave 2, one wave after ./homepage-config.yaml, so the homepage-config
+# ConfigMap it mounts already exists when the first Pod starts (see
+# ./README.md "Sync waves within apps/").
+#
+# It never mounts /data — it only reads APIs (./README.md "The /data mount").
+#
+# ⚠ The config files are mounted with subPath, which Kubernetes does not
+# update in place. Editing clusters/lab/apps/homepage/ and letting Argo sync
+# updates the ConfigMap object but not the files already projected into a
+# running Pod, and nothing in this chart rolls the Deployment for an
+# externally-owned ConfigMap. A config change therefore needs
+# `kubectl -n media rollout restart deploy/homepage` to take effect.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homepage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000".
+        #
+        # The image declares `USER root` and its entrypoint drops privilege
+        # with su-exec when PUID is set — but its final branch is
+        # `exec "$@"` when it is already not root, which is exactly the case
+        # Kubernetes creates here. Everything the app owns is copied
+        # `--chown=1000:1000`, and upstream's own Kubernetes install docs
+        # ship this same 1000:1000 / runAsNonRoot / drop-ALL block, so no
+        # LSIO-style exception is needed. PUID/PGID are deliberately unset:
+        # setting them would only ask a non-root process to chown paths it
+        # already owns.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/gethomepage/homepage
+                  # renovate: datasource=docker depName=ghcr.io/gethomepage/homepage
+                  tag: "v1.13.2@sha256:a0b71c8e757298d02560186bab9fbe3fc2d375c523a62cc1019177b37e48aa28"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                # A list, not a map, because the order matters: Kubernetes
+                # expands $(VAR) only against variables declared earlier in
+                # the same list, and a map would be emitted in key order,
+                # putting HOMEPAGE_ALLOWED_HOSTS before MY_POD_IP.
+                env:
+                  - name: MY_POD_IP
+                    valueFrom:
+                      fieldRef:
+                        fieldPath: status.podIP
+                  # Required since homepage v1.0: src/middleware.js rejects
+                  # any request to /api/* whose Host header is not in this
+                  # list, with a 400. Two entries are needed, both of them
+                  # load-bearing:
+                  #
+                  #   <pod IP>:3000 — the kubelet's HTTP probes below are
+                  #   addressed to the Pod IP, so that is the Host header
+                  #   they carry, and /api/healthcheck is under the
+                  #   middleware's `/api/:path*` matcher. Without this the
+                  #   probes get 400 and the Pod never goes ready. This is
+                  #   the exact form upstream's own Kubernetes install docs
+                  #   use, for the same reason.
+                  #
+                  #   home.tomkatom.com — what Traefik forwards from the
+                  #   browser. Without it, every widget on the page fails
+                  #   while the page itself still renders.
+                  - name: HOMEPAGE_ALLOWED_HOSTS
+                    value: "$(MY_POD_IP):3000,home.tomkatom.com"
+                  # Both halves of every widget come from media-common: the
+                  # address from the media-urls ConfigMap, the key from the
+                  # arr-api-keys Secret. services.yaml reads them back as
+                  # {{HOMEPAGE_VAR_…}} — see
+                  # ./homepage/configmap-homepage.yaml. Nothing addressed
+                  # here is written as a literal Service address.
+                  - name: HOMEPAGE_VAR_SONARR_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SONARR_URL
+                  - name: HOMEPAGE_VAR_SONARR_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                  - name: HOMEPAGE_VAR_RADARR_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: RADARR_URL
+                  - name: HOMEPAGE_VAR_RADARR_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: RADARR_API_KEY
+                  - name: HOMEPAGE_VAR_PROWLARR_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PROWLARR_URL
+                  - name: HOMEPAGE_VAR_PROWLARR_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: PROWLARR_API_KEY
+                  - name: HOMEPAGE_VAR_BAZARR_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: BAZARR_URL
+                  - name: HOMEPAGE_VAR_BAZARR_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: BAZARR_API_KEY
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # /api/healthcheck is the route the image's own HEALTHCHECK
+                  # uses; the handler is a two-line `res.send("up")` with no
+                  # auth of any kind (homepage has no login). It does pass
+                  # through the host-validation middleware, which is why the
+                  # Pod IP is in HOMEPAGE_ALLOWED_HOSTS above.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/healthcheck
+                    port: 3000
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/healthcheck
+                    port: 3000
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /api/healthcheck
+                    port: 3000
+                # Renders a single page and proxies a handful of small API
+                # calls per refresh. The floor is Node's own heap.
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 128Mi
+                  limits:
+                    cpu: "1"
+                    memory: 512Mi
+        service:
+          # Exactly one Service, so app-template names it `homepage` after
+          # the release rather than appending the identifier. Nothing else in
+          # the stack calls it, so there is no media-urls entry to keep in
+          # step; see ./README.md "A Service's name depends on how many
+          # Services its app declares".
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 3000
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: home.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # File-by-file rather than one directory mount, so /app/config
+          # itself stays a real (if unwritable) directory that the emptyDir
+          # below can be mounted inside. Every file homepage can ask for is
+          # here — a missing one is fatal, not degrading; the reasoning is on
+          # ./homepage/configmap-homepage.yaml.
+          config:
+            type: configMap
+            name: homepage-config
+            globalMounts:
+              - path: /app/config/settings.yaml
+                subPath: settings.yaml
+                readOnly: true
+              - path: /app/config/services.yaml
+                subPath: services.yaml
+                readOnly: true
+              - path: /app/config/widgets.yaml
+                subPath: widgets.yaml
+                readOnly: true
+              - path: /app/config/bookmarks.yaml
+                subPath: bookmarks.yaml
+                readOnly: true
+              - path: /app/config/docker.yaml
+                subPath: docker.yaml
+                readOnly: true
+              - path: /app/config/kubernetes.yaml
+                subPath: kubernetes.yaml
+                readOnly: true
+              - path: /app/config/proxmox.yaml
+                subPath: proxmox.yaml
+                readOnly: true
+              - path: /app/config/custom.css
+                subPath: custom.css
+                readOnly: true
+              - path: /app/config/custom.js
+                subPath: custom.js
+                readOnly: true
+          # The one writable path homepage needs: its file logger writes
+          # ${CONF_DIR}/logs/homepage.log unconditionally (src/utils/
+          # logger.js), and the rest of /app/config is read-only mounts.
+          # emptyDir, not a PVC — the console transport carries the same
+          # lines, so nothing here is worth keeping across a restart.
+          logs:
+            type: emptyDir
+            globalMounts:
+              - path: /app/config/logs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

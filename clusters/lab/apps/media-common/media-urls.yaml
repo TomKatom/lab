@@ -41,8 +41,9 @@ data:
   PLEX_URL: http://plex.media.svc.cluster.local:32400
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
   BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
-  # Declared ahead of the PR that creates this Service (the request
-  # layer). Port comes from the phase plan's reference table and is
-  # unverified against a real render until then — that PR must confirm
-  # its Service renders with this name and port, or fix the entry here.
   OVERSEERR_URL: http://overseerr.media.svc.cluster.local:5055
+  # Maintainerr and Homepage each render a Service too, and neither has an
+  # entry on purpose: nothing in the stack calls them. This map exists to
+  # stop one address being written down in several consumers, so a key with
+  # no consumer would be a claim nothing keeps honest. Add one the same day
+  # something needs it.
