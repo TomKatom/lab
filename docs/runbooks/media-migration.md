@@ -1095,18 +1095,34 @@ instead:
   database rather than config.ini, so there is no environment override for
   them the way there is for everything above.
 
-**Maintainerr** — fresh setup, nothing to restore (its rules are UI-only,
-no export/import path exists):
+**Maintainerr** — fresh setup, nothing to restore. The old server never ran
+it, so there is no rule set to carry over and nothing to copy into the PVC.
+Its **connection settings** are database-only — no environment overrides
+exist for them, unlike Tautulli above — so this part is genuinely a UI
+checklist:
 
 - Add the Plex server: `plex.media.svc.cluster.local:32400`.
 - Add Sonarr/Radarr with `SONARR_API_KEY`/`RADARR_API_KEY`.
+- Add Tautulli, `http://tautulli.media.svc.cluster.local:8181` with
+  `TAUTULLI_API_KEY` (both from `media-common`). Optional, and worth it: it
+  gives the rules a real watch history to read instead of Plex's own
+  last-viewed field, which is the field most retention rules get wrong.
+  Note the history only starts at the cluster's first stream — Tautulli is
+  new here too — so rules keyed on it are blind to anything watched on the
+  old server.
 - Rules that key off *who requested something* need the request portal too:
   Settings → **Seerr** (this pinned version speaks Seerr natively, not just
   the old Overseerr API), `http://seerr.media.svc.cluster.local:5055` with
   an API key read out of Seerr's own Settings → General. Skip it if no rule
   uses requester data.
-- Re-create whatever collection/cleanup rules mattered on the old server —
-  there is no config to migrate here, only a checklist to redo by hand.
+
+Rules themselves are **not** UI-only, despite what an earlier draft of this
+section said: 3.19.0 imports and exports rule groups as YAML (the
+`YamlImporterModal` in the rule editor, `POST /api/rules/yaml/{encode,decode}`
+behind it). The retention policy, the `keep`-label exemption, and why a
+deletion frees no space while the release is still seeding are all in
+[`../media-retention.md`](../media-retention.md); the exported YAML lives
+beside it. Build the rules there, then export and commit them.
 
 ---
 
@@ -1316,6 +1332,6 @@ across:
 | Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
 | Plex | `curl http://10.10.10.10:32400/identity` (over WG) returns the **same** `machineIdentifier` as the old server's `Preferences.xml` — no re-claim; a remote client shows **Direct Play**, zero transcode sessions |
 | Seerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Seerr flips **Available** → a **Telegram group** message arrives. Separately: `POST /api/v1/auth/local` answers **`Password sign-in is disabled.`** (§9) — the only host here a stranger can reach, so this is the perimeter |
-| Tautulli | The recently-added digest posts to the same Telegram group on its configured schedule; play history shows continuity from before the migration |
-| Maintainerr | At least one re-created rule executes against a test item without error |
+| Tautulli | Settings → Plex Media Server shows the server name without any wizard having been run, and the Libraries page lists the real libraries; the recently-added digest posts to the same Telegram group on its configured schedule. History starts empty and accumulates from the cluster's first stream — there is none to carry over |
+| Maintainerr | At least one rule executes against a test item without error, and its YAML export is committed under `docs/maintainerr-rules/` |
 | Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |

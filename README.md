@@ -18,7 +18,7 @@ phase lands.
 | [`infra/tofu/`](infra/tofu/) | Provision (VM, disks, Proxmox firewall, DNS) | OpenTofu |
 | [`ansible/`](ansible/) | Configure (WireGuard, NAT, hardening, k3s bootstrap) | Ansible |
 | [`clusters/lab/`](clusters/lab/) | Deliver (everything in-cluster) | Argo CD |
-| [`docs/`](docs/) | Architecture, bootstrap, secrets, SSH keys, runbooks | — |
+| [`docs/`](docs/) | Architecture, bootstrap, secrets, SSH keys, media retention, runbooks | — |
 
 ## Status
 
