@@ -56,18 +56,15 @@ data:
   #
   # `mediaManagement` states only what the pipeline depends on:
   # copyUsingHardlinks is the whole reason /data is one filesystem
-  # (../README.md "The /data mount"), and downloadPropersAndRepacks stays
-  # doNotPrefer because Recyclarr scores repacks through TRaSH's
-  # [Required] Repack/Proper custom formats instead — the two mechanisms
-  # fight if both are on.
+  # (../README.md "The /data mount").
   #
-  # ⚠ downloadPropersAndRepacks is the one key declared twice in this repo:
-  # ../recyclarr/configmap-recyclarr.yaml sets the same setting as
-  # `media_management.propers_and_repacks: do_not_prefer`, for the same
-  # reason. The values agree, so the two CronJobs converge rather than
-  # fight — but they are two declarations of one fact and nothing
-  # cross-validates them. Change one and you must change the other, or
-  # whichever ran last silently wins for an hour at a time.
+  # downloadPropersAndRepacks is deliberately absent, even though it is a
+  # pipeline setting: ../recyclarr/configmap-recyclarr.yaml already owns it
+  # as `media_management.propers_and_repacks: do_not_prefer` (repacks are
+  # scored through TRaSH's [Required] Repack/Proper custom formats, and the
+  # two mechanisms fight if both are on). Declaring it here too would be
+  # two declarations of one fact with nothing cross-validating them, so
+  # Recyclarr keeps it — the same boundary this file draws everywhere else.
   #
   # recycleBin is a deliberate addition: Maintainerr deletes through this
   # API on a schedule, and a misjudged retention rule is otherwise
@@ -75,6 +72,11 @@ data:
   # costs almost no disk in practice — a deleted episode that is still
   # seeding shares its inode with the torrent, so the bytes were never
   # going to come back until the torrent goes too.
+  #
+  # Both recycleBin paths must exist before this runs: the API validates
+  # them with PathExistsValidator/FolderWritableValidator and 400s the
+  # whole mediaManagement call otherwise. ansible/roles/virtiofs creates
+  # them alongside /data/torrents and /data/media.
   #
   # `downloadDirectory` is the half of the path contract that lives on
   # this side. Sonarr passes it to Deluge at add time, so the torrent
@@ -109,7 +111,6 @@ data:
         "extraFileExtensions": "srt,sub,idx,ass,ssa",
         "deleteEmptyFolders": true,
         "rescanAfterRefresh": "always",
-        "downloadPropersAndRepacks": "doNotPrefer",
         "setPermissionsLinux": false,
         "skipFreeSpaceCheckWhenImporting": false,
         "minimumFreeSpaceWhenImporting": 100,
@@ -170,7 +171,6 @@ data:
         "deleteEmptyFolders": true,
         "rescanAfterRefresh": "always",
         "autoRenameFolders": true,
-        "downloadPropersAndRepacks": "doNotPrefer",
         "setPermissionsLinux": false,
         "skipFreeSpaceCheckWhenImporting": false,
         "minimumFreeSpaceWhenImporting": 100,
@@ -210,6 +210,13 @@ data:
   # silent no-op, because both are typos that would otherwise look like a
   # successful run.
   #
+  # Errors are per-resource, not per-run. Each of the four reconcilers runs
+  # in its own try, and each instance in its own loop iteration, so one bad
+  # setting reports itself and the other three still converge — the run
+  # still exits 1 and still prints FAILED, it just stops one 400 on Sonarr
+  # from silently leaving Radarr and the whole download-client half of the
+  # path contract unapplied.
+  #
   # DRY_RUN=1 prints the diff and writes nothing; the migration runbook
   # uses it for the pre-flight.
   apply.py: |
@@ -231,6 +238,10 @@ data:
 
     changed = 0
     failed = []
+
+
+    class SpecError(Exception):
+        """The declared spec does not match this *arr's schema."""
 
 
     def api(base, key, path, method="GET", payload=None):
@@ -261,7 +272,7 @@ data:
         current = api(base, key, path)
         unknown = sorted(set(desired) - set(current))
         if unknown:
-            raise SystemExit(
+            raise SpecError(
                 "%s%s: unknown setting(s) %s — not in this version's schema"
                 % (name, path, ", ".join(unknown))
             )
@@ -296,7 +307,7 @@ data:
         for spec in desired_clients:
             client = by_name.get(spec["name"])
             if client is None:
-                raise SystemExit(
+                raise SpecError(
                     "%s: download client %r does not exist. This applier owns "
                     "its settings, not its credential — create it in the UI "
                     "first (its password cannot be set through here)."
@@ -307,7 +318,7 @@ data:
             top = {k: v for k, v in spec.items() if k not in ("name", "fields")}
             for k, v in top.items():
                 if k not in updated:
-                    raise SystemExit(
+                    raise SpecError(
                         "%s: download client %r has no property %r"
                         % (name, spec["name"], k)
                     )
@@ -316,7 +327,7 @@ data:
             fields = {field["name"]: field for field in updated["fields"]}
             for k, v in spec.get("fields", {}).items():
                 if k not in fields:
-                    raise SystemExit(
+                    raise SpecError(
                         "%s: download client %r has no field %r — check the "
                         "spelling against GET /api/v3/downloadclient"
                         % (name, spec["name"], k)
@@ -359,17 +370,29 @@ data:
 
         base, key = os.environ[url_env], os.environ[key_env]
         print("%s (%s)" % (name, base))
-        try:
-            reconcile_config(name, base, key, "/config/naming", spec.get("naming", {}))
-            reconcile_config(
+        for reconcile in (
+            lambda: reconcile_config(
+                name, base, key, "/config/naming", spec.get("naming", {})
+            ),
+            lambda: reconcile_config(
                 name, base, key, "/config/mediamanagement", spec.get("mediaManagement", {})
-            )
-            reconcile_root_folders(name, base, key, spec.get("rootFolders", []))
-            reconcile_download_clients(name, base, key, spec.get("downloadClients", []))
-        except urllib.error.HTTPError as error:
-            failed.append("%s: HTTP %s %s" % (name, error.code, error.read()[:400]))
-        except urllib.error.URLError as error:
-            failed.append("%s: unreachable (%s)" % (name, error.reason))
+            ),
+            lambda: reconcile_root_folders(name, base, key, spec.get("rootFolders", [])),
+            lambda: reconcile_download_clients(
+                name, base, key, spec.get("downloadClients", [])
+            ),
+        ):
+            try:
+                reconcile()
+            except urllib.error.HTTPError as error:
+                failed.append(
+                    "%s: HTTP %s %s" % (name, error.code, error.read()[:400])
+                )
+            except urllib.error.URLError as error:
+                failed.append("%s: unreachable (%s)" % (name, error.reason))
+                break
+            except SpecError as error:
+                failed.append(str(error))
         print()
 
     if failed:

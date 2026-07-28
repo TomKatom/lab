@@ -78,6 +78,10 @@ spec:
                   # renovate: datasource=docker depName=docker.io/library/python
                   tag: "3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
                 command: ["python3", "/config-src/init.py"]
+                env:
+                  # Unbuffered, so a crash-looping init container's last
+                  # line is actually in `kubectl logs -c init-config`.
+                  PYTHONUNBUFFERED: "1"
                 # Unlike the deluge container below, this one has no s6 to
                 # accommodate — it is a script writing files the daemon
                 # then reads as PUID/PGID 1000, so it keeps the full house
@@ -240,12 +244,19 @@ spec:
           # /data/torrents into Deluge — keep the full /data tree anyway, to
           # match every sibling app's identical mount (see ./README.md
           # "The /data mount"); don't narrow this back to /data/torrents.
+          #
+          # advancedMounts, not globalMounts, for the same reason
+          # config-src above uses them: the init container only ever writes
+          # /config, so the whole media tree has no business being visible
+          # to it. globalMounts would hand it the hostPath too.
           data:
             type: hostPath
             hostPath: /data
             hostPathType: Directory
-            globalMounts:
-              - path: /data
+            advancedMounts:
+              app:
+                app:
+                  - path: /data
         configMaps:
           config:
             data:
@@ -265,8 +276,9 @@ spec:
               #
               # download_location is the *fallback* only. Sonarr and Radarr
               # each pass an explicit per-category download directory when
-              # they add a torrent (see ./arr-settings/, `downloadDir`), so
-              # a grab lands in /data/torrents/tv or /data/torrents/movies
+              # they add a torrent (see ./arr-settings/,
+              # `downloadDirectory`), so a grab lands in
+              # /data/torrents/tv or /data/torrents/movies
               # and is never moved afterwards. Anything added by hand with
               # no label lands here at the root instead, and the labels in
               # label.conf below move it into place on completion.
@@ -274,10 +286,14 @@ spec:
               # move_completed therefore stays false globally: the move is
               # a per-label concern, not a session-wide one, and a global
               # move would relocate every *arr grab a second time for no
-              # reason. move_completed_path is pinned anyway as a guard
-              # rail — if the move is ever toggled on in the WebUI, data
-              # relocates within the tree the hardlinks live on instead of
-              # into the Plex libraries.
+              # reason. move_completed_path is pinned to the same value as
+              # download_location so the pair is at least self-consistent
+              # in git — but it is not a guard rail, and toggling
+              # move_completed on in the WebUI is not a survivable edit:
+              # it would drag every tv/movies grab up out of its category
+              # directory into /data/torrents mid-import, and arm the
+              # need_full_check branch this stack spends
+              # docs/runbooks/deluge-arr-path-contract.md §3b disarming.
               #
               # max_active_seeding: -1 is the value that matters most here.
               # Deluge ships a desktop queue (5 seeding, 8 total), which
@@ -518,8 +534,9 @@ spec:
                 import hashlib
                 import json
                 import os
-                import shutil
+                import urllib.error
                 import urllib.request
+                from collections import Counter
 
                 SRC = "/config-src"
                 DST = "/config"
@@ -552,12 +569,28 @@ spec:
                     return objects[-1] if objects else {}
 
 
-                def write_deluge_conf(path, body):
+                def write_text(path, text):
+                    """Replace `path` atomically, never truncating it in place.
+
+                    A half-written core.conf is worse than a stale one:
+                    Deluge falls back to its desktop defaults (5 seeding
+                    slots for ~400 permaseeds) and says so only at debug
+                    level.
+                    """
                     tmp = path + ".rendering"
                     with open(tmp, "w", encoding="utf-8") as handle:
-                        handle.write(json.dumps(HEADER, indent=2))
-                        handle.write(json.dumps(body, indent=2, sort_keys=True))
+                        handle.write(text)
+                        handle.flush()
+                        os.fsync(handle.fileno())
                     os.replace(tmp, path)
+
+
+                def write_deluge_conf(path, body):
+                    write_text(
+                        path,
+                        json.dumps(HEADER, indent=2)
+                        + json.dumps(body, indent=2, sort_keys=True),
+                    )
 
 
                 def render_label_conf():
@@ -579,13 +612,24 @@ spec:
                     torrent_labels = live.get("torrent_labels", {})
                     live_labels = live.get("labels", {})
 
+                    if os.path.exists(dst):
+                        # torrent_labels is the one thing here that cannot be
+                        # rebuilt from git, and this is the only writer that
+                        # ever replaces the file holding it. Keep the copy it
+                        # is about to replace, one restart deep.
+                        with open(dst, "rb") as fh:
+                            pre = fh.read()
+                        with open(dst + ".pre-render", "wb") as fh:
+                            fh.write(pre)
+
+                    attached = Counter(torrent_labels.values())
                     labels = {}
-                    for name in sorted(set(torrent_labels.values())):
+                    for name in sorted(attached):
                         if name not in declared and name in live_labels:
                             print(
                                 "label.conf: keeping undeclared label %r "
                                 "(%d torrents still attached)"
-                                % (name, list(torrent_labels.values()).count(name))
+                                % (name, attached[name])
                             )
                             labels[name] = live_labels[name]
                     labels.update(declared)
@@ -612,10 +656,21 @@ spec:
                                 return
 
                     print("ltConfig egg: fetching " + EGG_URL)
-                    with urllib.request.urlopen(EGG_URL, timeout=60) as response:
-                        payload = response.read()
+                    try:
+                        with urllib.request.urlopen(EGG_URL, timeout=60) as response:
+                            payload = response.read()
+                    except (urllib.error.URLError, OSError) as error:
+                        # Reaching github.com must never be what decides
+                        # whether ~400 permaseeds come back up. ltConfig is
+                        # tuning; deluged runs without it (logging "Unable
+                        # to enable plugin"), so a fetch failure is loud and
+                        # non-fatal rather than a crash-looping initContainer.
+                        print("ltConfig egg: FETCH FAILED (%s) — starting "
+                              "without the libtorrent tuning" % error)
+                        return
                     digest = hashlib.sha256(payload).hexdigest()
                     if digest != EGG_SHA256:
+                        # A mismatch is not a network blip; refuse to install.
                         raise SystemExit(
                             "ltConfig egg checksum mismatch: got %s, want %s"
                             % (digest, EGG_SHA256)
@@ -630,7 +685,8 @@ spec:
 
 
                 for name in ("core.conf", "ltconfig.conf"):
-                    shutil.copyfile(os.path.join(SRC, name), os.path.join(DST, name))
+                    with open(os.path.join(SRC, name), encoding="utf-8") as handle:
+                        write_text(os.path.join(DST, name), handle.read())
                     print("%s: rendered" % name)
 
                 render_label_conf()

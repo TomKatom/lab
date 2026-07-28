@@ -42,8 +42,19 @@ Deluge's copy under `/data/torrents` never had its path changed.
 
 ## 1. Pre-flight (read-only)
 
-Run the applier in dry-run to see exactly what it will change. Nothing is
-written and no \*arr is modified:
+First confirm the directories the declared settings name already exist —
+Sonarr's and Radarr's `recycleBin` is validated for existence *and*
+writability at save time, and a missing one 400s the whole
+`mediaManagement` call rather than just that key:
+
+```sh
+ls -ld /data/.recyclebin/sonarr /data/.recyclebin/radarr /data/torrents-final
+# if any is missing, they are declared in ansible/roles/virtiofs — re-run
+# ansible/playbooks/virtiofs.yml rather than creating them by hand
+```
+
+Then run the applier in dry-run to see exactly what it will change. Nothing
+is written and no \*arr is modified:
 
 ```sh
 kubectl -n media create job --from=cronjob/arr-settings arr-settings-preflight \
@@ -131,15 +142,12 @@ moves under you:
 kubectl -n media exec deploy/deluge -- python3 -c '
 import json, pickle, sys
 sys.path.insert(0, "/lsiopy/lib/python3.12/site-packages")
+from deluge.config import find_json_objects
 from deluge.core.torrentmanager import TorrentState, TorrentManagerState
 state = pickle.load(open("/config/state/torrents.state", "rb"))
 raw = open("/config/label.conf").read()
-dec, objs, i = json.JSONDecoder(), [], 0
-while i < len(raw):
-    while i < len(raw) and raw[i].isspace(): i += 1
-    if i >= len(raw): break
-    o, i = dec.raw_decode(raw, i); objs.append(o)
-config = objs[-1]
+start, end = find_json_objects(raw)[-1]
+config = json.loads(raw[start:end])
 labels = config["torrent_labels"]
 want = {name: opts["move_completed_path"]
         for name, opts in config["labels"].items()}
@@ -241,15 +249,12 @@ Verify none are left:
 kubectl -n media exec deploy/deluge -- python3 -c '
 import json, pickle, sys
 sys.path.insert(0, "/lsiopy/lib/python3.12/site-packages")
+from deluge.config import find_json_objects
 from deluge.core.torrentmanager import TorrentState, TorrentManagerState
 state = pickle.load(open("/config/state/torrents.state", "rb"))
 raw = open("/config/label.conf").read()
-dec, objs, i = json.JSONDecoder(), [], 0
-while i < len(raw):
-    while i < len(raw) and raw[i].isspace(): i += 1
-    if i >= len(raw): break
-    o, i = dec.raw_decode(raw, i); objs.append(o)
-labels = objs[-1]["torrent_labels"]
+start, end = find_json_objects(raw)[-1]
+labels = json.loads(raw[start:end])["torrent_labels"]
 bad = [t.torrent_id for t in state.torrents
        if labels.get(t.torrent_id) in ("tv", "movies") and t.move_completed]
 print("armed:", len(bad), bad)'

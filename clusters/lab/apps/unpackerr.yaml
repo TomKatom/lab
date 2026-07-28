@@ -4,7 +4,6 @@
 # Ingress, no PVC. See ./README.md for the /data mount table and sync waves
 # this file follows.
 #
-#
 # It extracts beside the archive and leaves the archive alone, so the
 # torrent keeps seeding intact and the *arr imports the extracted file.
 # That only works while the paths below are the same directories the

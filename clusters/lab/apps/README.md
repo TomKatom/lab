@@ -142,7 +142,9 @@ manifests point here rather than each restating a third of it.
 │   ├── movies/                   ← radarr tells deluge to download here
 │   ├── books/{audiobooks,ebooks,comics}/
 │   ├── games/                    added by hand; the deluge label
-│   └── programs/                 files these on completion
+│   ├── programs/                 files these on completion
+│   └── music/                    no label left (it had none attached);
+│                                 pre-existing seeds only
 ├── torrents-final/               .torrent copies (copy_torrent_file)
 ├── media/                        the Plex libraries, read-only to plex
 │   ├── tv/                       ← sonarr root folder
@@ -150,6 +152,13 @@ manifests point here rather than each restating a third of it.
 ├── .recyclebin/{sonarr,radarr}/  deleted media, kept 7 days
 └── backups/{sonarr,radarr}/      the *arrs' own scheduled backups
 ```
+
+`torrents/`, `torrents-final/`, `media/` and `.recyclebin/{sonarr,radarr}/`
+are created by `ansible/roles/virtiofs` rather than by whatever happens to
+touch them first — the two `.recyclebin` leaves in particular, because
+Sonarr's and Radarr's `PUT /api/v3/config/mediamanagement` validates that
+`recycleBin` already exists and rejects the whole call if it does not.
+Everything below `torrents/` is created by Deluge on demand.
 
 A grab makes exactly one trip:
 

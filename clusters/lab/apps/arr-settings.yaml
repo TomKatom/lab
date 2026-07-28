@@ -75,6 +75,12 @@ spec:
                 # from the arr-api-keys Secret — the same four bindings
                 # Recyclarr uses, read here by name from os.environ.
                 env:
+                  # Python block-buffers stdout when it is a pipe, so
+                  # without this the FAILED lines (stderr, unbuffered)
+                  # surface in `kubectl logs` *before* the per-instance
+                  # output they refer to, and a run killed mid-request
+                  # logs nothing at all.
+                  PYTHONUNBUFFERED: "1"
                   SONARR_URL:
                     valueFrom:
                       configMapKeyRef:

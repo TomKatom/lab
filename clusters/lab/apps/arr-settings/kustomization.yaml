@@ -1,5 +1,12 @@
+# Plain config, no ksops — CI genuinely runs `kustomize build` on this
+# directory (see ../README.md "Kustomize `-config` dirs").
+#
+# No `configMapGenerator`: a generated ConfigMap gets a content-hash name
+# suffix, and ../arr-settings.yaml mounts this one by a fixed name.
+#
+# No `namespace:` transformer: the resource here already carries its own.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: media
+
 resources:
   - configmap-arr-settings.yaml
