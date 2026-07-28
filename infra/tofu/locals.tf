@@ -43,30 +43,17 @@ locals {
   # every name here is new, lives under the `lab.` label, and has never
   # resolved to anything — so creating them can't disturb the cutover.
   mgmt_dns_domain = "${local.lab.management_subdomain}.${local.lab.domain}"
-  dns_mgmt_records = merge(
-    {
-      for host in local.lab.management_hosts : host.name => {
-        name = "${host.name}.${local.mgmt_dns_domain}"
-        # `address` is a key into config/lab.yml's `network` map; the /CIDR
-        # some of those carry (vmbr1_host_address) is a host-interface fact,
-        # not part of the record.
-        content = split("/", local.lab.network[host.address])[0]
-        comment = "Managed by OpenTofu - internal management endpoint (WireGuard-only)"
-      }
-    },
-    {
-      # The odd one out: the tunnel endpoint has to resolve *before* a
-      # tunnel exists, so it points at the public IP rather than an internal
-      # address. It duplicates dns_a_records' `vpn.${domain}` on purpose —
-      # that record still belongs to the old server until the manage_dns
-      # cutover, and this one lets a peer config name its endpoint today
-      # instead of hardcoding the OVH IP. Retire it in favour of
-      # `vpn.${domain}` once the cutover lands.
-      vpn = {
-        name    = "vpn.${local.mgmt_dns_domain}"
-        content = var.ovh_public_ip
-        comment = "Managed by OpenTofu - WireGuard endpoint"
-      }
+  dns_mgmt_records = {
+    for host in local.lab.management_hosts : host.name => {
+      name = "${host.name}.${local.mgmt_dns_domain}"
+      # `address` is a key into config/lab.yml's `network` map; the /CIDR
+      # some of those carry (vmbr1_host_address) is a host-interface fact,
+      # not part of the record.
+      content = split("/", local.lab.network[host.address])[0]
+      comment = "Managed by OpenTofu - internal management endpoint (WireGuard-only)"
     }
-  )
+  }
+  # `vpn.${mgmt_dns_domain}` (the duplicate tunnel-endpoint record) retired
+  # here: the DNS cutover flip landed `vpn.${domain}` for real (see
+  # docs/runbooks/dns-cutover.md), so peer configs point there now instead.
 }

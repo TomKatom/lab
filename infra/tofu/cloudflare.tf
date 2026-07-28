@@ -71,18 +71,22 @@ resource "cloudflare_dns_record" "records" {
 
 # Management endpoints by name (config/lab.yml `management_hosts`): grey-cloud
 # A records under `<management_subdomain>.<domain>` pointing at the RFC1918
-# addresses of the host and the guests, plus a `vpn.` name for the tunnel
-# endpoint itself. Publishing private targets in a public zone is the
-# deliberate trade: no split-horizon resolver to run or keep alive, the names
-# work from any device, and they can hold real certificates later — at the
-# cost of disclosing the internal layout (RFC1918 addresses that are useless
-# without a tunnel) and of tripping DNS-rebinding filters on the occasional
-# resolver that strips private answers from public domains.
+# addresses of the host and the guests. Publishing private targets in a
+# public zone is the deliberate trade: no split-horizon resolver to run or
+# keep alive, the names work from any device, and they can hold real
+# certificates later — at the cost of disclosing the internal layout
+# (RFC1918 addresses that are useless without a tunnel) and of tripping
+# DNS-rebinding filters on the occasional resolver that strips private
+# answers from public domains.
 #
 # Ungated by `manage_dns` unlike the records above — see locals.tf's
 # `dns_mgmt_records` for why that's safe pre-cutover. These do need the
 # Cloudflare token to actually carry Zone:DNS:Edit on this zone, which the
 # gated records have so far let us defer proving.
+#
+# The duplicate `vpn.<management_subdomain>.<domain>` tunnel-endpoint record
+# that used to live here has been retired now that the gated `vpn.<domain>`
+# record above is live — see docs/runbooks/dns-cutover.md.
 resource "cloudflare_dns_record" "management" {
   for_each = local.dns_mgmt_records
 
