@@ -129,6 +129,77 @@ Mount rules:
   `maintainerr` and `homepage` never mount `/data` — none of them touch
   files, only APIs.
 
+## The `/data` path contract
+
+The section above says every app sees the same filesystem. This one says
+what lives where in it, and it is the single description of that — three
+manifests point here rather than each restating a third of it.
+
+```
+/data
+├── torrents/                     seeding copies, never read by Plex
+│   ├── tv/                       ← sonarr tells deluge to download here
+│   ├── movies/                   ← radarr tells deluge to download here
+│   ├── books/{audiobooks,ebooks,comics}/
+│   ├── games/                    added by hand; the deluge label
+│   ├── programs/                 files these on completion
+│   └── music/                    no label left (it had none attached);
+│                                 pre-existing seeds only
+├── torrents-final/               .torrent copies (copy_torrent_file)
+├── media/                        the Plex libraries, read-only to plex
+│   ├── tv/                       ← sonarr root folder
+│   └── movies/                   ← radarr root folder
+├── .recyclebin/{sonarr,radarr}/  deleted media, kept 7 days
+└── backups/{sonarr,radarr}/      the *arrs' own scheduled backups
+```
+
+`torrents/`, `torrents-final/`, `media/` and `.recyclebin/{sonarr,radarr}/`
+are created by `ansible/roles/virtiofs` rather than by whatever happens to
+touch them first — the two `.recyclebin` leaves in particular, because
+Sonarr's and Radarr's `PUT /api/v3/config/mediamanagement` validates that
+`recycleBin` already exists and rejects the whole call if it does not.
+Everything below `torrents/` is created by Deluge on demand.
+
+A grab makes exactly one trip:
+
+1. Sonarr/Radarr send the `.torrent` to Deluge's JSON-RPC with two extra
+   things: a **category** (`tv` / `movies`) and a **download directory**
+   (`/data/torrents/tv` / `/data/torrents/movies`).
+2. Deluge downloads it there, in place. There is no incomplete directory,
+   no blackhole directory, and no move on completion.
+3. On completion the `*arr` imports by **hardlinking** into
+   `/data/media/...` under its naming scheme. One inode, two names, no
+   second copy of the bytes.
+4. Deluge keeps seeding the original name forever. Plex reads
+   `/data/media` and never sees a torrent.
+
+Three files have to agree for that to hold, and they are edited together:
+
+| End of the contract | Declared in |
+|---|---|
+| category name, and where a labelled torrent is filed | `deluge.yaml` → `label.conf` |
+| category to send, and the directory to download into | `arr-settings/` → `downloadDirectory` |
+| where to look for archives to extract | `unpackerr.yaml` → `UN_*_PATHS_0` |
+
+Two consequences that are easy to get wrong:
+
+- **`tv` and `movies` must not carry `apply_move_completed`.** The `*arr`
+  already passed the final directory, so a label move would relocate data
+  the `*arr` is mid-import on. Deluge reports `is_finished` before
+  `storage_moved_alert`, so the import looks for files at a path the move
+  has just emptied — that is the "import failed, retrying" loop, and it is
+  a configuration bug rather than bad luck. Every other label *does* move
+  on completion, because those torrents are added by hand with no client
+  to pass a directory and would otherwise pile up at `/data/torrents`.
+- **Nothing upstream deletes a torrent.** Deleting a series in Sonarr, or
+  a Maintainerr retention rule firing, unlinks under `/data/media` and
+  stops there — the `*arr`s only reach `core.remove_torrent` from *queue*
+  operations, and Maintainerr's download-client cleanup is qBittorrent-only.
+  So deleting media frees no space while the torrent still holds the inode,
+  and pruning seeds is a deliberate act in Deluge. That is the correct
+  default for private trackers: automatic removal keyed to library churn is
+  how hit-and-runs happen.
+
 ## Ingress: chart-rendered, not a `-config` dir
 
 Unlike `platform/`, where every Ingress-bearing CR lives in a component's
@@ -353,10 +424,12 @@ kustomize-source Application (mirroring `authelia-config.yaml`'s shape)
 only exists where there's:
 
 - **Multi-file plain config with no ksops Secret to decrypt** —
-  `recyclarr-config` (a `recyclarr.yml` ConfigMap) and `homepage-config`
-  (Homepage's own config-as-code ConfigMaps). CI's kustomize-build step
-  actually builds and validates these, since it only skips a directory
-  when it can detect a ksops `SecretGenerator` inside it.
+  `recyclarr-config` (a `recyclarr.yml` ConfigMap), `homepage-config`
+  (Homepage's own config-as-code ConfigMaps) and `arr-settings-config`
+  (the Sonarr/Radarr setting specs plus the script that applies them).
+  CI's kustomize-build step actually builds and validates these, since it
+  only skips a directory when it can detect a ksops `SecretGenerator`
+  inside it.
 - **A ksops Secret to decrypt** — `media-common`, the one directory in
   this stack that CI's kustomize step deliberately skips building (no
   `SOPS_AGE_KEY` in that job), the same way every platform `-config`
@@ -398,14 +471,14 @@ on one of those six and the check quietly passes against **production**.
 kubectl -n argocd get applications
 # every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
 # flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
-# seerr, maintainerr, homepage(+-config)
+# seerr, maintainerr, homepage(+-config), arr-settings(+-config)
 
 kubectl -n media get pods
 ```
 
-Every Deployment pod reads `1/1 Running`. Recyclarr is a CronJob, so it
-appears only as `Completed` Job pods (or not at all between runs) — that is
-correct, not a missing app.
+Every Deployment pod reads `1/1 Running`. Recyclarr and arr-settings are
+CronJobs, so they appear only as `Completed` Job pods (or not at all
+between runs) — that is correct, not a missing app.
 
 ### 2. Auth boundary: seven protected hosts, two that must not be
 

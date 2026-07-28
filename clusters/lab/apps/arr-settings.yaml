@@ -1,0 +1,131 @@
+# arr-settings — pushes the Sonarr/Radarr settings declared in
+# ./arr-settings/ into the two apps on a schedule. A CronJob, not a
+# Deployment: it reconciles and exits, with nothing to serve in between —
+# no Service, no Ingress, no PVC. Same shape and the same reasoning as
+# ./recyclarr.yaml, which owns the quality half of the same two APIs.
+#
+# Wave 2, one wave after ./arr-settings-config.yaml, so the ConfigMap it
+# mounts at /spec already exists when the first Job Pod starts.
+#
+# It never mounts /data — it only talks to the two *arr APIs (./README.md
+# "The /data mount"). The paths it writes are strings as far as this pod is
+# concerned; the *arrs are the ones that have to be able to reach them.
+#
+# Hourly rather than daily, unlike Recyclarr: this carries the download
+# path and the Deluge category, so drift here breaks imports rather than
+# degrading quality scores, and an hour is how long a hand-edit in the UI
+# gets to survive. A run that finds nothing to do is a handful of GETs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arr-settings
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            type: cronjob
+            cronjob:
+              # UTC — a CronJob's schedule is evaluated by the cluster's
+              # controller-manager, not inside the Pod, so media-env's TZ
+              # moves the log timestamps and nothing else. Same note as
+              # ./recyclarr.yaml; on the hour there is no local-time
+              # question to answer anyway.
+              schedule: "0 * * * *"
+              # Two concurrent runs would PUT the same resources at the
+              # same time. Nothing here is destructive enough for that to
+              # corrupt anything, but the second run's read would race the
+              # first run's write and report phantom drift.
+              concurrencyPolicy: Forbid
+              successfulJobsHistory: 1
+              failedJobsHistory: 3
+              # A settings push either works or is wrong; six retries just
+              # delays a red Job by half an hour. One retry covers an *arr
+              # that happens to be restarting.
+              backoffLimit: 1
+            containers:
+              app:
+                image:
+                  repository: docker.io/library/python
+                  # renovate: datasource=docker depName=docker.io/library/python
+                  tag: "3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0"
+                # Stdlib only — urllib and json. Nothing is installed at
+                # runtime, so this has no network dependency beyond the two
+                # ClusterIPs it talks to.
+                command: ["python3", "/spec/apply.py"]
+                # Both halves of both connections come from media-common:
+                # the addresses from the media-urls ConfigMap, the keys
+                # from the arr-api-keys Secret — the same four bindings
+                # Recyclarr uses, read here by name from os.environ.
+                env:
+                  # Python block-buffers stdout when it is a pipe, so
+                  # without this the FAILED lines (stderr, unbuffered)
+                  # surface in `kubectl logs` *before* the per-instance
+                  # output they refer to, and a run killed mid-request
+                  # logs nothing at all.
+                  PYTHONUNBUFFERED: "1"
+                  SONARR_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SONARR_URL
+                  SONARR_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                  RADARR_URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: RADARR_URL
+                  RADARR_API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: RADARR_API_KEY
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                # A dozen HTTP round trips against two local ClusterIPs.
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    memory: 128Mi
+        persistence:
+          spec:
+            type: configMap
+            name: arr-settings
+            globalMounts:
+              - path: /spec
+                readOnly: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

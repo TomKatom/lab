@@ -1,0 +1,403 @@
+# The Sonarr/Radarr settings this repo owns, and the script that pushes
+# them in. Mounted read-only at /spec by ../arr-settings.yaml (wave 2, one
+# wave after this overlay's own Application) — see ../README.md
+# "Kustomize `-config` dirs".
+#
+# ## Why this exists
+#
+# Everything else in `media` is declared in git; the two *arrs were the
+# hole. Their settings live in a SQLite database inside a PVC, which meant
+# the download path, the Deluge category, the naming scheme and the
+# hardlink switch — the settings that decide whether the whole pipeline
+# works — existed nowhere reviewable and survived only as long as the
+# volume did. Recyclarr already owns quality profiles, custom formats and
+# quality definitions by exactly this mechanism (a CronJob talking to the
+# same two APIs); this covers the rest of the surface, and deliberately
+# stops where Recyclarr starts.
+#
+# ## What it does not own
+#
+# The Deluge WebUI password on the download client. The API masks it as
+# `********` on read, and Sonarr's SchemaBuilder.ReadFromSchema restores
+# the stored secret whenever that literal is submitted back — which is
+# what makes the read-modify-write below safe, but also means this can
+# never set it. The client must exist and authenticate before the applier
+# can manage its settings; it errors loudly rather than creating one.
+#
+# Indexers are Prowlarr's job (it pushes them into both apps), series and
+# movies are the users' job, and quality is Recyclarr's.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arr-settings
+  namespace: media
+data:
+  # ---------------------------------------------------------------------
+  # Sonarr
+  # ---------------------------------------------------------------------
+  #
+  # `naming` is the TRaSH Guides recommended scheme, copied verbatim from
+  # docs/json/sonarr/naming/sonarr-naming.json in TRaSH-Guides/Guides:
+  # `episodes.*.default` for the three formats, `series.plex-tvdb` for the
+  # folder (this stack serves Plex — the `[tvdbid-…]` bracket form in the
+  # same file is Jellyfin's, and Plex wants the `{tvdb-…}` brace form),
+  # `season.default` for the season folder.
+  #
+  # Two of those tokens are load-bearing rather than cosmetic:
+  # `{tvdb-{TvdbId}}` in the folder is what stops Plex guessing a match
+  # from a title string, and `{[Custom Formats]}` in the filename is what
+  # makes a release's Recyclarr-scored formats visible without opening the
+  # UI. `enableMediaInfo` below has to stay true or the MediaInfo tokens
+  # render empty.
+  #
+  # multiEpisodeStyle 5 is PrefixedRange and colonReplacementFormat 4 is
+  # Smart (NzbDrone.Core/Organizer/FileNameBuilder.cs) — both are ints in
+  # Sonarr's API, unlike Radarr's string form below.
+  #
+  # `mediaManagement` states only what the pipeline depends on:
+  # copyUsingHardlinks is the whole reason /data is one filesystem
+  # (../README.md "The /data mount").
+  #
+  # downloadPropersAndRepacks is deliberately absent, even though it is a
+  # pipeline setting: ../recyclarr/configmap-recyclarr.yaml already owns it
+  # as `media_management.propers_and_repacks: do_not_prefer` (repacks are
+  # scored through TRaSH's [Required] Repack/Proper custom formats, and the
+  # two mechanisms fight if both are on). Declaring it here too would be
+  # two declarations of one fact with nothing cross-validating them, so
+  # Recyclarr keeps it — the same boundary this file draws everywhere else.
+  #
+  # recycleBin is a deliberate addition: Maintainerr deletes through this
+  # API on a schedule, and a misjudged retention rule is otherwise
+  # unrecoverable. Files land in /data/.recyclebin/sonarr for 7 days. It
+  # costs almost no disk in practice — a deleted episode that is still
+  # seeding shares its inode with the torrent, so the bytes were never
+  # going to come back until the torrent goes too.
+  #
+  # Both recycleBin paths must exist before this runs: the API validates
+  # them with PathExistsValidator/FolderWritableValidator and 400s the
+  # whole mediaManagement call otherwise. ansible/roles/virtiofs creates
+  # them alongside /data/torrents and /data/media.
+  #
+  # `downloadDirectory` is the half of the path contract that lives on
+  # this side. Sonarr passes it to Deluge at add time, so the torrent
+  # downloads straight into /data/torrents/tv and is never moved
+  # afterwards — which is why ../deluge.yaml's `tv` label has
+  # apply_move_completed false. The two must change together.
+  #
+  # tvImportedCategory stays empty on purpose. Re-labelling after import
+  # would buy a filter in the Deluge UI and cost a second label whose
+  # move settings would have to be kept in sync with `tv`'s; and its other
+  # documented effect (Sonarr will not remove torrents in that category)
+  # is already unconditional here, because stop_seed_at_ratio is false and
+  # a permaseed never reports finished seeding.
+  sonarr.json: |
+    {
+      "naming": {
+        "renameEpisodes": true,
+        "replaceIllegalCharacters": true,
+        "colonReplacementFormat": 4,
+        "multiEpisodeStyle": 5,
+        "standardEpisodeFormat": "{Series CleanTitleWithoutYear} {(Series Year)} - S{season:00}E{episode:00} - {Episode CleanTitle:90} {[Custom Formats]}{[Quality Full]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo VideoCodec]}{-Release Group}",
+        "dailyEpisodeFormat": "{Series CleanTitleWithoutYear} {(Series Year)} - {Air-Date} - {Episode CleanTitle:90} {[Custom Formats]}{[Quality Full]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo VideoCodec]}{-Release Group}",
+        "animeEpisodeFormat": "{Series CleanTitleWithoutYear} {(Series Year)} - S{season:00}E{episode:00} - {absolute:000} - {Episode CleanTitle:90} {[Custom Formats]}{[Quality Full]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{MediaInfo AudioLanguages}{[MediaInfo VideoDynamicRangeType]}[{Mediainfo VideoCodec }{MediaInfo VideoBitDepth}bit]{-Release Group}",
+        "seriesFolderFormat": "{Series CleanTitleWithoutYear} {(Series Year)} {tvdb-{TvdbId}}",
+        "seasonFolderFormat": "Season {season:00}",
+        "specialsFolderFormat": "Specials"
+      },
+      "mediaManagement": {
+        "copyUsingHardlinks": true,
+        "enableMediaInfo": true,
+        "importExtraFiles": true,
+        "extraFileExtensions": "srt,sub,idx,ass,ssa",
+        "deleteEmptyFolders": true,
+        "rescanAfterRefresh": "always",
+        "setPermissionsLinux": false,
+        "skipFreeSpaceCheckWhenImporting": false,
+        "minimumFreeSpaceWhenImporting": 100,
+        "recycleBin": "/data/.recyclebin/sonarr",
+        "recycleBinCleanupDays": 7
+      },
+      "rootFolders": ["/data/media/tv"],
+      "downloadClients": [
+        {
+          "name": "Deluge",
+          "enable": true,
+          "removeCompletedDownloads": true,
+          "removeFailedDownloads": true,
+          "fields": {
+            "tvCategory": "tv",
+            "tvImportedCategory": "",
+            "downloadDirectory": "/data/torrents/tv",
+            "completedDirectory": "",
+            "addPaused": false
+          }
+        }
+      ]
+    }
+  # ---------------------------------------------------------------------
+  # Radarr
+  # ---------------------------------------------------------------------
+  #
+  # Same sources, same reasoning; `file.plex-imdb` and `folder.plex-imdb`
+  # from docs/json/radarr/naming/radarr-naming.json. IMDb rather than TMDb
+  # because Plex's movie agent keys on it most reliably, and the brace
+  # form again rather than Jellyfin's brackets.
+  #
+  # colonReplacementFormat is a string here — Radarr serialises the enum
+  # by name where Sonarr sends the int. Same "Smart" value either way.
+  #
+  # autoRenameFolders is the one setting that differs in kind from
+  # Sonarr's list: with it on, Radarr reconciles an existing movie folder
+  # to movieFolderFormat on refresh instead of leaving whatever the folder
+  # was called when it was added. That is what makes the format above
+  # authoritative rather than aspirational — without it the declared
+  # scheme only applies to movies added from now on. Sonarr has no
+  # equivalent, which is why its existing series folders need the one-time
+  # editor move in the migration runbook.
+  radarr.json: |
+    {
+      "naming": {
+        "renameMovies": true,
+        "replaceIllegalCharacters": true,
+        "colonReplacementFormat": "smart",
+        "standardMovieFormat": "{Movie CleanTitle} {(Release Year)} {imdb-{ImdbId}} - {edition-{Edition Tags}} {[MediaInfo 3D]}{[Custom Formats]}{[Quality Full]}{[Mediainfo AudioCodec}{ Mediainfo AudioChannels]}{[MediaInfo VideoDynamicRangeType]}{[Mediainfo VideoCodec]}{-Release Group}",
+        "movieFolderFormat": "{Movie CleanTitle} ({Release Year}) {imdb-{ImdbId}}"
+      },
+      "mediaManagement": {
+        "copyUsingHardlinks": true,
+        "enableMediaInfo": true,
+        "importExtraFiles": true,
+        "extraFileExtensions": "srt,sub,idx,ass,ssa",
+        "deleteEmptyFolders": true,
+        "rescanAfterRefresh": "always",
+        "autoRenameFolders": true,
+        "setPermissionsLinux": false,
+        "skipFreeSpaceCheckWhenImporting": false,
+        "minimumFreeSpaceWhenImporting": 100,
+        "recycleBin": "/data/.recyclebin/radarr",
+        "recycleBinCleanupDays": 7
+      },
+      "rootFolders": ["/data/media/movies"],
+      "downloadClients": [
+        {
+          "name": "Deluge",
+          "enable": true,
+          "removeCompletedDownloads": true,
+          "removeFailedDownloads": true,
+          "fields": {
+            "movieCategory": "movies",
+            "movieImportedCategory": "",
+            "downloadDirectory": "/data/torrents/movies",
+            "completedDirectory": "",
+            "addPaused": false
+          }
+        }
+      ]
+    }
+  # ---------------------------------------------------------------------
+  # The applier
+  # ---------------------------------------------------------------------
+  #
+  # Reconciles, rather than applies: every resource is read first and
+  # written only on drift, so a run that changes nothing prints what it
+  # checked and exits 0 without touching either database. That is what
+  # makes it safe to run on a schedule against a live pipeline.
+  #
+  # It is deliberately narrow. It never creates a download client, never
+  # deletes anything, and never writes a key the spec above does not name
+  # — everything else in the two configs stays whatever the UI last set
+  # it to. An unknown key or an unknown client field is an error, not a
+  # silent no-op, because both are typos that would otherwise look like a
+  # successful run.
+  #
+  # Errors are per-resource, not per-run. Each of the four reconcilers runs
+  # in its own try, and each instance in its own loop iteration, so one bad
+  # setting reports itself and the other three still converge — the run
+  # still exits 1 and still prints FAILED, it just stops one 400 on Sonarr
+  # from silently leaving Radarr and the whole download-client half of the
+  # path contract unapplied.
+  #
+  # DRY_RUN=1 prints the diff and writes nothing; the migration runbook
+  # uses it for the pre-flight.
+  apply.py: |
+    """Reconcile Sonarr/Radarr settings from the declared JSON specs."""
+
+    import json
+    import os
+    import sys
+    import urllib.error
+    import urllib.request
+
+    SPEC_DIR = "/spec"
+    DRY_RUN = os.environ.get("DRY_RUN", "") not in ("", "0", "false")
+
+    INSTANCES = (
+        ("sonarr", "SONARR_URL", "SONARR_API_KEY"),
+        ("radarr", "RADARR_URL", "RADARR_API_KEY"),
+    )
+
+    changed = 0
+    failed = []
+
+
+    class SpecError(Exception):
+        """The declared spec does not match this *arr's schema."""
+
+
+    def api(base, key, path, method="GET", payload=None):
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            base.rstrip("/") + "/api/v3" + path,
+            data=body,
+            method=method,
+            headers={
+                "X-Api-Key": key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+        return json.loads(raw) if raw else None
+
+
+    def drift(current, desired):
+        """Keys in desired whose value differs from current."""
+        return {k: v for k, v in desired.items() if current.get(k) != v}
+
+
+    def reconcile_config(name, base, key, path, desired):
+        if not desired:
+            return
+        current = api(base, key, path)
+        unknown = sorted(set(desired) - set(current))
+        if unknown:
+            raise SpecError(
+                "%s%s: unknown setting(s) %s — not in this version's schema"
+                % (name, path, ", ".join(unknown))
+            )
+        delta = drift(current, desired)
+        if not delta:
+            print("  %s: in sync (%d settings checked)" % (path, len(desired)))
+            return
+        for k, v in sorted(delta.items()):
+            print("  %s: %s %r -> %r" % (path, k, current.get(k), v))
+        if not DRY_RUN:
+            api(base, key, path, "PUT", {**current, **desired})
+        global changed
+        changed += 1
+
+
+    def reconcile_root_folders(name, base, key, desired):
+        current = {folder["path"] for folder in api(base, key, "/rootfolder")}
+        for path in desired:
+            if path in current:
+                print("  /rootfolder: %s present" % path)
+                continue
+            print("  /rootfolder: adding %s" % path)
+            if not DRY_RUN:
+                api(base, key, "/rootfolder", "POST", {"path": path})
+            global changed
+            changed += 1
+
+
+    def reconcile_download_clients(name, base, key, desired_clients):
+        current = api(base, key, "/downloadclient")
+        by_name = {client["name"]: client for client in current}
+        for spec in desired_clients:
+            client = by_name.get(spec["name"])
+            if client is None:
+                raise SpecError(
+                    "%s: download client %r does not exist. This applier owns "
+                    "its settings, not its credential — create it in the UI "
+                    "first (its password cannot be set through here)."
+                    % (name, spec["name"])
+                )
+
+            updated = json.loads(json.dumps(client))
+            top = {k: v for k, v in spec.items() if k not in ("name", "fields")}
+            for k, v in top.items():
+                if k not in updated:
+                    raise SpecError(
+                        "%s: download client %r has no property %r"
+                        % (name, spec["name"], k)
+                    )
+                updated[k] = v
+
+            fields = {field["name"]: field for field in updated["fields"]}
+            for k, v in spec.get("fields", {}).items():
+                if k not in fields:
+                    raise SpecError(
+                        "%s: download client %r has no field %r — check the "
+                        "spelling against GET /api/v3/downloadclient"
+                        % (name, spec["name"], k)
+                    )
+                # An unset optional field is absent rather than empty, so an
+                # empty string in the spec means "leave it unset".
+                if v == "" and "value" not in fields[k]:
+                    continue
+                fields[k]["value"] = v
+
+            if updated == client:
+                print("  /downloadclient/%s: in sync" % spec["name"])
+                continue
+            print("  /downloadclient/%s: updating" % spec["name"])
+            for field in updated["fields"]:
+                was = next(
+                    (f.get("value") for f in client["fields"] if f["name"] == field["name"]),
+                    None,
+                )
+                if field.get("value") != was:
+                    print("      %s %r -> %r" % (field["name"], was, field.get("value")))
+            for k, v in top.items():
+                if client.get(k) != v:
+                    print("      %s %r -> %r" % (k, client.get(k), v))
+            if not DRY_RUN:
+                api(base, key, "/downloadclient/%d" % updated["id"], "PUT", updated)
+            global changed
+            changed += 1
+
+
+    if DRY_RUN:
+        print("DRY_RUN — reporting drift, writing nothing\n")
+
+    for name, url_env, key_env in INSTANCES:
+        spec_path = os.path.join(SPEC_DIR, name + ".json")
+        if not os.path.exists(spec_path):
+            continue
+        with open(spec_path, encoding="utf-8") as handle:
+            spec = json.load(handle)
+
+        base, key = os.environ[url_env], os.environ[key_env]
+        print("%s (%s)" % (name, base))
+        for reconcile in (
+            lambda: reconcile_config(
+                name, base, key, "/config/naming", spec.get("naming", {})
+            ),
+            lambda: reconcile_config(
+                name, base, key, "/config/mediamanagement", spec.get("mediaManagement", {})
+            ),
+            lambda: reconcile_root_folders(name, base, key, spec.get("rootFolders", [])),
+            lambda: reconcile_download_clients(
+                name, base, key, spec.get("downloadClients", [])
+            ),
+        ):
+            try:
+                reconcile()
+            except urllib.error.HTTPError as error:
+                failed.append(
+                    "%s: HTTP %s %s" % (name, error.code, error.read()[:400])
+                )
+            except urllib.error.URLError as error:
+                failed.append("%s: unreachable (%s)" % (name, error.reason))
+                break
+            except SpecError as error:
+                failed.append(str(error))
+        print()
+
+    if failed:
+        for line in failed:
+            print("FAILED " + line, file=sys.stderr)
+        raise SystemExit(1)
+
+    print("%d resource(s) %s" % (changed, "would change" if DRY_RUN else "changed"))

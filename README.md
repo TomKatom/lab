@@ -38,6 +38,13 @@ media files, `*arr` databases, Plex identity, Deluge's session — is
 operator work still in progress**, per
 [`docs/runbooks/media-migration.md`](docs/runbooks/media-migration.md).
 
+How a grab becomes a Plex file — the download directory, the Deluge label
+and the `*arr` category that have to agree for hardlinked imports to work —
+is declared in git and described once, in
+[`clusters/lab/apps/README.md`](clusters/lab/apps/README.md#the-data-path-contract).
+Moving an existing library onto it is
+[`docs/runbooks/deluge-arr-path-contract.md`](docs/runbooks/deluge-arr-path-contract.md).
+
 Two things are deliberately still pending:
 
 - **Public DNS has not moved.** `tomkatom.com` and the `sonarr./radarr./

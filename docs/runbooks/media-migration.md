@@ -1182,19 +1182,29 @@ restore is not independent of the cutover sequence.
    path handling goes wrong. Do not restore *from* it without first
    checking how old it is (`ssh old 'ls -la /srv/deluge/config-backup'`) —
    a stale `state/` re-adds torrents that have since been removed.
-3. **Before scaling Deluge back up**, edit the copied `core.conf` in place
-   on the VM:
+3. **No `core.conf` edit is needed any more.**
+   `clusters/lab/apps/deluge.yaml` declares that file in full and its
+   init container renders it onto the PVC — overwriting whatever step 2
+   copied — before deluged starts. That includes:
 
    ```json
    "listen_ports": [51413, 51413],
    "random_port": false,
    ```
 
-   This is the port-preserving NAT contract the whole single-IP model
-   depends on — `config/lab.yml`'s `ports.torrent: 51413` is the single
-   source for both the Tofu firewall rule and the Ansible DNAT rule that
-   forward the public port here. Deluge picking a random port instead
-   silently breaks inbound connectability for every existing torrent.
+   the port-preserving NAT contract the whole single-IP model depends on:
+   `config/lab.yml`'s `ports.torrent: 51413` is the single source for both
+   the Tofu firewall rule and the Ansible DNAT rule that forward the public
+   port here, and Deluge picking a random port instead silently breaks
+   inbound connectability for every existing torrent. Verify it at step 7
+   rather than editing it here — a hand-edit is discarded on the next pod
+   start.
+
+   `label.conf` is the one file step 2 copies that is *not* replaced
+   wholesale: the init container merges the declared label definitions into
+   it and keeps its `torrent_labels` assignment map, so copying it across
+   is load-bearing. See
+   [`deluge-arr-path-contract.md`](deluge-arr-path-contract.md).
 4. **Paths:** if §2.3 already confirmed `/data/torrents/...`-style paths in
    the old `core.conf`, no further edit is needed — the mount is identical.
    **If it did not**, do **not** `sed` the `state/*.fastresume` files to fix

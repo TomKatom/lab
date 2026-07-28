@@ -12,9 +12,22 @@ virtiofs_owner: debian
 virtiofs_group: debian
 virtiofs_dir_mode: "2775"
 
-# One shared filesystem for both, not two separate mounts: the *arrs need
+# One shared filesystem for all of these, not separate mounts: the *arrs need
 # torrents and media to sit on the same filesystem so their import step can
 # hardlink instead of copy (see docs/architecture.md's "Single /data tree").
+#
+# The .recyclebin children are not cosmetic: Sonarr's and Radarr's
+# `PUT /api/v3/config/mediamanagement` runs PathExistsValidator and
+# FolderWritableValidator against `recycleBin`, so a path that does not
+# already exist makes the whole request 400 — and with it every other
+# mediaManagement setting in the same call. clusters/lab/apps/arr-settings/
+# declares those paths; this is what makes them real. Parents are listed
+# before their children so each one gets this role's owner/mode rather
+# than whatever implicit `mkdir -p` would leave behind.
 virtiofs_subdirs:
   - torrents
+  - torrents-final
   - media
+  - .recyclebin
+  - .recyclebin/sonarr
+  - .recyclebin/radarr
