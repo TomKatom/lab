@@ -11,7 +11,7 @@ cluster, in two independent flips:
    what it would write. This one is purely additive.
 
 Between the two there is one thing neither flip does for you: **deleting the
-old server's four hand-made `CNAME`s** (§6a). They are not in git, external-dns
+old server's five hand-made `CNAME`s** (§6a). They are not in git, external-dns
 cannot touch them, and while they exist it silently declines to create the
 records that replace them.
 
@@ -32,11 +32,19 @@ before you begin, the zone is shared and can change under you):
 | Name | Today | Serves |
 |---|---|---|
 | `tomkatom.com` | `A 94.75.211.144` | old server — **and, from flip 1 on, the cluster's Homepage** (see below) |
-| `sonarr` / `radarr` / `prowlarr` / `deluge` | `CNAME → tomkatom.com` | old server |
+| `sonarr` / `radarr` / `prowlarr` / `deluge` / `bazarr` | `CNAME → tomkatom.com` | old server |
+| `www` / `portainer` | `CNAME → tomkatom.com` | old server — neither has a cluster Ingress; see §8 |
 | `*.tomkatom.com` | **NXDOMAIN** | nothing — there is no wildcard *record* (the old server has a wildcard *certificate*, which is a different thing) |
-| `vpn` / `auth` / `bazarr` / `tautulli` / `maintainerr` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
+| `vpn` / `auth` / `tautulli` / `maintainerr` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
 | `*.lab.tomkatom.com` | `A` (internal addresses) | new server, WireGuard-only, already Tofu-managed and ungated |
 | `_externaldns.*` | **NXDOMAIN** | nothing — external-dns has written zero records since it was deployed |
+
+This table is enumerated from the zone, not assumed from the app list —
+`dig` every candidate name rather than trusting that "no Ingress yet" means
+"no record". `bazarr` is the name that catches this out: it has a healthy
+cluster Ingress today, so it is easy to assume it is NXDOMAIN like its
+siblings. It is not — it is a fifth hand-made `CNAME`, and §1/§6a exist
+because of it.
 
 `plex.tomkatom.com` is absent from that table on purpose: **Plex has no
 Ingress and needs no record at all.** Remote clients are brokered by
@@ -90,28 +98,32 @@ external-dns can be un-inerted on a zone it shares with a production server
 at all.
 
 So the only unconditional write external-dns has is a `Create` for a name
-with **no** record at all. Today that means the five cluster hosts nothing
-else claims — `auth.`, `bazarr.`, `tautulli.`, `maintainerr.` and
-`requests.`. That is what `--dry-run` is standing in for, and it is a
-timing guard (do not make new-server services resolve before you mean to),
-not a safety guard.
+with **no** record at all. Today that means the four cluster hosts nothing
+else claims — `auth.`, `tautulli.`, `maintainerr.` and `requests.`. That is
+what `--dry-run` is standing in for, and it is a timing guard (do not make
+new-server services resolve before you mean to), not a safety guard.
 
 The bare apex is **not** on that list, and is in the same position as the
-four `CNAME`s the corollary below describes rather than the five names
+five `CNAME`s the corollary below describes rather than the four names
 above it: a record external-dns does not own is already sitting there, so
 the `Create` is dropped. Tofu's apex record carries no ownership TXT
 either, which is why Homepage's host never appears in external-dns's output
 at all.
 
-**Corollary that shapes the whole procedure:** the four names the old server
-serves are already `CNAME`s, so external-dns will *never* adopt them — and,
-less obviously, **it will never *create* them either, for as long as those
-CNAMEs exist.** `appendTakenDNSNameChanges` drops the `Create` because a
-record it does not own is already sitting at the name; nothing is logged as
-refused, the host simply never appears. So the CNAMEs do not just survive
-the cutover, they suppress it for those four hosts. Deleting them by hand is
-therefore a required step of this runbook, not decommissioning cleanup —
-§6a.
+**Corollary that shapes the whole procedure:** five names the old server
+serves are already `CNAME`s to the apex — `sonarr.`, `radarr.`,
+`prowlarr.`, `deluge.` and `bazarr.` — so external-dns will *never* adopt
+them — and, less obviously, **it will never *create* them either, for as
+long as those CNAMEs exist.** `appendTakenDNSNameChanges` drops the
+`Create` because a record it does not own is already sitting at the name;
+nothing is logged as refused, the host simply never appears. So the CNAMEs
+do not just survive the cutover, they suppress it for those five hosts.
+Deleting them by hand is therefore a required step of this runbook, not
+decommissioning cleanup — §6a. This set of five was confirmed by
+enumerating every record actually in the zone (§4/§0), not assumed from the
+cluster's app list: `bazarr` has an Ingress like any other cluster host, so
+nothing about it *looks* different — only `dig` shows it is still one of
+the old server's CNAMEs.
 
 ---
 
@@ -294,25 +306,36 @@ written nothing.
 
 ## 6. Flip 2 — remove `--dry-run`
 
-### 6a. Pre-flight: free the four taken names
+### 6a. Pre-flight: free the five taken names
 
 **Do this before removing the flag, and only once the old server has
-stopped serving.** `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` are
-unowned `CNAME`s to the apex. External-dns will not create an A record at a
-name where a record it does not own already sits (§1), and it says nothing
-when it declines — so left in place, these four hosts would simply never
-appear on the new server's side of the zone, while every other host would.
-Nothing downstream would look broken; they would keep resolving to whatever
-the apex points at.
+stopped serving.** `sonarr.` `radarr.` `prowlarr.` `deluge.` and
+`bazarr.tomkatom.com` are unowned `CNAME`s to the apex. External-dns will
+not create an A record at a name where a record it does not own already
+sits (§1), and it says nothing when it declines — so left in place, these
+five hosts would simply never appear on the new server's side of the zone,
+while every other host would. Nothing downstream would look broken; they
+would keep resolving to whatever the apex points at. `bazarr` is the easy
+one to miss doing this by hand: it has a healthy cluster Ingress like every
+other app here, so nothing about *it* looks unusual — only the zone itself
+shows it is still a hand-made CNAME.
 
-They are also the only four this applies to. Every other cluster host had
-no record of its own before flip 1 (§0) and needs no preparation.
+These five are the cluster hosts with a suppressing record, and the only
+ones this step applies to. Every other cluster host had no record of its
+own before flip 1 (§0) and needs no preparation. Two more zone names are
+also unowned `CNAME`s to the apex — `www` and `portainer` — but neither has
+a cluster Ingress, so external-dns never wants them at all and this step
+does not gate anything for them: `portainer` is old-server management
+tooling with no cluster equivalent, so it is safe to delete in the same
+pass as the five below; `www` is left as an open operator decision, not
+something this step should resolve for you — see §8.
 
-Delete them by hand in the Cloudflare dashboard (`tomkatom.com` → DNS →
-Records → the four `CNAME` rows → Delete), or with the token from §4:
+Delete the five taken names by hand in the Cloudflare dashboard
+(`tomkatom.com` → DNS → Records → the five `CNAME` rows → Delete), or with
+the token from §4:
 
 ```sh
-for h in sonarr radarr prowlarr deluge; do
+for h in sonarr radarr prowlarr deluge bazarr; do
   ID=$(curl -s -H "Authorization: Bearer $CF_TOKEN" \
     "https://api.cloudflare.com/client/v4/zones/$ZONE/dns_records?type=CNAME&name=$h.tomkatom.com" \
     | jq -r '.result[0].id // empty')
@@ -322,32 +345,35 @@ for h in sonarr radarr prowlarr deluge; do
   echo "$h deleted"
 done
 
-for h in sonarr radarr prowlarr deluge; do
+for h in sonarr radarr prowlarr deluge bazarr; do
   printf '%-24s %s\n' "$h.tomkatom.com" \
     "$(dig +short CNAME "$h.tomkatom.com" | tr '\n' ' ')"
-done   # all four empty — no CNAME left at any of them
+done   # all five empty — no CNAME left at any of them
 ```
 
 ⚠ **Check the `CNAME`, not the address — `dig +short <host>` is useless
 here.** Flip 1 created Tofu's `*.tomkatom.com` A record (§5,
 `local.dns_a_records`'s `wildcard`), and a wildcard answers every name in
-the zone that has no record of its own. So the instant these four `CNAME`s
+the zone that has no record of its own. So the instant these five `CNAME`s
 are deleted the names keep resolving — to `145.239.3.55`, the right answer,
 via the wildcard. **There is no NXDOMAIN window**, nothing to schedule
-around, and equally nothing an address lookup can tell you: the four names
+around, and equally nothing an address lookup can tell you: the five names
 return the same IP before §6a, between §6a and §6b, and after external-dns
 has created real A records for them. Only the record *type* and the
-ownership TXT distinguish those states, which is what §7 checks.
+ownership TXT distinguish those states, which is what §7 checks. This is
+exactly why missing `bazarr` here is dangerous rather than merely wrong —
+a plain address lookup afterwards shows the right IP and nothing looks
+broken (§9 item 5).
 
 Do not "fix" a name by re-creating a CNAME at it — that puts the
 suppression straight back, silently.
 
 Confirmation that the gate has actually cleared, while still in dry-run:
-those four names now show up as would-creates where before they were absent
+those five names now show up as would-creates where before they were absent
 entirely.
 
 ```sh
-kubectl -n external-dns logs deploy/external-dns --tail=200 | grep -i 'sonarr\|radarr\|prowlarr\|deluge'
+kubectl -n external-dns logs deploy/external-dns --tail=200 | grep -i 'sonarr\|radarr\|prowlarr\|deluge\|bazarr'
 ```
 
 ### 6b. Remove the flag
@@ -405,10 +431,11 @@ done
 record of its own, so `dig +short <host> A` returns `145.239.3.55` whether
 external-dns created a record or silently declined to. A host with an
 address and **no** `_externaldns.a-` TXT is a create that did not happen —
-looking exactly like a working one from the outside. That is why the four
-that were CNAMEs until §6a get read here rather than by resolution: they
-must now be plain A records (`dig <host> A` shows `IN A`, not a CNAME chain)
-with an ownership TXT beside them, like every other row.
+looking exactly like a working one from the outside. That is why the five
+that were CNAMEs until §6a (`sonarr.`, `radarr.`, `prowlarr.`, `deluge.`,
+`bazarr.`) get read here rather than by resolution: they must now be plain
+A records (`dig <host> A` shows `IN A`, not a CNAME chain) with an
+ownership TXT beside them, like every other row.
 
 **Nothing else grew one.** Tofu's records must have no ownership TXT at all
 — that absence is the only thing keeping `policy: sync` off them, and it
@@ -429,7 +456,7 @@ Every line must show an empty value.
 
 **Diff the whole zone against the snapshot.** Re-run §4's `curl` into
 `~/tomkatom-zone-after.tsv` and `diff` them. The only new rows should be one
-A + one TXT per cluster host, the only removed rows §6a's four `CNAME`s, and
+A + one TXT per cluster host, the only removed rows §6a's five `CNAME`s, and
 the only changed row the apex's content. Anything else is unexplained and
 worth chasing before you walk away.
 
@@ -441,10 +468,24 @@ worth chasing before you walk away.
 
 ## 8. After the cutover
 
-- **The old server's four `CNAME`s are gone** — §6a deleted them, and
+- **The old server's five suppressing `CNAME`s are gone** — §6a deleted
+  `sonarr.`, `radarr.`, `prowlarr.`, `deluge.` and `bazarr.`, and
   external-dns now owns a plain A record at each of those names. Nothing is
   left on this zone that external-dns cannot see; if a future host is ever
   hand-created as a CNAME again, the same suppression comes back with it.
+- **`www` and `portainer` are a separate, smaller loose end.** Both were
+  also hand-made `CNAME`s to the apex (§0), but neither has a cluster
+  Ingress, so external-dns was never suppressed for them — §6a deletes
+  `portainer` in the same pass for cleanliness (old-server management
+  tooling with no cluster equivalent). `www` is left as an open operator
+  decision: once its `CNAME` is gone it follows the `*.tomkatom.com`
+  wildcard A record to `145.239.3.55`, and Traefik answers a bare 404
+  (today `www` serves the old server's front page) because nothing on this
+  cluster has an Ingress for that host. The wildcard certificate label
+  already covers `www.tomkatom.com` — no new SAN is needed for either
+  choice. Decide between adding `www.tomkatom.com` as a second host on
+  Homepage's Ingress (`clusters/lab/apps/homepage.yaml`) or accepting the
+  404.
 - **Retire `vpn.lab.tomkatom.com`** in favour of the now-live
   `vpn.tomkatom.com` (`infra/tofu/locals.tf` says so at the record's
   definition). WireGuard peer configs naming the old endpoint need updating
@@ -484,7 +525,7 @@ worth chasing before you walk away.
    rebuild by hand. This is why §4 is not optional.
 4. **A name the old server needs stopped resolving** — check for a duplicate
    apex A record first (§5a's trap); that is by far the most likely cause.
-5. **One of §6a's four names has no `_externaldns.a-` TXT** long after §6b
+5. **One of §6a's five names has no `_externaldns.a-` TXT** long after §6b
    merged — external-dns has not created it, and the wildcard is covering
    for the gap, so the name still resolves to the right address and nothing
    looks broken (§7). Check the logs for that host and confirm the `CNAME`
