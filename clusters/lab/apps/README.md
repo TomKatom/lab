@@ -379,10 +379,16 @@ whoami procedure: run it after the migration runbook's restores, after any
 to end.
 
 **Every check here is internal, over WireGuard.** Hostnames are resolved
-at the node with `curl --resolve`, never through public DNS — until
+at the node with `curl --resolve`, never through public DNS. Until
 [`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md)
-runs, every host below is NXDOMAIN publicly, and a check that "passes" by
-resolving publicly reached the **old server**, not this cluster.
+runs, **five of the names below already resolve publicly — every one of
+them to the old server**: the apex `tomkatom.com` (`A 94.75.211.144`) and
+the four hand-made `CNAME`s to it, `sonarr.` `radarr.` `prowlarr.`
+`deluge.`. The rest (`bazarr.` `tautulli.` `maintainerr.` `requests.`) are
+NXDOMAIN. So `--resolve` is not belt-and-braces on any line here: drop it
+on one of those five and the check quietly passes against **production**.
+`docs/runbooks/media-migration.md` §4 step 6 has the same table, and the
+`/etc/hosts` overrides to use when a browser is needed instead of `curl`.
 
 ### 1. Everything is Synced, Healthy and Running
 
@@ -424,10 +430,13 @@ only one that exercises the `tomkatom.com` SAN added to
 `platform/traefik/wildcard-certificate.yaml`, since every other host is
 covered by the wildcard.
 
-`--resolve` is doing more work on the apex line than anywhere else: until
-the cutover runs, `tomkatom.com` is the *one* name in this file that
-resolves publicly, and it resolves to the old server. Drop the flag there
-and the check quietly passes against production.
+`--resolve` is load-bearing on the apex line and on four of the seven
+above it — `sonarr.` `radarr.` `prowlarr.` `deluge.` are `CNAME`s to the
+apex, so until the cutover runs all five resolve publicly to the old
+server. Drop the flag on any of them and the check quietly passes against
+production — and the old server runs its own Traefik and Authelia
+(`media-migration.md` §2.1), so the response can look exactly like the one
+this check is asking for.
 
 ### 3. Hardlink proof (the master-plan acceptance)
 

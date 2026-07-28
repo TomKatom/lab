@@ -1,6 +1,7 @@
 # media-common — everything the media stack shares before any app of it
-# exists: the `media` namespace itself, the two ksops Secrets
-# (`arr-api-keys`, `telegram`) and the `media-env` ConfigMap.
+# exists: the `media` namespace itself, the three ksops Secrets
+# (`arr-api-keys`, `telegram`, `tautulli-credentials`) and the `media-env`
+# and `media-urls` ConfigMaps.
 #
 # Wave 0 within apps/ — first Application into the `media` namespace, so
 # CreateNamespace lives here and nowhere else in this directory, the same

@@ -19,9 +19,11 @@
 # docs/runbooks/media-migration.md §9 takes a copy of the restored config
 # directory before the first start.
 #
-# ⚠ This is the one Ingress in the stack with NO forward-auth annotation, and
-# that is deliberate — do not "fix" it. Every other host here is
-# admin-facing and sits behind Authelia, but requests.tomkatom.com is for
+# ⚠ This Ingress carries NO forward-auth annotation, and that is deliberate —
+# do not "fix" it. It is one of exactly two in this directory written that
+# way, ./homepage.yaml on the apex being the other, and both for the same
+# reason: every other host here is admin-facing and sits behind Authelia,
+# but requests.tomkatom.com is for
 # end users who have a Plex account and nothing else: Seerr's own login is
 # Plex OAuth, and it enforces it on every route that exposes anything.
 # Putting Authelia in front would mean every requester also needed an
@@ -32,9 +34,11 @@
 # ⚠ Because Plex OAuth is the whole perimeter here, `main.localLogin` must be
 # OFF. It ships `true` (server/lib/settings/index.ts at the pinned tag), which
 # leaves /api/v1/auth/local accepting an email and password — an unrate-limited
-# credential endpoint on the one host in this stack a stranger can reach. With
-# it false the route returns before touching the password path, so Plex OAuth
-# becomes the only way in and there is nothing left to spray.
+# credential endpoint on a host a stranger can reach. (The apex, ./homepage.yaml,
+# is the other stranger-reachable host, but it is static links and holds no
+# credential of any kind, so this is the only credential surface out there.)
+# With it false the route returns before touching the password path, so Plex
+# OAuth becomes the only way in and there is nothing left to spray.
 #
 # "Unrate-limited" is a property of this cluster, not an oversight: klipper
 # masquerades every external connection, so Traefik sees one source address

@@ -305,8 +305,8 @@ appear on the new server's side of the zone, while every other host would.
 Nothing downstream would look broken; they would keep resolving to whatever
 the apex points at.
 
-They are also the only four this applies to. Every other cluster host is
-NXDOMAIN (§0) and needs no preparation.
+They are also the only four this applies to. Every other cluster host had
+no record of its own before flip 1 (§0) and needs no preparation.
 
 Delete them by hand in the Cloudflare dashboard (`tomkatom.com` → DNS →
 Records → the four `CNAME` rows → Delete), or with the token from §4:
@@ -323,16 +323,24 @@ for h in sonarr radarr prowlarr deluge; do
 done
 
 for h in sonarr radarr prowlarr deluge; do
-  printf '%-24s %s\n' "$h.tomkatom.com" "$(dig +short "$h.tomkatom.com" | tr '\n' ' ')"
-done   # all four empty — NXDOMAIN
+  printf '%-24s %s\n' "$h.tomkatom.com" \
+    "$(dig +short CNAME "$h.tomkatom.com" | tr '\n' ' ')"
+done   # all four empty — no CNAME left at any of them
 ```
 
-**A NXDOMAIN window is expected and normal here**, from this delete until
-external-dns's first live sync after §6b lands. Those four are admin UIs,
-reachable over WireGuard against `10.10.10.10` throughout (the `curl
---resolve` form used everywhere in this repo), so the window costs nothing
-but do not be surprised by it — and do not "fix" it by re-creating a CNAME,
-which puts the suppression straight back.
+⚠ **Check the `CNAME`, not the address — `dig +short <host>` is useless
+here.** Flip 1 created Tofu's `*.tomkatom.com` A record (§5,
+`local.dns_a_records`'s `wildcard`), and a wildcard answers every name in
+the zone that has no record of its own. So the instant these four `CNAME`s
+are deleted the names keep resolving — to `145.239.3.55`, the right answer,
+via the wildcard. **There is no NXDOMAIN window**, nothing to schedule
+around, and equally nothing an address lookup can tell you: the four names
+return the same IP before §6a, between §6a and §6b, and after external-dns
+has created real A records for them. Only the record *type* and the
+ownership TXT distinguish those states, which is what §7 checks.
+
+Do not "fix" a name by re-creating a CNAME at it — that puts the
+suppression straight back, silently.
 
 Confirmation that the gate has actually cleared, while still in dry-run:
 those four names now show up as would-creates where before they were absent
@@ -392,10 +400,15 @@ for h in auth sonarr radarr bazarr prowlarr deluge tautulli maintainerr requests
 done
 ```
 
-The four that were CNAMEs until §6a must now read as plain A records with an
-ownership TXT beside them, like every other row. An empty A **and** an empty
-TXT for one of them means external-dns still sees something at that name —
-re-check that §6a's delete actually took.
+**The TXT column is the whole check; the A column proves nothing.** Tofu's
+`*.tomkatom.com` A record answers every name in this zone that has no
+record of its own, so `dig +short <host> A` returns `145.239.3.55` whether
+external-dns created a record or silently declined to. A host with an
+address and **no** `_externaldns.a-` TXT is a create that did not happen —
+looking exactly like a working one from the outside. That is why the four
+that were CNAMEs until §6a get read here rather than by resolution: they
+must now be plain A records (`dig <host> A` shows `IN A`, not a CNAME chain)
+with an ownership TXT beside them, like every other row.
 
 **Nothing else grew one.** Tofu's records must have no ownership TXT at all
 — that absence is the only thing keeping `policy: sync` off them, and it
@@ -471,9 +484,11 @@ worth chasing before you walk away.
    rebuild by hand. This is why §4 is not optional.
 4. **A name the old server needs stopped resolving** — check for a duplicate
    apex A record first (§5a's trap); that is by far the most likely cause.
-5. **One of §6a's four names is still NXDOMAIN** long after §6b merged —
-   external-dns has not created it. Check the logs for that host and confirm
-   the `CNAME` really is gone (a second, forgotten record at the same name is
-   enough to re-arm the ownership gate). Re-creating the CNAME restores
-   resolution immediately but permanently blocks external-dns from owning the
-   name; only do that if the name must resolve *now*.
+5. **One of §6a's four names has no `_externaldns.a-` TXT** long after §6b
+   merged — external-dns has not created it, and the wildcard is covering
+   for the gap, so the name still resolves to the right address and nothing
+   looks broken (§7). Check the logs for that host and confirm the `CNAME`
+   really is gone (a second, forgotten record at the same name is enough to
+   re-arm the ownership gate). Re-creating the CNAME permanently blocks
+   external-dns from owning the name and buys nothing the wildcard is not
+   already giving you.

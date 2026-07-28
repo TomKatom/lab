@@ -29,8 +29,8 @@ configured (Ansible); Argo CD runs the platform layer — cert-manager,
 Traefik on `:443`, Authelia forward-auth and external-dns.
 
 **Phase 6 — Media apps** is live in the `media` namespace, reconciled from
-[`clusters/lab/apps/`](clusters/lab/apps/): Deluge, Prowlarr, Sonarr,
-Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Seerr,
+[`clusters/lab/apps/`](clusters/lab/apps/): Deluge, Prowlarr, FlareSolverr,
+Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Seerr,
 Maintainerr and Homepage — the last of those being the front door at the
 apex, `tomkatom.com`, and the only page here written for viewers rather
 than for the operator. **Migrating the old server's state onto them —

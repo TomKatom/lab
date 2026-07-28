@@ -4,9 +4,14 @@
 # anything happens, and delete on expiry. Wave 1: after media-common (wave 0)
 # has created the namespace and the media-env ConfigMap this consumes.
 #
-# Rules are UI-only — there is no file or env form of them, so the whole
-# rule set is a fresh-setup checklist in docs/runbooks/media-migration.md §9
-# rather than anything this manifest can declare.
+# Nothing about this app is declarable here. Its *connection settings* (Plex,
+# Sonarr, Radarr, Tautulli, Seerr) are database-only with no env override, so
+# they are a fresh-setup checklist in docs/runbooks/media-migration.md §9. Its
+# *rules* do have a file form — 3.19.0 imports and exports rule groups as
+# YAML — but the flow is export-then-commit, not commit-then-apply, so they
+# live under docs/maintainerr-rules/ rather than in this manifest. The policy
+# those rules encode, and why deleting a still-seeding release frees nothing,
+# are in docs/media-retention.md.
 #
 # Its Download Client settings section stays unconfigured here on purpose.
 # That cleanup path is qBittorrent-only — at this exact pinned version

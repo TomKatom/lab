@@ -515,17 +515,19 @@ CLI:
 
 Then, for `<app>` being restored:
 
-1. **Pause auto-sync — on the parent `apps` Application first, then on
-   `<app>` — before anything else:**
+1. **Pause auto-sync top-down — `root-app`, then `apps`, then `<app>` —
+   before anything else:**
 
    ```sh
+   kubectl -n argocd patch application root-app --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":null}}}'
    kubectl -n argocd patch application apps --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":null}}}'
    kubectl -n argocd patch application <app> --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":null}}}'
    ```
 
-   ⚠ **The trap, and it has two layers.** Scale the Deployment down while
+   ⚠ **The trap, and it has three layers.** Scale the Deployment down while
    `selfHeal` is on and Argo reverts the scale-down on its next reconcile —
    you end up fighting your own GitOps controller, and the pod flaps back
    up mid-copy. But **pausing `<app>` on its own does not hold**: this is an
@@ -534,19 +536,28 @@ Then, for `<app>` being restored:
    `clusters/lab/apps/<app>.yaml` — which still says `automated:` in git —
    back over your patch within about a second, and *that* revert is what
    re-arms the child's own self-heal to scale the Deployment straight back
-   up. Pausing `apps` as well is what makes the pause stick.
+   up.
 
-   **Leave `root-app` alone.** It is an unrelated sibling covering
-   `platform/` (Traefik, Authelia, cert-manager, external-dns); nothing in
-   this runbook needs it paused, and pausing it stops platform drift
-   correction for no benefit.
+   **`root-app` is not an unrelated sibling — it is the grandparent, and it
+   has to be paused too.** The `apps` Application is not defined under
+   `clusters/lab/apps/`; it is `clusters/lab/platform/apps.yaml`, an
+   ordinary top-level manifest in the directory `root-app` watches
+   (`clusters/lab/bootstrap/root-app.yaml`, `selfHeal: true`). So the patch
+   on `apps` is drift against git exactly the way the patch on `<app>` is,
+   and `root-app` undoes it on its next reconcile — which re-arms `apps`,
+   which re-arms `<app>`, which scales the Deployment back up mid-copy.
+   Pausing all three is what makes the pause stick.
+
+   Pausing `root-app` does stop platform drift correction (Traefik,
+   Authelia, cert-manager, external-dns) for the duration — that is the
+   cost, and it is why step 7 resumes it as soon as the restore is done.
 
    Confirm the pause actually took, rather than assuming:
 
    ```sh
-   kubectl -n argocd get application apps <app> \
+   kubectl -n argocd get application root-app apps <app> \
      -o custom-columns=NAME:.metadata.name,AUTOMATED:.spec.syncPolicy.automated
-   # both rows read <none>
+   # all three rows read <none>
    ```
 
 2. Scale the Deployment to zero (releases the PVC's writer, and the app's
@@ -584,7 +595,7 @@ Then, for `<app>` being restored:
    mkdir -p ~/migration-scratch/<app>
    rsync -a old:/srv/<app>/config/ ~/migration-scratch/<app>/
 
-   tar cf - -C ~/migration-scratch/<app> . \
+   COPYFILE_DISABLE=1 tar cf - -C ~/migration-scratch/<app> . \
      | ssh debian@k3s.lab.tomkatom.com \
          'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>'
    ```
@@ -593,10 +604,13 @@ Then, for `<app>` being restored:
    `/var/lib/rancher/k3s/storage/` itself is not world-traversable, even
    though the leaf PVC directory under it is.
 
-   ⚠ **On macOS, clear the AppleDouble litter before step 5.** BSD `tar`
-   writes a `._*` sidecar into the archive for every file carrying extended
-   attributes, and they arrive as junk in the app's config dir — the real
-   restores deleted **593** of them for Sonarr and **646** for Radarr:
+   ⚠ **`COPYFILE_DISABLE=1` is what keeps macOS's AppleDouble litter out of
+   the archive.** Without it BSD `tar` writes a `._*` sidecar for every file
+   carrying extended attributes, and they land as junk in the app's config
+   dir — the real restores, run before this flag was added here, swept
+   **593** of them out of Sonarr and **646** out of Radarr afterwards. The
+   variable is a no-op on GNU `tar`, so the line is safe to copy anywhere.
+   If an earlier copy already landed without it, sweep before step 5:
 
    ```sh
    ssh debian@k3s.lab.tomkatom.com \
@@ -687,22 +701,24 @@ Then, for `<app>` being restored:
    mask a broken public record later: your browser will keep working off the
    override long after everyone else's has stopped.
 
-7. Hand control back to Argo — child first, then the parent:
+7. Hand control back to Argo — bottom-up, the reverse of step 1:
 
    ```sh
    kubectl -n argocd patch application <app> --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
    kubectl -n argocd patch application apps --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+   kubectl -n argocd patch application root-app --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
 
-   kubectl -n argocd get application apps <app> \
+   kubectl -n argocd get application root-app apps <app> \
      -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
-   # both Synced / Healthy again
+   # all three Synced / Healthy again
    ```
 
-   Order matters only in that resuming `<app>` first means `apps` finds no
-   drift to correct when it resumes — by then the child's `syncPolicy`
-   already matches what git says.
+   Order matters only in that resuming the child first means its parent
+   finds no drift to correct when it resumes — by then each level's
+   `syncPolicy` already matches what git says.
 
 ---
 
@@ -981,12 +997,12 @@ an extra step wedged between steps 5 and 6:
   mkdir -p ~/migration-scratch/seerr
   rsync -a old:/srv/overserr/config/ ~/migration-scratch/seerr/
 
-  tar cf - -C ~/migration-scratch/seerr . \
+  COPYFILE_DISABLE=1 tar cf - -C ~/migration-scratch/seerr . \
     | ssh debian@k3s.lab.tomkatom.com \
         'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_seerr'
   ```
 
-  Everything else in step 4 still applies — the macOS `._*` sweep included.
+  Everything else in step 4 still applies — `COPYFILE_DISABLE=1` included.
   `settings.json` and the sqlite db under `db/` are what carry the state.
   The Plex auth token lives in `settings.json` and survives because Plex's
   identity survived §8 — no re-authentication needed.
@@ -1052,17 +1068,23 @@ Then, after §4's step 6 scales the Deployment back up:
   had it — check it here rather than assuming. Confirm from outside the UI:
 
   ```sh
-  curl -s -o /dev/null -w '%{http_code}\n' \
+  curl -s -w '\n%{http_code}\n' \
     --resolve requests.tomkatom.com:443:10.10.10.10 \
     -X POST https://requests.tomkatom.com/api/v1/auth/local \
     -H 'Content-Type: application/json' -d '{}'
+  # {"error":"Password sign-in is disabled."}
+  # 500
   ```
 
   Expect `500` with `Password sign-in is disabled.` in the body — Seerr
-  returns 500 for both the disabled case and a missing-field case, so read
-  the body, not the code. Leave "Enable New Plex Sign-In" **on**: that is
-  what lets a Plex user with library access onboard themselves, which is
-  the reason this host is not behind Authelia in the first place.
+  returns 500 for both the disabled case and a missing-field case (`You
+  must provide both an email address and a password.`), so read the body,
+  not the code. That is why there is no `-o /dev/null` above: discarding
+  the body leaves the one check this command exists for unanswerable.
+
+  Leave "Enable New Plex Sign-In" **on**: that is what lets a Plex user
+  with library access onboard themselves, which is the reason this host is
+  not behind Authelia in the first place.
 - Verify Seerr's own login still works unauthenticated by Authelia (its
   Ingress carries no forward-auth annotation by design — Plex OAuth is the
   end-user login, per the phase's decision).

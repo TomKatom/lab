@@ -336,8 +336,8 @@ Each phase is its own PR. Full detail and current status in
    off the old server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
 6. **Media apps** *(current)* — deployed and reconciling from
    [`clusters/lab/apps/`](../clusters/lab/apps/): Deluge, Prowlarr,
-   Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli,
-   Seerr, Maintainerr, Homepage, all in one `media` namespace on the
+   FlareSolverr, Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex,
+   Tautulli, Seerr, Maintainerr, Homepage, all in one `media` namespace on the
    shared `/data` tree. What remains is **state migration** from the old
    server (operator-executed —
    [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,

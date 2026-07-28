@@ -48,7 +48,7 @@
 # `checksum/configMaps` pod annotation over their data
 # (`charts/common/templates/lib/pod/metadata/_annotations.tpl`), which
 # rolls the Deployment on every content change. That only covers
-# chart-owned ConfigMaps, so taking it would mean folding all 338 lines of
+# chart-owned ConfigMaps, so taking it would mean folding all 332 lines of
 # ./homepage/configmap-homepage.yaml — nine files, custom.css and custom.js
 # among them — into this Application's valuesObject, past `tpl`, and out of
 # the kustomize build CI actually validates. The separate `-config`
