@@ -657,14 +657,14 @@ Then, for `<app>` being restored:
    ```
 
    ⚠ **The UI checklists in §5–§9 cannot be done with `curl`, and a browser
-   does not have `--resolve`.** Five of these names already resolve — **to
+   does not have `--resolve`.** Six of these names already resolve — **to
    the old server**, which is still production:
 
    | Name | Public DNS today | What a browser gets |
    |---|---|---|
-   | `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` | `CNAME → tomkatom.com → 94.75.211.144` | **the old app**, with no error and nothing to tip you off |
+   | `sonarr.` `radarr.` `prowlarr.` `deluge.` `bazarr.tomkatom.com` | `CNAME → tomkatom.com → 94.75.211.144` | **the old app**, with no error and nothing to tip you off |
    | `tomkatom.com` (the apex — Homepage's host here) | `A 94.75.211.144` | **the old server's front page** |
-   | `bazarr.` `tautulli.` `maintainerr.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
+   | `tautulli.` `maintainerr.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
 
    So you can complete an entire §5/§6 checklist against **production** and
    change nothing on the cluster. Override the names locally instead, on the

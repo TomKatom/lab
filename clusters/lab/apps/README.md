@@ -383,12 +383,12 @@ to end.
 **Every check here is internal, over WireGuard.** Hostnames are resolved
 at the node with `curl --resolve`, never through public DNS. Until
 [`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md)
-runs, **five of the names below already resolve publicly — every one of
+runs, **six of the names below already resolve publicly — every one of
 them to the old server**: the apex `tomkatom.com` (`A 94.75.211.144`) and
-the four hand-made `CNAME`s to it, `sonarr.` `radarr.` `prowlarr.`
-`deluge.`. The rest (`bazarr.` `tautulli.` `maintainerr.` `requests.`) are
+the five hand-made `CNAME`s to it, `sonarr.` `radarr.` `prowlarr.`
+`deluge.` `bazarr.`. The rest (`tautulli.` `maintainerr.` `requests.`) are
 NXDOMAIN. So `--resolve` is not belt-and-braces on any line here: drop it
-on one of those five and the check quietly passes against **production**.
+on one of those six and the check quietly passes against **production**.
 `docs/runbooks/media-migration.md` §4 step 6 has the same table, and the
 `/etc/hosts` overrides to use when a browser is needed instead of `curl`.
 
@@ -432,9 +432,9 @@ only one that exercises the `tomkatom.com` SAN added to
 `platform/traefik/wildcard-certificate.yaml`, since every other host is
 covered by the wildcard.
 
-`--resolve` is load-bearing on the apex line and on four of the seven
-above it — `sonarr.` `radarr.` `prowlarr.` `deluge.` are `CNAME`s to the
-apex, so until the cutover runs all five resolve publicly to the old
+`--resolve` is load-bearing on the apex line and on five of the seven
+above it — `sonarr.` `radarr.` `prowlarr.` `deluge.` `bazarr.` are `CNAME`s
+to the apex, so until the cutover runs all six resolve publicly to the old
 server. Drop the flag on any of them and the check quietly passes against
 production — and the old server runs its own Traefik and Authelia
 (`media-migration.md` §2.1), so the response can look exactly like the one
@@ -506,10 +506,10 @@ Until the cutover runbook runs, this must all still be true:
 ```sh
 kubectl -n external-dns logs deploy/external-dns --tail=200 \
   | grep -iE 'changing record|create|up to date'
-# would-create lines for the never-existing hosts only — auth., bazarr.,
-# tautulli., maintainerr., requests. Nothing for sonarr./radarr./prowlarr./
-# deluge. (taken CNAMEs) and nothing for the bare apex either (Homepage's
-# host; Tofu's record, equally unowned) — all five blocked by the same
+# would-create lines for the never-existing hosts only — auth., tautulli.,
+# maintainerr., requests. Nothing for sonarr./radarr./prowlarr./deluge./
+# bazarr. (taken CNAMEs) and nothing for the bare apex either (Homepage's
+# host; Tofu's record, equally unowned) — all six blocked by the same
 # ownership gate. And no actual writes at all (--dry-run).
 
 dig +short tomkatom.com A                        # 94.75.211.144 — old server

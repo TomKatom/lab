@@ -231,14 +231,19 @@ like. Worth being precise about, because the cutover depends on it:
 
 - **It cannot take a hostname away from the old server.** Every name that
   server actually serves has an *explicit* record — `sonarr`, `radarr`,
-  `prowlarr` and `deluge` are each a `CNAME` to the apex, verified by `dig`;
-  a random name under the zone returns `NXDOMAIN`, so **there is no
-  wildcard DNS record** (the old server has a wildcard *certificate*, which
-  is a different thing). A name that already has a record external-dns does
-  not own is unreachable to it — see `policy: sync` below.
+  `prowlarr`, `deluge`, `bazarr` and `www` are each a `CNAME` to the apex,
+  verified by `dig` (`bazarr` is easy to miss: it has a cluster Ingress
+  like the others below, but is still one of the old server's hand-made
+  CNAMEs; `www` gains a cluster Ingress via a separate PR against
+  `clusters/lab/apps/homepage.yaml`, at which point it joins this list for
+  real — see `docs/runbooks/dns-cutover.md` §0); a random name under the
+  zone returns `NXDOMAIN`, so **there is no wildcard DNS record** (the old
+  server has a wildcard *certificate*, which is a different thing). A name
+  that already has a record external-dns does not own is unreachable to it
+  — see `policy: sync` below.
 - **What it does guard is the one unconditional write: creating a name the
   zone does not have yet.** `auth.tomkatom.com` and the media hosts that
-  were never CNAME'd (`bazarr.`, `tautulli.`, `maintainerr.`, `requests.`)
+  were never CNAME'd (`tautulli.`, `maintainerr.`, `requests.`)
   resolve to nothing today, so those are real creates — and a create makes
   a new-server service resolve publicly while the old server is still the
   one in production. That timing, not safety, is what the flag buys now.
