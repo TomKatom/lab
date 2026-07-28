@@ -4,12 +4,12 @@
 # Ingress, no PVC. See ./README.md for the /data mount table and sync waves
 # this file follows.
 #
-# Sonarr/Radarr don't exist yet in this repo (a sibling PR is landing them
-# in parallel) — Unpackerr will log connection errors against both until
-# that PR merges. Expected, not a bug; not worth making conditional for a
-# gap that closes on its own once both apps land. Note this fails at
-# connect, not at startup: the addresses resolve through media-urls
-# regardless of whether anything is listening behind them.
+#
+# It extracts beside the archive and leaves the archive alone, so the
+# torrent keeps seeding intact and the *arr imports the extracted file.
+# That only works while the paths below are the same directories the
+# *arrs told Deluge to download into — see ./README.md "The /data path
+# contract" for the single description of that chain.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -47,7 +47,17 @@ spec:
                       secretKeyRef:
                         name: arr-api-keys
                         key: SONARR_API_KEY
-                  UN_SONARR_0_PATHS_0: /data/torrents
+                  # The category directory each *arr downloads into, not
+                  # the /data/torrents root above it. Unpackerr walks the
+                  # path it is given looking for archives to extract, and
+                  # the root also holds ~380 permanently seeding torrents
+                  # in books/, games/, music/ and programs/ that no *arr
+                  # imports — scanning those is work with no consumer, and
+                  # an extracted 7z game repack sitting beside its torrent
+                  # is a way to double the disk it uses. The two values
+                  # mirror ./arr-settings/'s `downloadDirectory` and
+                  # ./deluge.yaml's label paths; all three move together.
+                  UN_SONARR_0_PATHS_0: /data/torrents/tv
                   UN_RADARR_0_URL:
                     valueFrom:
                       configMapKeyRef:
@@ -58,7 +68,7 @@ spec:
                       secretKeyRef:
                         name: arr-api-keys
                         key: RADARR_API_KEY
-                  UN_RADARR_0_PATHS_0: /data/torrents
+                  UN_RADARR_0_PATHS_0: /data/torrents/movies
                 envFrom:
                   - configMap: media-env
                 securityContext:

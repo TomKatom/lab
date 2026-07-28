@@ -1,0 +1,29 @@
+# The desired Sonarr/Radarr settings and the applier script, as a plain
+# ConfigMap overlay. Wave 1, one wave ahead of ./arr-settings.yaml's
+# CronJob, so /spec exists before the first Job Pod mounts it (./README.md
+# "Sync waves within apps/").
+#
+# A kustomize `-config` dir rather than a `configMaps:` block on the chart,
+# following ./recyclarr-config.yaml: there is no ksops here, so CI actually
+# `kustomize build`s this directory and the JSON specs get validated on
+# every PR instead of only at sync time.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arr-settings-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps/arr-settings
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
