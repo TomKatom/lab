@@ -40,7 +40,7 @@ migration, so start it the same day this runbook is picked up.
 | §6 Sonarr / Radarr | sonarr+radarr merged (PR6) | ″ |
 | §7 Bazarr | bazarr merged (PR7) | ″ |
 | §8 Plex | plex merged (PR8) | ″ |
-| §9 Overseerr / Tautulli / Maintainerr | plex + request-layer merged (PR8, PR9) | ″ |
+| §9 Seerr / Tautulli / Maintainerr | plex + request-layer merged (PR8, PR9) | ″ |
 | §10 Deluge | deluge merged (PR4) | **executed last** — only as part of §11's cutover |
 | §11 Delta syncs + pipeline cutover | every app above restored once | the final pass; runs §10 |
 | §12 Post-migration hardening | after §11 | cluster is now authoritative for pipeline state |
@@ -84,6 +84,13 @@ this runbook uses `overserr` deliberately; "correcting" it to `overseerr`
 gives you an rsync against a nonexistent source, which succeeds at copying
 nothing.
 
+⚠ **The old server runs Overseerr; the cluster runs Seerr.** Overseerr was
+archived in July 2026 when it merged with Jellyseerr into Seerr, so
+`clusters/lab/apps/seerr.yaml` deploys the successor and Seerr migrates the
+restored Overseerr config on its first start (§9). That means this one app
+is named differently on each side — source `/srv/overserr/config`,
+destination the `seerr` PVC — everywhere below.
+
 Confirm the layout still matches and size each config dir — the sizes are
 what the per-app PVC sizes in the Phase 6 reference table were bookkept
 against:
@@ -117,7 +124,7 @@ formality rather than a path rewrite.
 | Radarr | `/srv/radarr/config` | | |
 | Bazarr | `/srv/bazarr/config` | | key lives deeper than the others — §2.2 |
 | Plex | `/srv/plex/config` | | app-support subtree only — see §8 |
-| Overseerr | `/srv/overserr/config` | | **one `e`** — see the warning above |
+| Overseerr | `/srv/overserr/config` | | **one `e`** — see the warning above; restores into the cluster's `seerr` app (§9) |
 | Unpackerr | — | — | no state; its config becomes env in PR4 |
 
 **Nothing to migrate for four of the twelve `/srv` directories.** The
@@ -158,7 +165,7 @@ authoritative over whatever this step recorded.
 
 These four values become PR3's `clusters/lab/apps/media-common/
 arr-api-keys.sops.yaml` — pinned **as-is**, not rotated, so every existing
-cross-reference (Prowlarr's app-sync, Overseerr, Unpackerr) keeps working
+cross-reference (Prowlarr's app-sync, Seerr, Unpackerr) keeps working
 with zero key surgery after restore:
 
 | SOPS key (`arr-api-keys` Secret) | Value source |
@@ -508,17 +515,19 @@ CLI:
 
 Then, for `<app>` being restored:
 
-1. **Pause auto-sync — on the parent `apps` Application first, then on
-   `<app>` — before anything else:**
+1. **Pause auto-sync top-down — `root-app`, then `apps`, then `<app>` —
+   before anything else:**
 
    ```sh
+   kubectl -n argocd patch application root-app --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":null}}}'
    kubectl -n argocd patch application apps --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":null}}}'
    kubectl -n argocd patch application <app> --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":null}}}'
    ```
 
-   ⚠ **The trap, and it has two layers.** Scale the Deployment down while
+   ⚠ **The trap, and it has three layers.** Scale the Deployment down while
    `selfHeal` is on and Argo reverts the scale-down on its next reconcile —
    you end up fighting your own GitOps controller, and the pod flaps back
    up mid-copy. But **pausing `<app>` on its own does not hold**: this is an
@@ -527,19 +536,28 @@ Then, for `<app>` being restored:
    `clusters/lab/apps/<app>.yaml` — which still says `automated:` in git —
    back over your patch within about a second, and *that* revert is what
    re-arms the child's own self-heal to scale the Deployment straight back
-   up. Pausing `apps` as well is what makes the pause stick.
+   up.
 
-   **Leave `root-app` alone.** It is an unrelated sibling covering
-   `platform/` (Traefik, Authelia, cert-manager, external-dns); nothing in
-   this runbook needs it paused, and pausing it stops platform drift
-   correction for no benefit.
+   **`root-app` is not an unrelated sibling — it is the grandparent, and it
+   has to be paused too.** The `apps` Application is not defined under
+   `clusters/lab/apps/`; it is `clusters/lab/platform/apps.yaml`, an
+   ordinary top-level manifest in the directory `root-app` watches
+   (`clusters/lab/bootstrap/root-app.yaml`, `selfHeal: true`). So the patch
+   on `apps` is drift against git exactly the way the patch on `<app>` is,
+   and `root-app` undoes it on its next reconcile — which re-arms `apps`,
+   which re-arms `<app>`, which scales the Deployment back up mid-copy.
+   Pausing all three is what makes the pause stick.
+
+   Pausing `root-app` does stop platform drift correction (Traefik,
+   Authelia, cert-manager, external-dns) for the duration — that is the
+   cost, and it is why step 7 resumes it as soon as the restore is done.
 
    Confirm the pause actually took, rather than assuming:
 
    ```sh
-   kubectl -n argocd get application apps <app> \
+   kubectl -n argocd get application root-app apps <app> \
      -o custom-columns=NAME:.metadata.name,AUTOMATED:.spec.syncPolicy.automated
-   # both rows read <none>
+   # all three rows read <none>
    ```
 
 2. Scale the Deployment to zero (releases the PVC's writer, and the app's
@@ -577,7 +595,7 @@ Then, for `<app>` being restored:
    mkdir -p ~/migration-scratch/<app>
    rsync -a old:/srv/<app>/config/ ~/migration-scratch/<app>/
 
-   tar cf - -C ~/migration-scratch/<app> . \
+   COPYFILE_DISABLE=1 tar cf - -C ~/migration-scratch/<app> . \
      | ssh debian@k3s.lab.tomkatom.com \
          'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>'
    ```
@@ -586,10 +604,13 @@ Then, for `<app>` being restored:
    `/var/lib/rancher/k3s/storage/` itself is not world-traversable, even
    though the leaf PVC directory under it is.
 
-   ⚠ **On macOS, clear the AppleDouble litter before step 5.** BSD `tar`
-   writes a `._*` sidecar into the archive for every file carrying extended
-   attributes, and they arrive as junk in the app's config dir — the real
-   restores deleted **593** of them for Sonarr and **646** for Radarr:
+   ⚠ **`COPYFILE_DISABLE=1` is what keeps macOS's AppleDouble litter out of
+   the archive.** Without it BSD `tar` writes a `._*` sidecar for every file
+   carrying extended attributes, and they land as junk in the app's config
+   dir — the real restores, run before this flag was added here, swept
+   **593** of them out of Sonarr and **646** out of Radarr afterwards. The
+   variable is a no-op on GNU `tar`, so the line is safe to copy anywhere.
+   If an earlier copy already landed without it, sweep before step 5:
 
    ```sh
    ssh debian@k3s.lab.tomkatom.com \
@@ -597,9 +618,11 @@ Then, for `<app>` being restored:
    ```
 
    `<app>` is the same word on both sides for every app this template
-   covers, with **one exception: Overseerr's source is
-   `/srv/overserr/config/`** (§2.1's spelling warning). Plex does not use
-   this step at all — §8 copies a subtree, not the whole config dir.
+   covers, with **one exception: the request portal, where the source is
+   `/srv/overserr/config/` (§2.1's spelling warning) and the destination is
+   the `seerr` PVC** — old Overseerr, new Seerr, neither spelled like the
+   other. Plex does not use this step at all — §8 copies a subtree, not the
+   whole config dir.
 
    **Installing `rsync` on `k3s-node` (via the Ansible roles that build it,
    not by hand) removes this relay entirely** — worth doing before the
@@ -634,24 +657,31 @@ Then, for `<app>` being restored:
    ```
 
    ⚠ **The UI checklists in §5–§9 cannot be done with `curl`, and a browser
-   does not have `--resolve`.** Four of these hostnames already resolve —
-   **to the old server**, which is still production:
+   does not have `--resolve`.** Five of these names already resolve — **to
+   the old server**, which is still production:
 
    | Name | Public DNS today | What a browser gets |
    |---|---|---|
    | `sonarr.` `radarr.` `prowlarr.` `deluge.tomkatom.com` | `CNAME → tomkatom.com → 94.75.211.144` | **the old app**, with no error and nothing to tip you off |
-   | `bazarr.` `tautulli.` `maintainerr.` `home.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
+   | `tomkatom.com` (the apex — Homepage's host here) | `A 94.75.211.144` | **the old server's front page** |
+   | `bazarr.` `tautulli.` `maintainerr.` `requests.` `auth.` | NXDOMAIN (there is no `*.tomkatom.com` record — the old server has a wildcard *certificate*, which is a different thing) | nothing resolves |
 
    So you can complete an entire §5/§6 checklist against **production** and
    change nothing on the cluster. Override the names locally instead, on the
    machine running the browser, while on WireGuard — in `/etc/hosts`:
 
    ```
-   10.10.10.10  auth.tomkatom.com
+   10.10.10.10  auth.tomkatom.com tomkatom.com
    10.10.10.10  sonarr.tomkatom.com radarr.tomkatom.com prowlarr.tomkatom.com
    10.10.10.10  deluge.tomkatom.com bazarr.tomkatom.com tautulli.tomkatom.com
-   10.10.10.10  maintainerr.tomkatom.com home.tomkatom.com requests.tomkatom.com
+   10.10.10.10  maintainerr.tomkatom.com requests.tomkatom.com
    ```
+
+   The apex override is the one to remove again when you are done: leaving
+   `tomkatom.com` pinned to `10.10.10.10` means everyday browsing of the
+   still-live old server silently goes to the cluster instead. The other
+   names cost nothing to leave in place — they either belong to the cluster
+   already or are NXDOMAIN.
 
    One address may carry many names on a line, but **`/etc/hosts` has no
    line-continuation syntax** — a trailing `\` is parsed as part of a
@@ -671,22 +701,24 @@ Then, for `<app>` being restored:
    mask a broken public record later: your browser will keep working off the
    override long after everyone else's has stopped.
 
-7. Hand control back to Argo — child first, then the parent:
+7. Hand control back to Argo — bottom-up, the reverse of step 1:
 
    ```sh
    kubectl -n argocd patch application <app> --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
    kubectl -n argocd patch application apps --type=merge \
      -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+   kubectl -n argocd patch application root-app --type=merge \
+     -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
 
-   kubectl -n argocd get application apps <app> \
+   kubectl -n argocd get application root-app apps <app> \
      -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status
-   # both Synced / Healthy again
+   # all three Synced / Healthy again
    ```
 
-   Order matters only in that resuming `<app>` first means `apps` finds no
-   drift to correct when it resumes — by then the child's `syncPolicy`
-   already matches what git says.
+   Order matters only in that resuming the child first means its parent
+   finds no drift to correct when it resumes — by then each level's
+   `syncPolicy` already matches what git says.
 
 ---
 
@@ -747,7 +779,7 @@ Specifics for both:
   env override (`SONARR__AUTH__APIKEY` / `RADARR__AUTH__APIKEY`, from PR3's
   `arr-api-keys` Secret) wins over `config.xml` at startup** — this is
   exactly why §2.2 pinned the SOPS value to equal the old key: if they
-  diverged, every dependent (Prowlarr's app-sync, Overseerr, Unpackerr)
+  diverged, every dependent (Prowlarr's app-sync, Seerr, Unpackerr)
   would start authenticating with the wrong key against the migrated app.
 - Re-point the download client (Settings → Download Clients → Deluge):
   Host `deluge.media.svc.cluster.local`, Port `8112`. The app's own REST API
@@ -949,15 +981,70 @@ stop.
 
 ---
 
-## 9. Overseerr / Tautulli / Maintainerr (after PR8, PR9)
+## 9. Seerr / Tautulli / Maintainerr (after PR8, PR9)
 
-**Overseerr** — follow §4 for `overseerr` (config PVC mounted at
-`/app/config`):
+**Seerr** — follow §4 for `seerr` (config PVC mounted at `/app/config`).
+This is the one app whose old and new names differ: the cluster runs Seerr,
+the archived Overseerr's successor, and it converts the old config on its
+first start. Two departures from the §4 template — one inside step 4, one
+an extra step wedged between steps 5 and 6:
 
-- Restore `settings.json` and the sqlite db from **`/srv/overserr/config/`**
-  (one `e` — §2.1). The Plex auth token lives in `settings.json` and
-  survives because Plex's identity survived §8 — no re-authentication
-  needed.
+- **The source is `/srv/overserr/config/`** (one `e` — §2.1) and the
+  destination is the `seerr` PVC, so §4's relay runs with a different word
+  at each end:
+
+  ```sh
+  mkdir -p ~/migration-scratch/seerr
+  rsync -a old:/srv/overserr/config/ ~/migration-scratch/seerr/
+
+  COPYFILE_DISABLE=1 tar cf - -C ~/migration-scratch/seerr . \
+    | ssh debian@k3s.lab.tomkatom.com \
+        'sudo tar xf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_seerr'
+  ```
+
+  Everything else in step 4 still applies — `COPYFILE_DISABLE=1` included.
+  `settings.json` and the sqlite db under `db/` are what carry the state.
+  The Plex auth token lives in `settings.json` and survives because Plex's
+  identity survived §8 — no re-authentication needed.
+
+- **Take a copy of the restored directory after §4's step 5 and before its
+  step 6 scales the pod back up** — after the `chown -R 1000:1000`, not
+  before it, or the tarball preserves the old server's uids and restoring
+  it hands Seerr (uid 1000) a directory it cannot write.
+  Seerr's first start runs `server/lib/overseerrMerge.ts`, which recognises
+  an Overseerr config by its missing `mediaServerType` and rewrites the
+  sqlite schema **in place**. There is no downgrade path afterwards, and an
+  interrupted rewrite leaves a half-migrated db. Pull it back off the VM
+  rather than leaving it beside the live PVC:
+
+  ```sh
+  ssh debian@k3s.lab.tomkatom.com \
+    'sudo tar cf - -C /var/lib/rancher/k3s/storage/pvc-<uid>_media_seerr .' \
+    > ~/overseerr-config-pre-seerr.tar
+  ```
+
+  Keep it until the checks below pass; it goes back the same way the copy
+  above went in. `~/migration-scratch/seerr/` is the same bytes and can
+  serve instead — but §4 tells you to delete it (it holds the Plex token),
+  so do not rely on it surviving. `/srv/overserr` on the old server is a
+  second fallback: nothing in this runbook deletes it.
+
+Then, after §4's step 6 scales the Deployment back up:
+
+- Watch the migration run. It logs under the `Seerr Migration` label and
+  ends with `Yeah! Overseerr to Seerr migration completed successfully!`:
+
+  ```sh
+  kubectl -n media logs deploy/seerr -f
+  ```
+
+  It runs exactly once — `mediaServerType` is set by the time it finishes,
+  so every later restart skips it. A `Failed to …` line under that label
+  means the pod exited mid-migration: restore the tarball above over the
+  PVC directory before retrying, not on top of a partially migrated db.
+- The migration also renames the application title `Overseerr` → `Seerr`
+  and defaults the media server type to Plex. Users, requests, issues and
+  their Plex accounts come across with the db; nothing is re-entered.
 - Re-point Plex/Sonarr/Radarr hostnames (Settings → Services → each entry):
   `plex.media.svc.cluster.local:32400`, `sonarr.media.svc.cluster.local:8989`,
   `radarr.media.svc.cluster.local:7878`, with `SONARR_API_KEY`/
@@ -965,28 +1052,103 @@ stop.
 - Configure the Telegram agent in the UI (Settings → Notifications →
   Telegram): bot token = `TELEGRAM_BOT_TOKEN`, chat id = `TELEGRAM_CHAT_ID`
   (the group, §2.5), notification type **Media Available** enabled.
-- Verify Overseerr's own login still works unauthenticated by Authelia (its
+- **Turn off password sign-in: Settings → Users → uncheck "Enable Local
+  Sign-In", save.** Do this before the DNS cutover publishes
+  `requests.tomkatom.com`, not after. This is the only host in the stack a
+  stranger can reach, its Ingress carries no forward-auth by design, and
+  `main.localLogin` ships `true` — so until it is off, `/api/v1/auth/local`
+  is an email-and-password endpoint on the public internet with no rate
+  limit in front of it (Traefik cannot supply one here; see
+  `clusters/lab/apps/seerr.yaml`). With it off the route returns
+  `Password sign-in is disabled.` before reading the credential, leaving
+  Plex OAuth as the only way in.
+
+  The restored Overseerr `settings.json` carries `localLogin: true`, so the
+  migration hands you this switched **on** regardless of how the old server
+  had it — check it here rather than assuming. Confirm from outside the UI:
+
+  ```sh
+  curl -s -w '\n%{http_code}\n' \
+    --resolve requests.tomkatom.com:443:10.10.10.10 \
+    -X POST https://requests.tomkatom.com/api/v1/auth/local \
+    -H 'Content-Type: application/json' -d '{}'
+  # {"error":"Password sign-in is disabled."}
+  # 500
+  ```
+
+  Expect `500` with `Password sign-in is disabled.` in the body — Seerr
+  returns 500 for both the disabled case and a missing-field case (`You
+  must provide both an email address and a password.`), so read the body,
+  not the code. That is why there is no `-o /dev/null` above: discarding
+  the body leaves the one check this command exists for unanswerable.
+
+  Leave "Enable New Plex Sign-In" **on**: that is what lets a Plex user
+  with library access onboard themselves, which is the reason this host is
+  not behind Authelia in the first place.
+- Verify Seerr's own login still works unauthenticated by Authelia (its
   Ingress carries no forward-auth annotation by design — Plex OAuth is the
   end-user login, per the phase's decision).
 
-**Tautulli** — follow §4 for `tautulli` (config PVC 5Gi at `/config`):
+**Tautulli** — **fresh setup, nothing to restore.** The old server never ran
+Tautulli, so there is no `tautulli.db` and no watch history to carry over;
+history starts accumulating from the first stream the cluster serves. Do not
+follow §4 here — there is no config to copy in, and the parts that would have
+been re-entered by hand are declared in `clusters/lab/apps/tautulli.yaml`
+instead:
 
-- Restore the history db (`tautulli.db`) from the old config dir.
-- Re-point Plex (Settings → Plex Media Server): host
-  `plex.media.svc.cluster.local`, port `32400`. Run "Verify Server" — it
-  should reconnect cleanly since the restored db already has the working
-  auth token.
+- **The Plex connection needs no UI step.** `TAUTULLI_PMS_IP`, `PMS_PORT`,
+  `PMS_SSL`, `PMS_IDENTIFIER`, `PMS_TOKEN`, `API_KEY` and
+  `FIRST_RUN_COMPLETE` are all set as environment variables, and Tautulli
+  reads those ahead of its config.ini while refusing to let the UI save over
+  them. A fresh pod comes up already pointed at Plex with the setup wizard
+  skipped. Settings → Plex Media Server will show the values greyed into
+  place; saving that page is a no-op and logs "set by environment variable".
+- **The two credentials are already filled** in
+  `clusters/lab/apps/media-common/tautulli-credentials.sops.yaml`; the file
+  header keeps the commands that produce them, for whenever either is
+  rotated. Nothing fails loudly if one is ever wrong — the Secret applies,
+  the pod starts and the probes pass, because `/status` answers without
+  touching Plex. The only symptoms are an unauthorized PMS request in
+  `kubectl -n media logs deploy/tautulli` and a Libraries page that stays
+  empty, so check those rather than the pod's health.
+- Confirm it connected: Settings → Plex Media Server shows the server name,
+  and the Libraries page lists the real libraries within a minute or two
+  (`refresh_libraries_on_startup` defaults on).
 - Configure the recently-added digest to the same Telegram group (Settings
-  → Notification Agents → Telegram, same bot token/chat id as Overseerr;
-  enable the "Recently Added" trigger on whatever schedule is wanted).
+  → Notification Agents → Telegram, same bot token/chat id as Seerr;
+  enable the "Recently Added" trigger on whatever schedule is wanted). This
+  one genuinely is UI-only: Tautulli keeps notification agents in its
+  database rather than config.ini, so there is no environment override for
+  them the way there is for everything above.
 
-**Maintainerr** — fresh setup, nothing to restore (its rules are UI-only,
-no export/import path exists):
+**Maintainerr** — fresh setup, nothing to restore. The old server never ran
+it, so there is no rule set to carry over and nothing to copy into the PVC.
+Its **connection settings** are database-only — no environment overrides
+exist for them, unlike Tautulli above — so this part is genuinely a UI
+checklist:
 
 - Add the Plex server: `plex.media.svc.cluster.local:32400`.
 - Add Sonarr/Radarr with `SONARR_API_KEY`/`RADARR_API_KEY`.
-- Re-create whatever collection/cleanup rules mattered on the old server —
-  there is no config to migrate here, only a checklist to redo by hand.
+- Add Tautulli, `http://tautulli.media.svc.cluster.local:8181` with
+  `TAUTULLI_API_KEY` (both from `media-common`). Optional, and worth it: it
+  gives the rules a real watch history to read instead of Plex's own
+  last-viewed field, which is the field most retention rules get wrong.
+  Note the history only starts at the cluster's first stream — Tautulli is
+  new here too — so rules keyed on it are blind to anything watched on the
+  old server.
+- Rules that key off *who requested something* need the request portal too:
+  Settings → **Seerr** (this pinned version speaks Seerr natively, not just
+  the old Overseerr API), `http://seerr.media.svc.cluster.local:5055` with
+  an API key read out of Seerr's own Settings → General. Skip it if no rule
+  uses requester data.
+
+Rules themselves are **not** UI-only, despite what an earlier draft of this
+section said: 3.19.0 imports and exports rule groups as YAML (the
+`YamlImporterModal` in the rule editor, `POST /api/rules/yaml/{encode,decode}`
+behind it). The retention policy, the `keep`-label exemption, and why a
+deletion frees no space while the release is still seeding are all in
+[`../media-retention.md`](../media-retention.md); the exported YAML lives
+beside it. Build the rules there, then export and commit them.
 
 ---
 
@@ -1195,7 +1357,7 @@ across:
 | Prowlarr | Settings → Indexers → **Test All** green; Apps → Sonarr/Radarr sync succeeds |
 | Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
 | Plex | `curl http://10.10.10.10:32400/identity` (over WG) returns the **same** `machineIdentifier` as the old server's `Preferences.xml` — no re-claim; a remote client shows **Direct Play**, zero transcode sessions |
-| Overseerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Overseerr flips **Available** → a **Telegram group** message arrives |
-| Tautulli | The recently-added digest posts to the same Telegram group on its configured schedule; play history shows continuity from before the migration |
-| Maintainerr | At least one re-created rule executes against a test item without error |
+| Seerr | End-to-end: request → Prowlarr/Sonarr grab → Deluge download → hardlink import → Plex library updates → Seerr flips **Available** → a **Telegram group** message arrives. Separately: `POST /api/v1/auth/local` answers **`Password sign-in is disabled.`** (§9) — the only host here a stranger can reach, so this is the perimeter |
+| Tautulli | Settings → Plex Media Server shows the server name without any wizard having been run, and the Libraries page lists the real libraries; the recently-added digest posts to the same Telegram group on its configured schedule. History starts empty and accumulates from the cluster's first stream — there is none to carry over |
+| Maintainerr | At least one rule executes against a test item without error, and its YAML export is committed under `docs/maintainerr-rules/` |
 | Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |

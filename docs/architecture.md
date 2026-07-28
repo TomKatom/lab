@@ -85,14 +85,14 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
      │
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
           platform/                       apps/ (media ns, Helm app-template)
-           ├─ cert-manager (DNS-01, *.tomkatom.com)  ├─ media-common (shared secrets/env)
+           ├─ cert-manager (DNS-01, wildcard+apex)   ├─ media-common (shared secrets/env)
            ├─ external-dns (Cloudflare, --dry-run)   ├─ plex      (direct-play, own port)
            ├─ traefik (ingress :443)                 ├─ prowlarr / flaresolverr (indexers)
            ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
            └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
-                                                     ├─ overseerr (requests) / maintainerr
-                                                     └─ tautulli / homepage
+                                                     ├─ seerr (requests) / maintainerr
+                                                     └─ tautulli / homepage (apex)
 ```
 
 ## Tooling
@@ -294,7 +294,17 @@ which hangs `tofu plan`/`apply` on every run.
   `restrict_management` toggle keeps SSH/API rules open-to-any until
   WireGuard is verified (anti-lockout); reseller console is the fallback.
 - Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
-  plex.tv auth on its own port, outside Traefik/Authelia.
+  plex.tv auth on its own port, outside Traefik/Authelia. Exactly three
+  Ingresses are deliberately un-annotated, and none of the three may be
+  "fixed". Two are aimed at people who hold a Plex account and no Authelia
+  identity: Seerr's `requests.` (its own Plex OAuth) and Homepage on the
+  apex (a page of public links, no credential read and no app polled — see
+  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md)). The
+  third is Authelia's own `auth.` portal, un-annotated for an unrelated
+  reason: it has to answer unauthenticated or there is nowhere to
+  authenticate, and putting it behind its own forward-auth locks the
+  cluster out
+  ([`clusters/lab/platform/README.md`](../clusters/lab/platform/README.md)).
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
   `gitleaks` in CI blocks anything that slips through, and the age private
   key is held out-of-band (password manager), as the `SOPS_AGE_KEY` repo
@@ -326,8 +336,8 @@ Each phase is its own PR. Full detail and current status in
    off the old server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
 6. **Media apps** *(current)* — deployed and reconciling from
    [`clusters/lab/apps/`](../clusters/lab/apps/): Deluge, Prowlarr,
-   Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli,
-   Overseerr, Maintainerr, Homepage, all in one `media` namespace on the
+   FlareSolverr, Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex,
+   Tautulli, Seerr, Maintainerr, Homepage, all in one `media` namespace on the
    shared `/data` tree. What remains is **state migration** from the old
    server (operator-executed —
    [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,

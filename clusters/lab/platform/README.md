@@ -110,7 +110,16 @@ spec:
 Traefik's `IngressClass` is the cluster default, and its `default` `TLSStore`
 serves `wildcard-tomkatom-tls` (issued by `traefik/wildcard-certificate.yaml`
 into the `traefik` namespace) for any host that doesn't ask for its own
-certificate. Three consequences worth knowing:
+certificate.
+
+That Certificate carries **two** names, not one: `*.tomkatom.com` matches
+exactly one label, so the bare apex needs its own SAN, and it has one
+because Homepage's Ingress is `tomkatom.com` itself
+(`../apps/homepage.yaml`). Any *other* apex-hosted Ingress added later is
+covered by the same Secret with no cert-manager change; a `<x>.<y>.tomkatom
+.com` two-label host would not be, and would need its own `Certificate`.
+
+Three consequences worth knowing:
 
 - **There is no `:80`.** Only the `websecure` entrypoint is published on the
   Service, so klipper binds `:443` on the node and nothing else — matching
@@ -219,13 +228,21 @@ like. Worth being precise about, because the cutover depends on it:
   not own is unreachable to it — see `policy: sync` below.
 - **What it does guard is the one unconditional write: creating a name the
   zone does not have yet.** `auth.tomkatom.com` and the media hosts that
-  were never CNAME'd (`bazarr.`, `tautulli.`, `maintainerr.`, `home.`,
-  `requests.`) resolve to nothing today, so those are real creates — and a
-  create makes a new-server service resolve publicly while the old server
-  is still the one in production. That timing, not safety, is what the flag
-  buys now. (`plex.tomkatom.com` is not on that list and never will be:
-  Plex has no Ingress, so external-dns never sees it — plex.tv brokers
-  clients straight to the DNAT'd `145.239.3.55:32400`.)
+  were never CNAME'd (`bazarr.`, `tautulli.`, `maintainerr.`, `requests.`)
+  resolve to nothing today, so those are real creates — and a create makes
+  a new-server service resolve publicly while the old server is still the
+  one in production. That timing, not safety, is what the flag buys now.
+  (`plex.tomkatom.com` is not on that list and never will be: Plex has no
+  Ingress, so external-dns never sees it — plex.tv brokers clients straight
+  to the DNAT'd `145.239.3.55:32400`.)
+- **The apex is on neither list.** Homepage's Ingress is `tomkatom.com`
+  itself (`../apps/homepage.yaml`), so external-dns does see the bare name
+  — and can do nothing with it either way: a record it does not own already
+  sits there, which blocks a create exactly as it blocks a take-over. The
+  apex A record is Tofu's (`infra/tofu/cloudflare.tf`) before and after the
+  cutover. Homepage is therefore the one host here whose record does not
+  arrive with the `--dry-run` removal; it arrives with `manage_dns=true`,
+  one flip earlier.
 
 So the flag comes off exactly once, as a deliberate step in
 [`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md),

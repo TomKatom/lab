@@ -64,7 +64,7 @@ OVH dedicated (Proxmox 8) — SINGLE public IP
            ├─ external-dns (Cloudflare)              ├─ prowlarr (indexers)
            ├─ traefik (ingress :443)                 ├─ sonarr / radarr / bazarr
            ├─ authelia (auth.tomkatom.com)           ├─ deluge   (OVH IP via NAT, torrent port)
-           ├─ ksops secrets (kustomize)              └─ overseerr (requests, optional)
+           ├─ ksops secrets (kustomize)              └─ seerr    (requests, optional)
            └─ monitoring/ (placeholder → later)
 ```
 
@@ -123,7 +123,7 @@ lab/
     ├─ bootstrap/                # argocd helm values + ksops repo-server patch + root app
     │   ├─ argocd-values.yaml  root-app.yaml
     ├─ platform/                 # cert-manager, external-dns, traefik, authelia, secrets(ksops), monitoring(placeholder)
-    └─ apps/                     # plex, prowlarr, sonarr, radarr, bazarr, deluge, overseerr (app-template values)
+    └─ apps/                     # plex, prowlarr, sonarr, radarr, bazarr, deluge, seerr (app-template values)
 ```
 
 DRY: values shared across ≥2 layers (domain `tomkatom.com`, internal subnet,
@@ -188,7 +188,7 @@ Reseller-mediated console is the slow last-resort fallback.
 3. **Configure (Ansible)** — **WireGuard first** (verify, then Tofu drops public SSH), **NAT/DNAT** for the single IP, host hardening, `tank` stripe, virtiofs, VM hardening, install k3s (Traefik off). Also install/enable `qemu-guest-agent` in the VM, then grant the `Terraform` Proxmox role `VM.GuestAgent.Audit` (see `docs/architecture.md#guest-agent` — granting it before the agent exists hangs `tofu plan`/`apply`).
 4. **Bootstrap Argo CD** — helm install + **ksops** repo-server patch; create `sops-age-key` secret from the age key; apply `root-app.yaml`. Documented in `docs/bootstrap.md`.
 5. **Platform apps** — cert-manager (Cloudflare DNS-01, wildcard `*.tomkatom.com`), external-dns, Traefik (:443), Authelia (`auth.tomkatom.com`). Verify a test Ingress → valid cert + auth.
-6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge (torrent port) → Plex (direct port) → Overseerr, on the shared `/data` tree with hardlinks.
+6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge (torrent port) → Plex (direct port) → Seerr, on the shared `/data` tree with hardlinks.
 7. **Observability (later)** — kube-prometheus-stack + Loki + node/pve exporters into the placeholder namespace.
 8. **Backups (later)** — `vzdump` → NFS on a separate box.
 

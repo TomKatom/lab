@@ -1,16 +1,16 @@
 # The cluster-internal address of every app in the stack, in one place.
 #
 # These apps talk to each other constantly — Unpackerr polls Sonarr and
-# Radarr, Recyclarr pushes profiles to both, Homepage widgets read all of
-# them — and each consumer needs the same `http://<svc>.media.svc.cluster
+# Radarr, Recyclarr pushes profiles to both, Prowlarr syncs indexers into
+# both — and each consumer needs the same `http://<svc>.media.svc.cluster
 # .local:<port>` string. Inlining it per consumer means one port change is
 # a multi-file edit with no way to tell whether every copy was found.
 #
 # Consumed per key via `env.valueFrom.configMapKeyRef`, exactly like the
 # `arr-api-keys` Secret and for the same reason: an app needs a subset,
 # and the generic key here maps onto whatever env name that app happens to
-# want (Unpackerr's `UN_SONARR_0_URL`, Homepage's `HOMEPAGE_VAR_*`). This
-# is deliberately NOT `media-env` — that one is `envFrom`-ed whole by every
+# want (Unpackerr's `UN_SONARR_0_URL`, Recyclarr's `SONARR_URL`). This is
+# deliberately NOT `media-env` — that one is `envFrom`-ed whole by every
 # app because every app wants TZ, which is not true of these.
 #
 # This is a contract, not a description. The value here and the `service:`
@@ -38,11 +38,26 @@ data:
   FLARESOLVERR_URL: http://flaresolverr.media.svc.cluster.local:8191
   SONARR_URL: http://sonarr.media.svc.cluster.local:8989
   RADARR_URL: http://radarr.media.svc.cluster.local:7878
-  PLEX_URL: http://plex.media.svc.cluster.local:32400
+  # Plex is the one entry held split rather than as a `_URL`, because its
+  # only configMapKeyRef consumer wants it that way: Tautulli has no
+  # "server URL" setting, composing `pms_url` itself from a host and a port
+  # it keeps apart (`PMS_IP`/`PMS_PORT`, joined in plexpy/plextv.py). A
+  # joined `PLEX_URL` beside these would write `32400` down a second time
+  # with nothing checking the two against each other — the single-value
+  # rule at the top of this file applies to keys within it, not just across
+  # consumers. Anything that needs the joined form composes
+  # `http://<PLEX_HOST>:<PLEX_PORT>`; that is also what an operator types
+  # into Seerr's and Maintainerr's own server settings, which hold their
+  # copy in an app database rather than reading this map.
+  PLEX_HOST: plex.media.svc.cluster.local
+  PLEX_PORT: "32400"
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181
-  BAZARR_URL: http://bazarr.media.svc.cluster.local:6767
-  # Declared ahead of the PR that creates this Service (the request
-  # layer). Port comes from the phase plan's reference table and is
-  # unverified against a real render until then — that PR must confirm
-  # its Service renders with this name and port, or fix the entry here.
-  OVERSEERR_URL: http://overseerr.media.svc.cluster.local:5055
+  SEERR_URL: http://seerr.media.svc.cluster.local:5055
+  # Bazarr, Maintainerr and Homepage each render a Service too, and none of
+  # them has an entry on purpose: nothing in the stack dials them. Bazarr's
+  # was here until Homepage stopped being an operator dashboard and its
+  # widgets went with the *arr tiles (../homepage.yaml) — that was Bazarr's
+  # only caller, in git or out of it, since Bazarr reads the *arrs and
+  # nothing reads Bazarr. This map exists to stop one address being written
+  # down in several consumers, so a key with no consumer is a claim nothing
+  # keeps honest. Add one back the same day something needs it.

@@ -11,11 +11,12 @@ everything here is reconciled from git; nothing is applied by hand.
   healthy except external-dns, which runs `--dry-run` on purpose until the
   zone moves off the old server
   ([`docs/runbooks/dns-cutover.md`](../../docs/runbooks/dns-cutover.md)).
-- `apps/` — the media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr,
-  Unpackerr, Recyclarr, Plex, Tautulli, Overseerr, Maintainerr and
-  Homepage, each an `Application` against the shared `bjw-s/app-template`
+- `apps/` — the media stack: Deluge, Prowlarr, FlareSolverr, Sonarr,
+  Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Seerr, Maintainerr
+  and Homepage, each an `Application` against the shared `bjw-s/app-template`
   chart with inline values, all in one `media` namespace (Phase 6, live —
-  see [`apps/README.md`](apps/README.md)).
+  see [`apps/README.md`](apps/README.md)). Homepage holds the apex,
+  `tomkatom.com`; everything else lives on a subdomain of it.
 
 `root-app` does not watch `apps/` itself. `platform/apps.yaml` — an
 ordinary top-level `platform/*.yaml` manifest, so `root-app` picks it up

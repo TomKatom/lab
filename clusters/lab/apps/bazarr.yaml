@@ -6,10 +6,15 @@
 #
 # Bazarr has no env override for its API key (unlike the *arrs'
 # SONARR__AUTH__APIKEY): its key lives in config.yaml only, so
-# arr-api-keys' BAZARR_API_KEY is consumed by the apps that *call* Bazarr,
-# never injected here. The migrated config.yaml carries the old server's
-# key — an operator step in docs/runbooks/media-migration.md, not a
-# manifest concern.
+# arr-api-keys' BAZARR_API_KEY is never injected here. It was consumed by
+# the apps that *call* Bazarr — which, since Homepage stopped polling it
+# (./homepage.yaml), is nothing: Bazarr reads the *arrs and nothing reads
+# Bazarr. The key stays in the Secret as the one recorded copy of a value
+# that must equal the old server's, because the migrated config.yaml is
+# what actually carries it and that file is not in git — an operator step
+# in docs/runbooks/media-migration.md, not a manifest concern. Unlike a URL
+# nobody dials, a credential that has to match somewhere else is worth
+# writing down.
 #
 # Deliberate narrowing of the house /data mount (./README.md "The /data
 # mount"): only /data/media, not the whole tree. The old server's
@@ -109,12 +114,14 @@ spec:
                     memory: 1Gi
         service:
           # Exactly one Service, so app-template names it after the release
-          # (`bazarr`) rather than appending the identifier — which is what
-          # BAZARR_URL in media-common/media-urls.yaml points at. Adding a
-          # second Service here renames this one silently; add
-          # `forceRename: bazarr` in the same edit if that ever happens.
-          # See ./README.md "A Service's name depends on how many Services
-          # its app declares".
+          # (`bazarr`) rather than appending the identifier. There is no
+          # BAZARR_URL in media-common/media-urls.yaml to keep in step — it
+          # was removed once Homepage stopped polling Bazarr, since nothing
+          # else in the stack dials it — so a silent rename here would go
+          # unnoticed rather than breaking a consumer. Add
+          # `forceRename: bazarr` in the same edit if a second Service ever
+          # lands. See ./README.md "A Service's name depends on how many
+          # Services its app declares".
           app:
             controller: app
             type: ClusterIP

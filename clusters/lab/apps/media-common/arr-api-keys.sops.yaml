@@ -10,7 +10,7 @@
 #
 # These are pinned to the old server's keys deliberately, never rotated:
 # the databases restored in runbook §5-§7 already hold those keys in their
-# own cross-references (Prowlarr's app-sync entries, Overseerr, Unpackerr),
+# own cross-references (Prowlarr's app-sync entries, Seerr, Unpackerr),
 # so reusing them makes the restore key-surgery-free.
 #
 # Consumed one key at a time via env.valueFrom.secretKeyRef, never envFrom —

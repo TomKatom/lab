@@ -1,0 +1,178 @@
+# Maintainerr — library retention. Rules match media in Plex against
+# Seerr/Tautulli/*arr metadata (last watched, added date, requester,
+# rating), collect the matches into a Plex collection that warns users before
+# anything happens, and delete on expiry. Wave 1: after media-common (wave 0)
+# has created the namespace and the media-env ConfigMap this consumes.
+#
+# Nothing about this app is declarable here. Its *connection settings* (Plex,
+# Sonarr, Radarr, Tautulli, Seerr) are database-only with no env override, so
+# they are a fresh-setup checklist in docs/runbooks/media-migration.md §9. Its
+# *rules* do have a file form — 3.19.0 imports and exports rule groups as
+# YAML — but the flow is export-then-commit, not commit-then-apply, so they
+# live under docs/maintainerr-rules/ rather than in this manifest. The policy
+# those rules encode, and why deleting a still-seeding release frees nothing,
+# are in docs/media-retention.md.
+#
+# Its Download Client settings section stays unconfigured here on purpose.
+# That cleanup path is qBittorrent-only — at this exact pinned version
+# `createDownloadClient` (apps/server/src/modules/api/download-client-api/
+# download-client.factory.ts) unconditionally returns a QbittorrentApi and
+# its own comment says "qBittorrent is the only backend today" — so against
+# Deluge there is nothing to point it at. Maintainerr therefore deletes
+# through the Sonarr and Radarr APIs instead, which removes the imported
+# library file and leaves the torrent in Deluge seeding. On private trackers
+# that is the outcome we want, not a gap to work around: the hardlinked copy
+# under /data/torrents is what keeps satisfying ratio after the library copy
+# is gone — see ./README.md "The `/data` mount" for why the two are the same
+# inode.
+#
+# The image moved orgs: releases from 3.x are published to
+# ghcr.io/maintainerr/maintainerr, while the older ghcr.io/jorenn92/
+# maintainerr path (which the phase plan named) stopped receiving version
+# tags at 2.19.0. Both the GitHub repo (Maintainerr/Maintainerr) and the
+# image label org.opencontainers.image.source confirm the move.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: maintainerr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000". The image already
+        # declares `USER node`, which is uid/gid 1000 on the node:alpine
+        # base, and every path it owns is copied `--chown=node:node`, so
+        # 1000:1000 is the identity it was built for. Confirmed by running
+        # the exact pinned digest as 1000:1000 over an empty writable mount:
+        # it created its SQLite database and answered both health routes.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/maintainerr/maintainerr
+                  # renovate: datasource=docker depName=ghcr.io/maintainerr/maintainerr
+                  tag: "3.19.0@sha256:3b90aeff94fd0a6c3e2e827f19e9827bc7046b51af962cd0593ce74cc6d8996a"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # The image's own HEALTHCHECK curls /api/health/ready, and
+                  # HealthController (apps/server/src/app/health.controller.ts
+                  # at this pinned version) splits the two cases the way
+                  # Kubernetes wants them: /live returns 200 as long as the
+                  # process is up without touching the database, /ready pings
+                  # the database and returns 503 when it cannot. Neither
+                  # carries a guard — this app installs no global auth guard
+                  # at all — so both answer anonymously. Verified by curling
+                  # both against the running pinned digest.
+                  #
+                  # Liveness deliberately uses /live: a transient database
+                  # blip should not restart the pod, only take it out of
+                  # service.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/health/live
+                    port: 6246
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/health/ready
+                    port: 6246
+                  # ⚠ Widened from the chart's default startup budget
+                  # (failureThreshold 3 × periodSeconds 10 = 30s), which is
+                  # *less* than the first boot upstream says it needs: the
+                  # image's own HEALTHCHECK declares
+                  # `--start-period=40s`, commented there as covering "the
+                  # first boot (UI base-path rewrite + Nest bootstrap +
+                  # migrations)". At the default the kubelet kills the
+                  # container before that finishes and the app never leaves
+                  # CrashLoopBackOff. failureThreshold applies only until
+                  # the first success, so this costs nothing afterwards.
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /api/health/ready
+                    port: 6246
+                    spec:
+                      periodSeconds: 10
+                      failureThreshold: 30
+                # Idle almost all the time; the load is the scheduled rule
+                # evaluation, which walks the library through the Plex and
+                # *arr APIs in bursts. Nothing here streams or transcodes.
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        service:
+          # Exactly one Service, so app-template names it `maintainerr` after
+          # the release rather than appending the identifier. Nothing else in
+          # the stack calls it — there is deliberately no MAINTAINERR_URL in
+          # media-common/media-urls.yaml, because no consumer exists — so
+          # adding a second Service here would rename this one with nothing
+          # to notice; see ./README.md "A Service's name depends on how many
+          # Services its app declares" and pin it with
+          # `forceRename: maintainerr` if that happens.
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 6246
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: maintainerr.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # /opt/data, not /config: the image sets DATA_DIR=/opt/data and
+          # declares it as its VOLUME, and the server resolves its SQLite
+          # database, logs and overlay assets underneath it. Small — a rule
+          # database and a few collection tables, no media.
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 1Gi
+            globalMounts:
+              - path: /opt/data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

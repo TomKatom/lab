@@ -1,0 +1,220 @@
+# Seerr — the request portal end users see. They browse, request a movie or a
+# show, and Seerr hands the approved request to Sonarr or Radarr.
+# Wave 1: after media-common (wave 0) has created the namespace and the
+# media-env ConfigMap this consumes.
+#
+# ## Why Seerr and not the Overseerr the old server runs
+#
+# sct/overseerr was archived on 2026-07-03: the Overseerr and Jellyseerr teams
+# merged into one project, Seerr, and Overseerr's last release (1.35.0) is now
+# the end of that line — no fixes, no CVE patches. Seerr is the continuation
+# of both codebases, so this is the upstream that keeps receiving them.
+#
+# The old server's Overseerr state migrates in place rather than being
+# re-entered: server/lib/overseerrMerge.ts runs on every start and, when the
+# restored settings.json carries no mediaServerType (which is what an
+# Overseerr config looks like), rewrites the SQLite schema onto Seerr's,
+# defaults the media server type to Plex, and renames the application title.
+# That rewrite is one-way and there is no downgrade path, so
+# docs/runbooks/media-migration.md §9 takes a copy of the restored config
+# directory before the first start.
+#
+# ⚠ This Ingress carries NO forward-auth annotation, and that is deliberate —
+# do not "fix" it. It is one of exactly two in this directory written that
+# way, ./homepage.yaml on the apex being the other, and both for the same
+# reason: every other host here is admin-facing and sits behind Authelia,
+# but requests.tomkatom.com is for
+# end users who have a Plex account and nothing else: Seerr's own login is
+# Plex OAuth, and it enforces it on every route that exposes anything.
+# Putting Authelia in front would mean every requester also needed an
+# Authelia identity, which defeats the point of the portal. An un-annotated
+# Ingress means Traefik never consults the forward-auth middleware for this
+# host. See ./README.md "Ingress: chart-rendered, not a `-config` dir".
+#
+# ⚠ Because Plex OAuth is the whole perimeter here, `main.localLogin` must be
+# OFF. It ships `true` (server/lib/settings/index.ts at the pinned tag), which
+# leaves /api/v1/auth/local accepting an email and password — an unrate-limited
+# credential endpoint on a host a stranger can reach. (The apex, ./homepage.yaml,
+# is the other stranger-reachable host, but it is static links and holds no
+# credential of any kind, so this is the only credential surface out there.)
+# With it false the route returns before touching the password path, so Plex
+# OAuth becomes the only way in and there is nothing left to spray.
+#
+# "Unrate-limited" is a property of this cluster, not an oversight: klipper
+# masquerades every external connection, so Traefik sees one source address
+# for the whole internet and a rateLimit middleware here would cap all
+# requesters together rather than per client. The reasoning is on
+# ../platform/traefik.yaml's `service.spec`. Closing the endpoint is
+# therefore the mitigation, not a supplement to one.
+#
+# It is a settings.json value, not a manifest one: Seerr has no env var for it
+# and this repo does not template its config, so it cannot be asserted here.
+# That makes it the one security property of this app git does not enforce —
+# docs/runbooks/media-migration.md §9 turns it off after the config restore
+# (the restored Overseerr settings.json will carry `true`) and §13's
+# acceptance row re-checks it.
+#
+# The Plex server, the Sonarr/Radarr connections and the Telegram agent are
+# all stored in Seerr's own settings.json and database rather than in
+# env, so they come across with the migrated config in
+# docs/runbooks/media-migration.md §9 — not a manifest concern.
+#
+# requests.tomkatom.com is NXDOMAIN publicly until the DNS cutover, so end
+# users cannot reach this until then; internal verification is
+# `curl --resolve` over WireGuard. See docs/runbooks/dns-cutover.md.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: seerr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000".
+        #
+        # The house block needs no exception here. Unlike the Overseerr image
+        # it replaces, which declared no `User` at all, this one ships
+        # `USER node:node` (uid 1000) with every path copied
+        # `--chown=node:node`, and upstream's own Helm chart
+        # (charts/seerr-chart/values.yaml at the pinned tag) ships this same
+        # 1000:1000 / fsGroup / runAsNonRoot / drop-ALL / RuntimeDefault
+        # block.
+        #
+        # fsGroup is what makes that work on a fresh PVC. The image ships a
+        # populated /app/config (a DOCKER marker plus empty db/ and logs/
+        # directories) and mounting a volume there hides all of it, so
+        # Seerr starts against a genuinely empty directory and TypeORM
+        # recreates db/ on the way to opening the SQLite file. That only
+        # succeeds if the mount is group-writable by 1000, which fsGroup
+        # arranges.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/seerr-team/seerr
+                  # renovate: datasource=docker depName=ghcr.io/seerr-team/seerr
+                  tag: "v3.3.0@sha256:c92d2dc117f62185e7bcb88cd56efd374ea79210eaf433275449e8d5988eb5a8"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                envFrom:
+                  - configMapRef:
+                      name: media-env
+                probes:
+                  # /api/v1/settings/public is what upstream probes with, in
+                  # both its compose healthcheck and its own Helm chart: the
+                  # route is registered above the isAuthenticated() guard in
+                  # server/routes/index.ts, so it answers before anyone has
+                  # logged in, and it is a local settings read with no
+                  # outbound dependency. (/api/v1/status is anonymous too,
+                  # but it reaches api.github.com to work out whether an
+                  # update is available, which a probe has no reason to do.)
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/settings/public
+                    port: 5055
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/settings/public
+                    port: 5055
+                  # ⚠ The chart's default startup budget (failureThreshold 3
+                  # × periodSeconds 10 = 30s) is not survivable here, so it
+                  # is widened to 5 minutes. server/index.ts awaits
+                  # checkOverseerrMerge() and then TypeORM's runMigrations()
+                  # *before* Express listens, so nothing answers on 5055 for
+                  # the whole of the one-way Overseerr → Seerr schema
+                  # rewrite. A startup probe that gives up mid-rewrite gets
+                  # the container killed and restarted onto a half-migrated
+                  # database — the exact unrecoverable state
+                  # docs/runbooks/media-migration.md §9 takes a tarball
+                  # against. failureThreshold applies only until the first
+                  # success, so this costs nothing on every later start.
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /api/v1/settings/public
+                    port: 5055
+                    spec:
+                      periodSeconds: 10
+                      failureThreshold: 30
+                # A request portal for a handful of users: the work is TMDB
+                # lookups and the periodic availability sync against Plex
+                # and the *arrs, none of it heavy. The memory ceiling is
+                # sized for Node's heap plus the on-disk image cache being
+                # written through, not for concurrency.
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        service:
+          # Exactly one Service, so app-template names it `seerr` after
+          # the release rather than appending the identifier — which is what
+          # SEERR_URL in media-common/media-urls.yaml points at. Adding a
+          # second Service here renames this one silently; add
+          # `forceRename: seerr` in the same edit if that ever happens.
+          # See ./README.md "A Service's name depends on how many Services
+          # its app declares".
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 5055
+        ingress:
+          # No `annotations:` block at all — see the header. This is the
+          # deliberate exception to the forward-auth rule, not an omission.
+          app:
+            hosts:
+              - host: requests.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # /app/config, not /config: this image has no configurable prefix
+          # beyond the CONFIG_DIRECTORY env var, and its default is
+          # `<workdir>/config` with the workdir at /app — the same layout the
+          # Overseerr image used, which is why the migrated tree drops in
+          # unchanged. The old server bind mounted that path too (runbook
+          # §2.1).
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 2Gi
+            globalMounts:
+              - path: /app/config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

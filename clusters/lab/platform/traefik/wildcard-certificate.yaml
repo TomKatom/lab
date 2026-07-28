@@ -5,11 +5,25 @@
 # (../traefik.yaml, `tlsStore.default`) reads `wildcard-tomkatom-tls` from
 # its own namespace. Secrets don't cross namespaces.
 #
-# `*.tomkatom.com` only — no apex SAN. The apex is still served by the old
-# server, which draws its own certs from the same per-registered-domain
+# Two names, because `*.tomkatom.com` matches exactly one label and so does
+# not cover `tomkatom.com` itself. The apex is the homepage's host
+# (`clusters/lab/apps/homepage.yaml`), and Traefik's default TLSStore serves
+# this one Secret for every SNI it has no better match for — so the apex
+# SAN here is the whole of that host's TLS story. Removing it does not break
+# the wildcard; it silently drops the apex onto Traefik's self-signed
+# default certificate.
+#
+# Both names DNS-01 through the same `_acme-challenge.tomkatom.com` record.
+# cert-manager writes one TXT value per identifier at that single name and
+# removes both when the order completes, which is the ordinary wildcard-plus-apex
+# case rather than anything special here.
+#
+# The old server draws its own certs from the same per-registered-domain
 # production rate-limit bucket, so issuance here stays deliberately rare:
 # the DNS-01 path was already proven end to end on the staging issuer
 # (../cert-manager/smoke-staging-certificate.yaml) before this file existed.
+# Editing `dnsNames` re-issues — that is one certificate out of the bucket,
+# spent knowingly, and not a thing to do twice in a week.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -22,3 +36,4 @@ spec:
     kind: ClusterIssuer
   dnsNames:
     - "*.tomkatom.com"
+    - "tomkatom.com"

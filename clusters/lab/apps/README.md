@@ -1,7 +1,7 @@
 # apps
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
-Overseerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
+Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
 `media-common` config, discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
@@ -22,7 +22,7 @@ Phase 6 built this directory — see [`master-plan.md`](../../../master-plan.md)
 
 Every platform component gets its own namespace. This stack deliberately
 does not: `deluge`, `prowlarr`, `sonarr`, `radarr`, `bazarr`, `unpackerr`,
-`plex`, `overseerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
+`plex`, `seerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
 all land in a single `media` namespace.
 
 The reason is the shared secrets, not laziness. `media-common` (wave 0,
@@ -123,7 +123,7 @@ Mount rules:
 - **ro**: `plex`, and only at `/data/media` — Plex only ever reads, never
   writes, the media tree, and has no business seeing `/data/torrents` at
   all.
-- **nobody else.** `prowlarr`, `recyclarr`, `overseerr`, `tautulli`,
+- **nobody else.** `prowlarr`, `recyclarr`, `seerr`, `tautulli`,
   `maintainerr` and `homepage` never mount `/data` — none of them touch
   files, only APIs.
 
@@ -143,7 +143,7 @@ House Ingress style is unchanged from `platform/` (see
 [`platform/README.md`](../platform/README.md#exposing-a-service)): no
 `ingressClassName`, no `tls:` block — Traefik is the cluster default
 `IngressClass` and its default `TLSStore` already serves the
-`*.tomkatom.com` wildcard for any host that doesn't ask for its own
+`wildcard-tomkatom-tls` Secret for any host that doesn't ask for its own
 certificate. Every admin-facing host carries exactly this annotation to
 sit behind Authelia:
 
@@ -156,12 +156,29 @@ metadata:
 Authelia's existing ACL already covers every new host here with zero
 Authelia-side change: `access_control.default_policy: deny` plus one rule
 for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
-any hostname under the zone, new or old. The one deliberate exception is
-Overseerr's `requests.tomkatom.com` — it carries **no** forward-auth
-annotation at all, because end users authenticate through Overseerr's own
-Plex OAuth login instead; an un-annotated Ingress means Authelia is never
-consulted for that host. Everything else admin-facing gets the
-annotation.
+any hostname under the zone, new or old.
+
+**Two Ingresses here deliberately carry no annotation at all**, and both
+for the same reason — they are the two hosts aimed at people who hold a
+Plex account and no Authelia identity, so forward-auth would lock out
+exactly the audience they exist for. An un-annotated Ingress means Traefik
+never consults the middleware for that host.
+
+- **Seerr, `requests.tomkatom.com`** — end users authenticate through
+  Seerr's own Plex OAuth login.
+- **Homepage, `tomkatom.com`** — the front door: public hostnames and
+  public plex.tv links, no Secret read, no app polled, `disableIndexing`
+  set. Losing the *arr widgets is part of the same decision, not a
+  separate one: a homepage widget renders what the credential it holds
+  returns, so a queue counter on an unauthenticated page is a library
+  inventory.
+
+Everything else admin-facing gets the annotation. Note the apex is also
+the one host here that Authelia's `*.tomkatom.com` rule would *not* match
+even if it were annotated — a wildcard label does not cover the bare
+domain, and `default_policy: deny` would then deny it outright. Anything
+apex-hosted that ever does need protecting needs an Authelia ACL rule of
+its own in the same commit.
 
 ## Single `source:`, always
 
@@ -184,12 +201,23 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
 - **Secret `arr-api-keys`** — `SONARR_API_KEY`, `RADARR_API_KEY`,
   `PROWLARR_API_KEY`, `BAZARR_API_KEY`. Consumed by name, per key, via
   `env.valueFrom.secretKeyRef` wherever an app needs one of them (e.g.
-  Unpackerr's `UN_SONARR_0_API_KEY`, Homepage's `HOMEPAGE_VAR_*` widget
-  keys) — never `envFrom` for this one, since apps only ever need a
-  subset of the four keys.
+  Sonarr's own `SONARR__AUTH__APIKEY`, Unpackerr's
+  `UN_SONARR_0_API_KEY`) — never `envFrom` for this one, since apps only
+  ever need a subset of the four keys. `BAZARR_API_KEY` is the odd one:
+  Bazarr has no env override for its own key and nothing in the cluster
+  calls Bazarr, so it is injected nowhere and exists only as the recorded
+  copy of a value the migrated `config.yaml` has to match (`bazarr.yaml`).
 - **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
-  Overseerr's and Tautulli's notification agents (configured in-app; the
+  Seerr's and Tautulli's notification agents (configured in-app; the
   Secret only holds the credential).
+- **Secret `tautulli-credentials`** — `PLEX_TOKEN`, `TAUTULLI_API_KEY`,
+  both consumed by `tautulli.yaml` as environment variables. Tautulli
+  reads `TAUTULLI_<SETTING>` ahead of its config.ini and refuses to save
+  that setting from the UI while the variable is set, which makes its
+  whole Plex connection declarable the way the *arrs' API keys are. Scoped
+  to Tautulli rather than shared as a `plex` Secret because it is the only
+  environment consumer of a Plex token — Seerr and Maintainerr
+  authenticate to Plex from their own databases.
 - **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
   app that cares about time zone consumes the whole map via `envFrom`
   rather than naming the single key.
@@ -293,7 +321,7 @@ deferred to Phase 8.
   other app's Secret/ConfigMap consumption assumes it already exists.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `overseerr`, `maintainerr`), together with `recyclarr-config`'s and
+  `seerr`, `maintainerr`), together with `recyclarr-config`'s and
   `homepage-config`'s own kustomize-source Applications.
 - **`recyclarr` and `homepage` charts — wave `"2"`**, one wave after their
   own `-config` overlays, so the ConfigMap each mounts already exists the
@@ -332,6 +360,16 @@ only exists where there's:
   `SOPS_AGE_KEY` in that job), the same way every platform `-config`
   overlay with a `.sops.yaml` file is skipped.
 
+What splitting the config out costs, in both cases: app-template only
+stamps its `checksum/configMaps` pod annotation — the thing that rolls a
+Deployment when config content changes — over ConfigMaps declared in its
+own `configMaps:` values. A ConfigMap owned by a separate Application is
+invisible to it, so editing one of these directories syncs green in Argo
+while the running Pod keeps the old content, and the restart is manual.
+Weigh that drift window against the CI validation above before adding the
+next `-config` dir; an app whose config changes often is better off with
+the ConfigMap in its chart values.
+
 ## Media pipeline smoke test
 
 The phase-level acceptance check, in the same shape as
@@ -341,10 +379,16 @@ whoami procedure: run it after the migration runbook's restores, after any
 to end.
 
 **Every check here is internal, over WireGuard.** Hostnames are resolved
-at the node with `curl --resolve`, never through public DNS — until
+at the node with `curl --resolve`, never through public DNS. Until
 [`docs/runbooks/dns-cutover.md`](../../../docs/runbooks/dns-cutover.md)
-runs, every host below is NXDOMAIN publicly, and a check that "passes" by
-resolving publicly reached the **old server**, not this cluster.
+runs, **five of the names below already resolve publicly — every one of
+them to the old server**: the apex `tomkatom.com` (`A 94.75.211.144`) and
+the four hand-made `CNAME`s to it, `sonarr.` `radarr.` `prowlarr.`
+`deluge.`. The rest (`bazarr.` `tautulli.` `maintainerr.` `requests.`) are
+NXDOMAIN. So `--resolve` is not belt-and-braces on any line here: drop it
+on one of those five and the check quietly passes against **production**.
+`docs/runbooks/media-migration.md` §4 step 6 has the same table, and the
+`/etc/hosts` overrides to use when a browser is needed instead of `curl`.
 
 ### 1. Everything is Synced, Healthy and Running
 
@@ -352,7 +396,7 @@ resolving publicly reached the **old server**, not this cluster.
 kubectl -n argocd get applications
 # every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
 # flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
-# overseerr, maintainerr, homepage(+-config)
+# seerr, maintainerr, homepage(+-config)
 
 kubectl -n media get pods
 ```
@@ -361,10 +405,10 @@ Every Deployment pod reads `1/1 Running`. Recyclarr is a CronJob, so it
 appears only as `Completed` Job pods (or not at all between runs) — that is
 correct, not a missing app.
 
-### 2. Auth boundary: eight protected hosts, one that must not be
+### 2. Auth boundary: seven protected hosts, two that must not be
 
 ```sh
-for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr home; do
+for h in sonarr radarr bazarr prowlarr deluge tautulli maintainerr; do
   printf '%-14s %s\n' "$h" "$(curl -sI --resolve "$h.tomkatom.com:443:10.10.10.10" \
     "https://$h.tomkatom.com" | grep -iE '^HTTP|^location' | tr -d '\r' | paste -sd' ' -)"
 done
@@ -372,13 +416,27 @@ done
 
 curl -sI --resolve requests.tomkatom.com:443:10.10.10.10 \
   https://requests.tomkatom.com | head -1
-# HTTP/2 200 — Overseerr's own Plex-OAuth login, by design (no annotation)
+# HTTP/2 200 — Seerr's own Plex-OAuth login, by design (no annotation)
+
+curl -sI --resolve tomkatom.com:443:10.10.10.10 https://tomkatom.com | head -1
+# HTTP/2 200 — Homepage, the front door, also by design (no annotation)
 ```
 
-A `200` from any of the eight means the forward-auth annotation is missing
-from that Ingress; a `302` from `requests.` means one was added that should
-not be there. Note there is no `-k` anywhere above: a TLS error is itself
-the wildcard-certificate check failing.
+A `200` from any of the seven means the forward-auth annotation is missing
+from that Ingress; a `302` from `requests.` or from the apex means one was
+added that should not be there. Note there is no `-k` anywhere above: a TLS
+error is itself the certificate check failing — and the apex line is the
+only one that exercises the `tomkatom.com` SAN added to
+`platform/traefik/wildcard-certificate.yaml`, since every other host is
+covered by the wildcard.
+
+`--resolve` is load-bearing on the apex line and on four of the seven
+above it — `sonarr.` `radarr.` `prowlarr.` `deluge.` are `CNAME`s to the
+apex, so until the cutover runs all five resolve publicly to the old
+server. Drop the flag on any of them and the check quietly passes against
+production — and the old server runs its own Traefik and Authelia
+(`media-migration.md` §2.1), so the response can look exactly like the one
+this check is asking for.
 
 ### 3. Hardlink proof (the master-plan acceptance)
 
@@ -426,9 +484,9 @@ transcode is software libx264 and direct play is the design assumption.
 ### 6. The full end-user loop
 
 The one check that exercises every app at once. Request a title in
-`requests.tomkatom.com` → Overseerr hands it to Sonarr/Radarr → Prowlarr's
+`requests.tomkatom.com` → Seerr hands it to Sonarr/Radarr → Prowlarr's
 indexers find it → Deluge downloads it → the `*arr` hardlink-imports it into
-`/data/media` → Plex's library updates → Overseerr flips it to **Available**
+`/data/media` → Plex's library updates → Seerr flips it to **Available**
 → **a message lands in the Telegram group**. Tautulli's recently-added
 digest follows on its own schedule.
 
@@ -447,9 +505,10 @@ Until the cutover runbook runs, this must all still be true:
 kubectl -n external-dns logs deploy/external-dns --tail=200 \
   | grep -iE 'changing record|create|up to date'
 # would-create lines for the never-existing hosts only — auth., bazarr.,
-# tautulli., maintainerr., home., requests. Nothing for sonarr./radarr./
-# prowlarr./deluge. (taken CNAMEs, blocked by the ownership gate), and no
-# actual writes at all (--dry-run).
+# tautulli., maintainerr., requests. Nothing for sonarr./radarr./prowlarr./
+# deluge. (taken CNAMEs) and nothing for the bare apex either (Homepage's
+# host; Tofu's record, equally unowned) — all five blocked by the same
+# ownership gate. And no actual writes at all (--dry-run).
 
 dig +short tomkatom.com A                        # 94.75.211.144 — old server
 dig +short requests.tomkatom.com                 # empty — NXDOMAIN

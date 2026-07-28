@@ -31,10 +31,10 @@ before you begin, the zone is shared and can change under you):
 
 | Name | Today | Serves |
 |---|---|---|
-| `tomkatom.com` | `A 94.75.211.144` | old server |
+| `tomkatom.com` | `A 94.75.211.144` | old server — **and, from flip 1 on, the cluster's Homepage** (see below) |
 | `sonarr` / `radarr` / `prowlarr` / `deluge` | `CNAME → tomkatom.com` | old server |
 | `*.tomkatom.com` | **NXDOMAIN** | nothing — there is no wildcard *record* (the old server has a wildcard *certificate*, which is a different thing) |
-| `vpn` / `auth` / `bazarr` / `tautulli` / `maintainerr` / `home` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
+| `vpn` / `auth` / `bazarr` / `tautulli` / `maintainerr` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
 | `*.lab.tomkatom.com` | `A` (internal addresses) | new server, WireGuard-only, already Tofu-managed and ungated |
 | `_externaldns.*` | **NXDOMAIN** | nothing — external-dns has written zero records since it was deployed |
 
@@ -43,6 +43,24 @@ Ingress and needs no record at all.** Remote clients are brokered by
 plex.tv straight to `145.239.3.55:32400`, which the host already DNATs to
 the node, so external-dns never sees a Plex host and never creates one —
 before or after this cutover.
+
+**The apex is the mirror image of that, and it changes what flip 1 means.**
+Homepage's Ingress is `tomkatom.com` itself
+(`clusters/lab/apps/homepage.yaml`), so the cluster is ready to serve the
+bare domain — but external-dns cannot create or move that record, because
+Tofu owns it and ownership is what gates every write (§1). Two things
+follow:
+
+- **Flip 1 is no longer only a redirection, it is a launch.** The moment
+  the apex A record points at the node, `https://tomkatom.com` stops being
+  the old server's front page and becomes this cluster's. That is the
+  intent, but it is the most user-visible single second of this runbook —
+  do it knowing that, not as a side effect of "moving DNS".
+- **The apex answers on a real certificate from that same second**, because
+  `clusters/lab/platform/traefik/wildcard-certificate.yaml` carries
+  `tomkatom.com` as a second SAN alongside `*.tomkatom.com` (a wildcard
+  label does not cover the bare domain). Confirm the Secret really holds
+  both names before flipping — §2, precondition 7.
 
 ```sh
 dig +short tomkatom.com A
@@ -72,11 +90,18 @@ external-dns can be un-inerted on a zone it shares with a production server
 at all.
 
 So the only unconditional write external-dns has is a `Create` for a name
-with **no** record at all. Today that means the six cluster hosts nothing
-else claims — `auth.`, `bazarr.`, `tautulli.`, `maintainerr.`, `home.` and
+with **no** record at all. Today that means the five cluster hosts nothing
+else claims — `auth.`, `bazarr.`, `tautulli.`, `maintainerr.` and
 `requests.`. That is what `--dry-run` is standing in for, and it is a
 timing guard (do not make new-server services resolve before you mean to),
 not a safety guard.
+
+The bare apex is **not** on that list, and is in the same position as the
+four `CNAME`s the corollary below describes rather than the five names
+above it: a record external-dns does not own is already sitting there, so
+the `Create` is dropped. Tofu's apex record carries no ownership TXT
+either, which is why Homepage's host never appears in external-dns's output
+at all.
 
 **Corollary that shapes the whole procedure:** the four names the old server
 serves are already `CNAME`s, so external-dns will *never* adopt them — and,
@@ -97,11 +122,33 @@ Do not proceed until every row is green.
 | # | Precondition | How to check |
 |---|---|---|
 | 1 | **Phase 6 apps are live on this cluster**, with an Ingress each | `kubectl get ingress -A` over WG lists every host the old server serves |
-| 2 | Each of those Ingresses answers on the real wildcard cert | `curl -sI --resolve <host>:443:10.10.10.10 https://<host>` → 200/302, LE chain |
+| 2 | Each of those Ingresses answers on the real certificate | `curl -sI --resolve <host>:443:10.10.10.10 https://<host>` → 200/302, LE chain |
 | 3 | **Every Ingress publishes the public IP, not `10.10.10.10`** | §3 — this is the hard gate |
 | 4 | Media data is on the new server and the old server is ready to stop serving | operator judgement; the flip is near-instant to reverse but the traffic is real |
 | 5 | Cloudflare token in `secrets.sops.tfvars.json` really carries `Zone:DNS:Edit` | already proven — the `lab.` management records were created with it |
 | 6 | The flip PRs are clean, minimal diffs with CI green | `gh pr diff <PR#>`, `gh pr checks <PR#>` |
+| 7 | **The issued certificate really carries the apex SAN** | §2a — flip 1 publishes the apex, so this has to be true before it, not after |
+
+---
+
+### 2a. The apex SAN
+
+`kubectl -n traefik get certificate wildcard-tomkatom` reporting `Ready`
+only says cert-manager is happy with *some* certificate. Read the one
+Traefik is actually serving:
+
+```sh
+kubectl -n traefik get secret wildcard-tomkatom-tls \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d \
+  | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+# DNS:*.tomkatom.com, DNS:tomkatom.com
+```
+
+One name where there should be two means the re-issue that added the SAN
+has not landed yet — most likely a pending order (`kubectl -n traefik get
+certificaterequest,order,challenge`). Flip 1 with one name and the apex
+serves Traefik's self-signed default: every visitor to the new front door
+gets a browser interstitial, on the most visible name on the zone.
 
 ---
 
@@ -225,8 +272,18 @@ dig +short tomkatom.com A                        # 145.239.3.55
 dig +short randomname-xyz123.tomkatom.com A      # 145.239.3.55 (wildcard now exists)
 dig +short vpn.tomkatom.com A                    # 145.239.3.55
 dig +short sonarr.tomkatom.com                   # CNAME → apex → 145.239.3.55
-curl -sI https://tomkatom.com | head -1          # the new server's Traefik answers
+curl -sI https://tomkatom.com | grep -iE '^HTTP|^location' | tr -d '\r'
+# HTTP/2 200 — Homepage, on the real chain, and no location: line
 ```
+
+That last check is the flip's user-visible result, and no `-k`: a TLS error
+there is precondition 7 having been wrong. It greps for `location` as well
+as the status line because the apex Ingress is deliberately un-annotated
+(`clusters/lab/apps/homepage.yaml`): a `302` to `auth.tomkatom.com` here
+means forward-auth got onto this host, which would send exactly the viewers
+the page is written for to a login they have no account on. Load it in a
+browser too — the apex is now a page people will be sent to, so "Traefik
+answers" is a weaker claim than it used to be.
 
 Then open a follow-up PR deleting the `import` block (it has done its job;
 leaving it is harmless but it reads like pending work). At this point every
@@ -248,8 +305,8 @@ appear on the new server's side of the zone, while every other host would.
 Nothing downstream would look broken; they would keep resolving to whatever
 the apex points at.
 
-They are also the only four this applies to. Every other cluster host is
-NXDOMAIN (§0) and needs no preparation.
+They are also the only four this applies to. Every other cluster host had
+no record of its own before flip 1 (§0) and needs no preparation.
 
 Delete them by hand in the Cloudflare dashboard (`tomkatom.com` → DNS →
 Records → the four `CNAME` rows → Delete), or with the token from §4:
@@ -266,16 +323,24 @@ for h in sonarr radarr prowlarr deluge; do
 done
 
 for h in sonarr radarr prowlarr deluge; do
-  printf '%-24s %s\n' "$h.tomkatom.com" "$(dig +short "$h.tomkatom.com" | tr '\n' ' ')"
-done   # all four empty — NXDOMAIN
+  printf '%-24s %s\n' "$h.tomkatom.com" \
+    "$(dig +short CNAME "$h.tomkatom.com" | tr '\n' ' ')"
+done   # all four empty — no CNAME left at any of them
 ```
 
-**A NXDOMAIN window is expected and normal here**, from this delete until
-external-dns's first live sync after §6b lands. Those four are admin UIs,
-reachable over WireGuard against `10.10.10.10` throughout (the `curl
---resolve` form used everywhere in this repo), so the window costs nothing
-but do not be surprised by it — and do not "fix" it by re-creating a CNAME,
-which puts the suppression straight back.
+⚠ **Check the `CNAME`, not the address — `dig +short <host>` is useless
+here.** Flip 1 created Tofu's `*.tomkatom.com` A record (§5,
+`local.dns_a_records`'s `wildcard`), and a wildcard answers every name in
+the zone that has no record of its own. So the instant these four `CNAME`s
+are deleted the names keep resolving — to `145.239.3.55`, the right answer,
+via the wildcard. **There is no NXDOMAIN window**, nothing to schedule
+around, and equally nothing an address lookup can tell you: the four names
+return the same IP before §6a, between §6a and §6b, and after external-dns
+has created real A records for them. Only the record *type* and the
+ownership TXT distinguish those states, which is what §7 checks.
+
+Do not "fix" a name by re-creating a CNAME at it — that puts the
+suppression straight back, silently.
 
 Confirmation that the gate has actually cleared, while still in dry-run:
 those four names now show up as would-creates where before they were absent
@@ -291,10 +356,13 @@ One-line PR against `clusters/lab/platform/external-dns.yaml`: delete the
 `extraArgs: ["--dry-run"]` block. Merge, and Argo applies it within a sync
 cycle.
 
-With §6a done, expect it to create an A + ownership TXT for **all ten**
-cluster hosts — `auth. sonarr. radarr. bazarr. prowlarr. deluge. tautulli.
-maintainerr. home. requests.` — and nothing else. The log line for a run
-with nothing left to do is `All records are already up to date`.
+With §6a done, expect it to create an A + ownership TXT for **all nine**
+cluster hosts it can reach — `auth. sonarr. radarr. bazarr. prowlarr.
+deluge. tautulli. maintainerr. requests.` — and nothing else. Homepage is
+the tenth Ingress and is deliberately not in that list: its host is the
+apex, which Tofu already owns and external-dns therefore cannot write
+(§0, §1). The log line for a run with nothing left to do is `All records
+are already up to date`.
 
 ```sh
 kubectl -n external-dns logs deploy/external-dns | grep -E 'Changing record|up to date'
@@ -317,26 +385,36 @@ years of Ingress churn from touching records external-dns did not create.
 record-type infix: the TXT for an A record at `auth.tomkatom.com` is
 `_externaldns.` + `a-` + the host.
 
-The set is exactly the hosts with an Ingress — every `*.tomkatom.com` host
-this cluster serves, and no more. **`plex` is not among them**: Plex has no
-Ingress, so external-dns never creates a record for it, and remote access
-is brokered by plex.tv straight to `145.239.3.55:32400` (§0).
+The set is every `*.tomkatom.com` host this cluster serves, and no more.
+Two apps are absent for opposite reasons: **`plex`** has no Ingress at all,
+so external-dns never sees it and remote access is brokered by plex.tv
+straight to `145.239.3.55:32400` (§0); **Homepage** has one, but its host
+is the apex, which is Tofu's record and stays Tofu's — an A record with no
+ownership TXT, checked as such in the next block rather than this one.
 
 ```sh
-for h in auth sonarr radarr bazarr prowlarr deluge tautulli maintainerr home requests; do
+for h in auth sonarr radarr bazarr prowlarr deluge tautulli maintainerr requests; do
   echo "== $h"
   dig +short "$h.tomkatom.com" A                        # 145.239.3.55
   dig +short "_externaldns.a-$h.tomkatom.com" TXT       # heritage=external-dns,external-dns/owner=lab-k3s,...
 done
 ```
 
-The four that were CNAMEs until §6a must now read as plain A records with an
-ownership TXT beside them, like every other row. An empty A **and** an empty
-TXT for one of them means external-dns still sees something at that name —
-re-check that §6a's delete actually took.
+**The TXT column is the whole check; the A column proves nothing.** Tofu's
+`*.tomkatom.com` A record answers every name in this zone that has no
+record of its own, so `dig +short <host> A` returns `145.239.3.55` whether
+external-dns created a record or silently declined to. A host with an
+address and **no** `_externaldns.a-` TXT is a create that did not happen —
+looking exactly like a working one from the outside. That is why the four
+that were CNAMEs until §6a get read here rather than by resolution: they
+must now be plain A records (`dig <host> A` shows `IN A`, not a CNAME chain)
+with an ownership TXT beside them, like every other row.
 
 **Nothing else grew one.** Tofu's records must have no ownership TXT at all
-— that absence is the only thing keeping `policy: sync` off them:
+— that absence is the only thing keeping `policy: sync` off them, and it
+now also has to hold for a name external-dns has an Ingress for. The apex
+serving Homepage is exactly the case where an ownership TXT appearing would
+mean the gate had failed:
 
 ```sh
 for h in tomkatom.com vpn.tomkatom.com; do
@@ -406,9 +484,11 @@ worth chasing before you walk away.
    rebuild by hand. This is why §4 is not optional.
 4. **A name the old server needs stopped resolving** — check for a duplicate
    apex A record first (§5a's trap); that is by far the most likely cause.
-5. **One of §6a's four names is still NXDOMAIN** long after §6b merged —
-   external-dns has not created it. Check the logs for that host and confirm
-   the `CNAME` really is gone (a second, forgotten record at the same name is
-   enough to re-arm the ownership gate). Re-creating the CNAME restores
-   resolution immediately but permanently blocks external-dns from owning the
-   name; only do that if the name must resolve *now*.
+5. **One of §6a's four names has no `_externaldns.a-` TXT** long after §6b
+   merged — external-dns has not created it, and the wildcard is covering
+   for the gap, so the name still resolves to the right address and nothing
+   looks broken (§7). Check the logs for that host and confirm the `CNAME`
+   really is gone (a second, forgotten record at the same name is enough to
+   re-arm the ownership gate). Re-creating the CNAME permanently blocks
+   external-dns from owning the name and buys nothing the wildcard is not
+   already giving you.
