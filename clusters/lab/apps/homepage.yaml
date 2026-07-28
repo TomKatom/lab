@@ -34,8 +34,25 @@
 # 2. **external-dns will not create the apex record, and must not.** It is
 #    Tofu's (`infra/tofu/cloudflare.tf`, `local.dns_a_records`), carries no
 #    ownership TXT, and external-dns declines a Create at any name already
-#    holding a record it does not own. This Ingress therefore adds nothing
-#    to the zone — the record it needs is one Tofu already manages.
+#    holding a record it does not own. The apex record this Ingress needs is
+#    one Tofu already manages.
+#
+# ## `www`, the one name that is not the apex
+#
+# `www.tomkatom.com` is served here too, as a second host on the same
+# Ingress rather than a redirect: the page asks crawlers not to index it
+# (`disableIndexing`), so there is no canonical-URL reason to prefer one
+# name, and a second host is a line of YAML where a redirect would be a
+# Middleware to write and keep. It is also the one name a viewer typing
+# from memory is most likely to reach for.
+#
+# Unlike the apex it needs nothing from Tofu — the wildcard SAN already
+# covers it and external-dns creates and owns its A record at flip 2. What
+# it does need is the old server's `www` CNAME gone first: while that
+# unowned record sits at the name, external-dns declines the Create and
+# says nothing about it. `docs/runbooks/dns-cutover.md` §6a deletes it
+# alongside the other suppressing names, which is why this host can be
+# merged before the cutover without waiting on anything.
 #
 # ⚠ A config edit needs `kubectl -n media rollout restart deploy/homepage`
 # to take effect, and Argo reports the Application synced either way. The
@@ -127,11 +144,13 @@ spec:
                   #   the exact form upstream's own Kubernetes install docs
                   #   use, for the same reason.
                   #
-                  #   tomkatom.com — what Traefik forwards from the browser.
-                  #   Without it the page itself still renders and every
-                  #   /api/* call behind it 400s.
+                  #   tomkatom.com and www.tomkatom.com — what Traefik
+                  #   forwards from the browser. Both Ingress hosts have to
+                  #   be listed: the middleware matches the Host header
+                  #   verbatim, so a name missing here still renders the
+                  #   page and 400s every /api/* call behind it.
                   - name: HOMEPAGE_ALLOWED_HOSTS
-                    value: "$(MY_POD_IP):3000,tomkatom.com"
+                    value: "$(MY_POD_IP):3000,tomkatom.com,www.tomkatom.com"
                 envFrom:
                   - configMapRef:
                       name: media-env
@@ -197,6 +216,13 @@ spec:
           app:
             hosts:
               - host: tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+              - host: www.tomkatom.com
                 paths:
                   - path: /
                     pathType: Prefix
