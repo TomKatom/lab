@@ -98,13 +98,6 @@ spec:
         # unless the affix itself templates %{record_type}, which this one
         # does not.
         txtPrefix: _externaldns.
-        extraArgs:
-          # See the header. external-dns still authenticates, reads the
-          # zone, and logs `Changing record.` for everything it *would*
-          # write — it just returns before the mutation
-          # (provider/cloudflare/cloudflare.go, v0.21.0). Removing this is a
-          # deliberate cutover step, never a drive-by edit.
-          - --dry-run
   destination:
     server: https://kubernetes.default.svc
     namespace: external-dns
