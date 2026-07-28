@@ -114,7 +114,7 @@ resource "cloudflare_dns_record" "management" {
 # the ID did not match — stop and do not apply.
 import {
   to = cloudflare_dns_record.records["apex"]
-  id = "096a4bdef4b6f25679ec97e558d04bf4/CHANGE_ME_APEX_RECORD_ID"
+  id = "096a4bdef4b6f25679ec97e558d04bf4/7c38e366be5f976e525b3afc0bd6b4b9"
 }
 
 # Renamed from the pre-for_each apex/wildcard/vpn resources — same records,
