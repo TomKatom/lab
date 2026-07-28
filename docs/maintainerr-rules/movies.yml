@@ -1,0 +1,36 @@
+mediaType: MOVIES
+rules:
+  - "0":
+      - firstValue: Plex.labels
+        action: NOT_CONTAINS
+        customValue:
+          type: text list
+          value: keep
+      - operator: AND
+        firstValue: Plex.addDate
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "90"
+      - operator: AND
+        firstValue: Plex.lastViewedAt
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "60"
+  - "1":
+      - operator: OR
+        firstValue: Plex.labels
+        action: NOT_CONTAINS
+        customValue:
+          type: text list
+          value: keep
+      - operator: AND
+        firstValue: Plex.addDate
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "90"
+      - operator: AND
+        firstValue: Plex.lastViewedAt
+        action: NOT_EXISTS

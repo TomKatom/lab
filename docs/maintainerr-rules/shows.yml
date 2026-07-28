@@ -1,0 +1,36 @@
+mediaType: SHOWS
+rules:
+  - "0":
+      - firstValue: Plex.labels
+        action: NOT_CONTAINS
+        customValue:
+          type: text list
+          value: keep
+      - operator: AND
+        firstValue: Plex.sw_lastEpisodeAddedAt
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "90"
+      - operator: AND
+        firstValue: Plex.sw_lastWatched
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "90"
+  - "1":
+      - operator: OR
+        firstValue: Plex.labels
+        action: NOT_CONTAINS
+        customValue:
+          type: text list
+          value: keep
+      - operator: AND
+        firstValue: Plex.sw_lastEpisodeAddedAt
+        action: BEFORE
+        customValue:
+          type: custom_days
+          value: "90"
+      - operator: AND
+        firstValue: Plex.sw_lastWatched
+        action: NOT_EXISTS
