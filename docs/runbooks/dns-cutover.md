@@ -411,9 +411,11 @@ for h in sonarr radarr prowlarr deluge bazarr www; do
   echo "$h deleted"
 done
 
+# Ask the zone's own nameserver, not your resolver — see the second ⚠ below.
+NS=$(dig +short NS tomkatom.com | head -1)
 for h in sonarr radarr prowlarr deluge bazarr www; do
   printf '%-24s %s\n' "$h.tomkatom.com" \
-    "$(dig +short CNAME "$h.tomkatom.com" | tr '\n' ' ')"
+    "$(dig +short @"$NS" CNAME "$h.tomkatom.com" | tr '\n' ' ')"
 done   # all six empty — no CNAME left at any of them
 
 # Group 2 — dead, zone hygiene only, order doesn't matter
@@ -445,6 +447,22 @@ and nothing looks broken (§9 item 5). Group 2 has no such subtlety: those
 ten names have no Ingress to collide with, so after their `CNAME` is gone
 the wildcard answers them too — that is simply the right answer for a
 name with no record and no cluster host, not a state to verify further.
+
+⚠ **Ask the zone's nameserver, not your resolver.** A `CNAME` you have just
+deleted stays in a recursive resolver's cache for the rest of its TTL
+(Cloudflare "automatic", ~300s), so a plain `dig` can report a record that
+no longer exists — and report it unevenly, since only the names you happen
+to have looked up recently are cached at all. Five of six still showing a
+`CNAME` while the sixth is clean is that, not a partial delete. Hence the
+`@"$NS"` above.
+
+The failure direction here is the frustrating one rather than the dangerous
+one: a stale cache reads as *still suppressing*, which stalls a cutover that
+is already ready. It cannot mislead you the other way. Nor does it delay
+flip 2 — external-dns builds its picture of the zone from the Cloudflare
+API, never from DNS resolution, so it does not share your resolver's cache
+and does not wait for it to expire. Once the loop above is clean against
+`@"$NS"`, the gate is clear whatever a cached lookup still says.
 
 Do not "fix" a Group 1 name by re-creating a CNAME at it — that puts the
 suppression straight back, silently.
@@ -503,12 +521,21 @@ Tofu's record and stays Tofu's — an A record with no ownership TXT, checked
 as such in the next block rather than this one.
 
 ```sh
+NS=$(dig +short NS tomkatom.com | head -1)
 for h in auth sonarr radarr bazarr prowlarr deluge tautulli maintainerr requests www; do
   echo "== $h"
-  dig +short "$h.tomkatom.com" A                        # 145.239.3.55
-  dig +short "_externaldns.a-$h.tomkatom.com" TXT       # heritage=external-dns,external-dns/owner=lab-k3s,...
+  dig +short @"$NS" "$h.tomkatom.com" A                        # 145.239.3.55
+  dig +short @"$NS" "_externaldns.a-$h.tomkatom.com" TXT       # heritage=external-dns,external-dns/owner=lab-k3s,...
 done
 ```
+
+Both loops in this section pin `@"$NS"` for the reason §6a gives, with the
+sign reversed. These records were just *created*, so a resolver still
+holding the negative answer it cached before flip 2 reports an ownership TXT
+as missing — which reads here as a create that did not happen, the one
+conclusion this whole section exists to draw. The absence check below pins
+it for the mirror case: a cached negative would hide an ownership TXT that
+should never have appeared at all.
 
 **The TXT column is the whole check; the A column proves nothing.** Tofu's
 `*.tomkatom.com` A record answers every name in this zone that has no
@@ -531,7 +558,7 @@ mean the gate had failed:
 for h in tomkatom.com vpn.tomkatom.com; do
   for pfx in a- cname-; do
     printf '%-40s %s\n' "_externaldns.$pfx$h" \
-      "$(dig +short "_externaldns.$pfx$h" TXT)"
+      "$(dig +short @"$NS" "_externaldns.$pfx$h" TXT)"
   done
 done
 ```
