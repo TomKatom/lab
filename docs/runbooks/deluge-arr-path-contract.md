@@ -264,32 +264,64 @@ print("armed:", len(bad), bad)'
 ## 4. Rename the library to the declared scheme
 
 The declared naming scheme applies to everything imported from now on. To
-bring the existing library across, both apps need a nudge — and they need
-different ones, because Radarr can reconcile a movie folder on refresh and
-Sonarr cannot.
+bring the existing library across, both apps need the same nudge: a no-op
+move to the root folder they are already in, with `moveFiles: true`. That
+is what makes either app recalculate the folder path from its declared
+format. Renaming the *files* is a separate command in both.
 
 Do this when nobody is mid-stream. Plex tolerates it, but a file that is
-renamed while being read will stop that playback.
+renamed while being read will stop that playback. Confirm with
+`/status/sessions` — it returns `401` without a token, so pass one, or a
+silent failure will read as "no one is watching":
 
-**4a. Radarr.** `autoRenameFolders` is now on, so a refresh moves each
-movie folder to `{Movie CleanTitle} ({Release Year}) {imdb-{ImdbId}}`;
-`RenameMovie` then renames the files inside:
+```sh
+PT=$(kubectl -n media get secret tautulli-credentials -o jsonpath='{.data.PLEX_TOKEN}' | base64 -d)
+curl -s -H "X-Plex-Token: $PT" \
+  "http://plex.media.svc.cluster.local:32400/status/sessions" | head -1
+```
+
+Record the hardlink histogram of both trees *before* starting — §6 compares
+against it, and there is nothing to compare to afterwards:
+
+```sh
+find /data/media/tv -type f -printf '%n\n' | sort -n | uniq -c
+find /data/media/movies -type f -printf '%n\n' | sort -n | uniq -c
+```
+
+**4a. Radarr.** `autoRenameFolders` is **not** sufficient on its own.
+Radarr only re-derives a movie folder during `RefreshMovie` when the
+metadata title itself changed, so on a library that is merely misnamed a
+refresh moves **zero** folders. Use the movie editor — the exact analogue
+of 4b — and then rename the files inside:
 
 ```sh
 RK=$(kubectl -n media get secret arr-api-keys -o jsonpath='{.data.RADARR_API_KEY}' | base64 -d)
 R=http://radarr.media.svc.cluster.local:7878/api/v3
 IDS=$(curl -s -H "X-Api-Key: $RK" "$R/movie" | jq -c '[.[].id]')
 
-curl -s -H "X-Api-Key: $RK" -H 'Content-Type: application/json' \
-  -d '{"name":"RefreshMovie"}' "$R/command"
+curl -s -H "X-Api-Key: $RK" -H 'Content-Type: application/json' -X PUT \
+  -d "{\"movieIds\":$IDS,\"rootFolderPath\":\"/data/media/movies\",\"moveFiles\":true}" \
+  "$R/movie/editor"
 curl -s -H "X-Api-Key: $RK" -H 'Content-Type: application/json' \
   -d "{\"name\":\"RenameMovie\",\"movieIds\":$IDS}" "$R/command"
 ```
 
-**4b. Sonarr.** Renaming files is the same shape, but the *series folder*
-is only recomputed when the series is moved, so the folder migration is a
-no-op move to the root folder it is already in — with `moveFiles: true`,
-which is what makes Sonarr recalculate the path from `seriesFolderFormat`:
+Test the editor call on a single `movieIds` before running the whole
+library. Verify by count, not by eye — every path should carry the tag:
+
+```sh
+curl -s -H "X-Api-Key: $RK" "$R/movie" | jq '[.[].path|select(contains("{imdb-"))]|length'
+```
+
+A movie whose folder comes out as `Title () {imdb-…}` with an empty year
+is a record whose metadata was withdrawn upstream (`year: 0`,
+`status: deleted`). It has no folder on disk — delete the record from
+Radarr rather than trying to fix the path.
+
+**4b. Sonarr.** Same shape. The *series folder* is only recomputed when the
+series is moved, so the folder migration is a no-op move to the root folder
+it is already in — with `moveFiles: true`, which is what makes Sonarr
+recalculate the path from `seriesFolderFormat`:
 
 ```sh
 SK=$(kubectl -n media get secret arr-api-keys -o jsonpath='{.data.SONARR_API_KEY}' | base64 -d)
@@ -330,18 +362,68 @@ curl -s -H "X-Api-Key: $RK" "$R/rootfolder" | jq -r '.[].unmappedFolders[].path'
 ```
 
 At the time of writing that is 9 under `/data/media/tv` (Andor releases)
-and 5 under `/data/media/movies`. **Check each against Deluge before
-removing anything** — if a torrent still references the same inode, the
-folder is a seeding copy in the wrong tree and deleting it costs you the
-seed:
+and 5 under `/data/media/movies`.
 
-```sh
-find /data/media/tv/<folder> -type f -printf '%n %i %p\n'
+**Do not decide from the link count.** It answers "is this inode shared",
+which is not the question. A leftover that is already imported typically
+carries *three* links — the release-named folder, the correctly-named
+imported copy, and the seed:
+
+```
+/data/media/tv/Andor.S01E02…KOGi/…mkv              ← the leftover
+/data/media/tv/Andor (2022) {tvdb-393189}/Season 01/…mkv   ← imported copy
+/data/torrents/tv/Andor.S01E02…KOGi/…mkv           ← the seed
 ```
 
-Link count 1 means nothing else points at it and it is safe to remove; ≥ 2
-means it is shared, and the right fix is to import it in the \*arr rather
-than delete it.
+Deleting the leftover there frees nothing and breaks nothing: the seed
+lives in `/data/torrents` and is untouched. Conversely a link count of 1
+does **not** mean "safe" — it can equally mean this folder is the *only*
+copy of something no \*arr tracks, where deleting is the one irreversible
+mistake in this section.
+
+The question to ask is **"does an imported, \*arr-tracked copy already
+exist?"**. Answer it per folder:
+
+```sh
+# 1. does every file survive elsewhere? (safe to delete iff each has a link outside)
+find /data/media/tv/<folder> -type f -printf '%i\n' \
+  | while read i; do find /data/media /data/torrents -xdev -inum "$i" -printf '  %p\n'; done
+
+# 2. does the *arr already hold this title with a file?
+curl -s -H "X-Api-Key: $SK" "$S/episodefile?seriesId=<id>" | jq -r '.[].path'
+curl -s -H "X-Api-Key: $RK" "$R/movie" | jq -r '.[]|select(.hasFile)|.path'
+```
+
+That yields three cases:
+
+| Case | Action |
+|---|---|
+| Every file has a link outside the folder, title already imported | Redundant. Safe to delete; frees no space, clears the unmapped list |
+| Link count 1, but the title *is* imported from a better release | Superseded orphan. Deleting frees real space |
+| Link count 1, no torrent and no \*arr record | **The only copy.** Add it to the \*arr and import — never `rm` |
+
+For the third case, add the movie pointed at its existing folder, let a
+rescan pick the file up, then move it into the declared scheme:
+
+```sh
+curl -s -H "X-Api-Key: $RK" -H 'Content-Type: application/json' -d '{
+  "tmdbId": <id>, "title": "<title>", "year": <year>, "qualityProfileId": <id>,
+  "monitored": false, "minimumAvailability": "released",
+  "path": "/data/media/movies/<existing folder>",
+  "addOptions": {"searchForMovie": false}}' "$R/movie"
+curl -s -H "X-Api-Key: $RK" -H 'Content-Type: application/json' \
+  -d '{"name":"RescanMovie","movieId":<new id>}' "$R/command"
+# then the 4a editor call for that id to rename it into place
+```
+
+`monitored: false` is deliberate — the file is already in hand, and
+monitoring it invites an unprompted upgrade grab. Both root folders should
+report no unmapped folders once §5 is finished:
+
+```sh
+curl -s -H "X-Api-Key: $SK" "$S/rootfolder" | jq -r '.[].unmappedFolders[].path'
+curl -s -H "X-Api-Key: $RK" "$R/rootfolder" | jq -r '.[].unmappedFolders[].path'
+```
 
 ## 6. Verification
 
@@ -357,6 +439,19 @@ than delete it.
 The fifth row is the one that proves the contract end to end: a torrent
 that shows `/data/torrents/tv` as its download folder from the moment it is
 added, and never passes through `Moving`, is the whole point of the change.
+It is also the only row a rename cannot demonstrate on its own — it needs a
+real grab, so carry it to the next organic download rather than calling §6
+complete without it.
+
+Read the hardlink row on the `≥2` buckets alone. The link-1 bucket drifts
+upward on its own because **Bazarr** writes `.srt` files, which are never
+hardlinked to a torrent, and a rename makes it re-sync the lot. A growing
+link-1 count is subtitles, not a broken link.
+
+If §5 deleted anything, the buckets shift and still reconcile — every path
+removed from a 3-link group demotes its counterparts to 2. Check the
+arithmetic rather than expecting the histogram to be unchanged:
+files removed = (total before) − (total after).
 
 ## 7. If it goes wrong
 
