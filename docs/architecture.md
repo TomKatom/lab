@@ -92,7 +92,7 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
            └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
                                                      ├─ seerr (requests) / maintainerr
-                                                     └─ tautulli / homepage (apex)
+                                                     └─ tautulli / homepage (apex + www)
 ```
 
 ## Tooling
