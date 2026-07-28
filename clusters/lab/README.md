@@ -21,7 +21,9 @@ everything here is reconciled from git; nothing is applied by hand.
 `root-app` does not watch `apps/` itself. `platform/apps.yaml` — an
 ordinary top-level `platform/*.yaml` manifest, so `root-app` picks it up
 like any other — is the `Application` that discovers `clusters/lab/apps/`,
-repeating root-app's own `directory.recurse: false` contract one layer
-down. Two levels, one shape: `root-app` → `apps` → each app.
+repeating root-app's own non-recursive discovery contract one layer down
+(unset rather than explicit `directory.recurse: false`, to dodge an Argo
+CD diff bug — see [`platform/README.md`](platform/README.md#component-layout)).
+Two levels, one shape: `root-app` → `apps` → each app.
 
 See [`docs/architecture.md`](../../docs/architecture.md) for the full design.

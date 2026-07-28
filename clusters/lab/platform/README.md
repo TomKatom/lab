@@ -26,8 +26,9 @@ Cluster platform services, synced before any media app depends on them:
   below.
 - `apps.yaml` — **not a platform component**, but the media stack's
   entrypoint: a chart-free `Application` at sync-wave `"3"` (after every
-  platform wave) whose `source.path` is `clusters/lab/apps` with
-  `directory.recurse: false`. `root-app` applies it as an ordinary
+  platform wave) whose `source.path` is `clusters/lab/apps`, non-recursive
+  (the default — see "Component layout" below for why the field is left
+  unset rather than set to `false`). `root-app` applies it as an ordinary
   top-level `platform/*.yaml` manifest, and it in turn discovers every
   `clusters/lab/apps/*.yaml` Application — see
   [`../apps/README.md`](../apps/README.md). **Implemented (Phase 6).**
@@ -57,9 +58,18 @@ three-piece convention:
 `apps.yaml` is the one file here that is none of those three: it is a
 top-level Application like the first kind, but its source is a *directory
 of Applications* (`clusters/lab/apps`) rather than a Helm chart, so it
-repeats this same `recurse: false` discovery contract one layer down for
+repeats this same non-recursive discovery contract one layer down for
 the media stack. Adding an app is dropping a file into
 `clusters/lab/apps/`; nothing here changes.
+
+Unlike `root-app.yaml`, `apps.yaml` does **not** set `directory.recurse:
+false` explicitly — it relies on the default. `apps.yaml` is itself a
+resource `root-app` continuously diffs against git (root-app.yaml is not:
+it's applied once by the Ansible bootstrap role), and Argo CD's `recurse`
+field is `omitempty` — an explicit `false` gets dropped on persist, so the
+live object permanently disagrees with git and the `apps` Application
+never leaves OutOfSync (upstream: argoproj/argo-cd#4501). Omitting the
+field sidesteps it entirely.
 
 ## Issuing a certificate
 

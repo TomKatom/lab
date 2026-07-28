@@ -23,6 +23,14 @@ spec:
     # kustomization.yaml, an encrypted Secret file, ...) as top-level
     # manifests, which is wrong. false restricts root-app to applying only
     # the top-level platform/*.yaml Application manifests.
+    #
+    # Explicit here (unlike clusters/lab/platform/apps.yaml, which leaves
+    # the field unset) because this object is safe from the diff bug that
+    # forced that omission: it's applied once by the Ansible bootstrap role
+    # and never synced as a child resource of another Application, so there
+    # is no live copy for an omitempty-dropped field to permanently
+    # disagree with. See apps.yaml's header for the full explanation
+    # (argoproj/argo-cd#4501).
     directory:
       recurse: false
   destination:
