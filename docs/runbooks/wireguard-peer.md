@@ -109,18 +109,21 @@ Address    = 10.10.20.3/32
 # lab — OVH / Proxmox host
 PublicKey    = <host public key, printed by the wireguard role>
 PresharedKey = <the wg genpsk value from §2>
-Endpoint     = vpn.lab.tomkatom.com:51820
+Endpoint     = vpn.tomkatom.com:51820
 AllowedIPs   = 10.10.20.0/24, 10.10.10.0/24
 PersistentKeepalive = 25
 ```
 
-- **`Endpoint` by name** — `vpn.lab.tomkatom.com` is a Tofu-managed record
-  (`infra/tofu/cloudflare.tf`) pointing at the OVH public IP, so a change of
-  public address doesn't mean re-issuing every peer config. WireGuard
-  resolves it when the tunnel comes up, not continuously: after an IP change
-  the client needs a reconnect, not an edit. The raw
-  `145.239.3.55:51820` still works if you ever need to bypass DNS to
-  diagnose something.
+- **`Endpoint` by name** — `vpn.tomkatom.com` is a Tofu-managed record
+  (`infra/tofu/locals.tf`'s `dns_a_records`, gated by `var.manage_dns`) pointing
+  at the OVH public IP, so a change of public address doesn't mean re-issuing
+  every peer config. WireGuard resolves it when the tunnel comes up, not
+  continuously: after an IP change the client needs a reconnect, not an edit.
+  The raw `145.239.3.55:51820` still works if you ever need to bypass DNS to
+  diagnose something. (Prior to the DNS cutover this pointed at
+  `vpn.lab.tomkatom.com`, a duplicate management-scheme record kept alive
+  only because the real name was gated until the old server's zone was
+  handed over — see `docs/runbooks/dns-cutover.md`.)
 
 - **Host public key** — printed by the converge ("Show the host's WireGuard
   public key"). The host's private key is generated in place on the server

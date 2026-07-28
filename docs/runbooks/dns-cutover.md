@@ -605,10 +605,13 @@ unexplained and worth chasing before you walk away.
   the two worth prioritising: past flip 1 the wildcard would otherwise
   answer for them too, publicly exposing management-sounding names for
   services that are deliberately WireGuard-only (`pve.lab.` / `k3s.lab.`).
-- **Retire `vpn.lab.tomkatom.com`** in favour of the now-live
-  `vpn.tomkatom.com` (`infra/tofu/locals.tf` says so at the record's
-  definition). WireGuard peer configs naming the old endpoint need updating
-  first — see `docs/runbooks/wireguard-peer.md`.
+- **`vpn.lab.tomkatom.com` is retired** in favour of the now-live
+  `vpn.tomkatom.com` — `docs/runbooks/wireguard-peer.md`'s peer-config
+  template points at the new name, and `infra/tofu/locals.tf`'s
+  `dns_mgmt_records` no longer defines the duplicate. Any peer config
+  written before this still has the old `Endpoint` line; repoint it by hand
+  (§4 of `wireguard-peer.md`) before this Tofu change is applied and the
+  record is destroyed.
 - **TTLs stay Cloudflare "automatic" (`ttl=1`).** external-dns sets no TTL
   and the chart configures none. If a specific TTL is ever wanted, it is the
   `external-dns.alpha.kubernetes.io/ttl` annotation on the Ingress, per host.
