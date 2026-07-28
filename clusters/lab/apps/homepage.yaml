@@ -37,12 +37,24 @@
 #    holding a record it does not own. This Ingress therefore adds nothing
 #    to the zone — the record it needs is one Tofu already manages.
 #
-# ⚠ The config files are mounted with subPath, which Kubernetes does not
-# update in place. Editing clusters/lab/apps/homepage/ and letting Argo sync
-# updates the ConfigMap object but not the files already projected into a
-# running Pod, and nothing in this chart rolls the Deployment for an
-# externally-owned ConfigMap. A config change therefore needs
-# `kubectl -n media rollout restart deploy/homepage` to take effect.
+# ⚠ A config edit needs `kubectl -n media rollout restart deploy/homepage`
+# to take effect, and Argo reports the Application synced either way. The
+# files are mounted with subPath, which Kubernetes never updates in place,
+# so an Argo sync updates the ConfigMap object while the running Pod keeps
+# serving the files already projected into it.
+#
+# This is a chosen trade, not a chart limitation: app-template renders
+# ConfigMaps declared under `configMaps:` in its own values and stamps a
+# `checksum/configMaps` pod annotation over their data
+# (`charts/common/templates/lib/pod/metadata/_annotations.tpl`), which
+# rolls the Deployment on every content change. That only covers
+# chart-owned ConfigMaps, so taking it would mean folding all 338 lines of
+# ./homepage/configmap-homepage.yaml — nine files, custom.css and custom.js
+# among them — into this Application's valuesObject, past `tpl`, and out of
+# the kustomize build CI actually validates. The separate `-config`
+# Application keeps that (./README.md "Kustomize `-config` dirs"); the
+# manual restart is what it costs. Revisit if the config starts changing
+# often enough that the drift window matters more than the validation.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

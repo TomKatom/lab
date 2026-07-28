@@ -970,7 +970,8 @@ stop.
 **Seerr** — follow §4 for `seerr` (config PVC mounted at `/app/config`).
 This is the one app whose old and new names differ: the cluster runs Seerr,
 the archived Overseerr's successor, and it converts the old config on its
-first start. Two departures from the §4 template, both in step 4:
+first start. Two departures from the §4 template — one inside step 4, one
+an extra step wedged between steps 5 and 6:
 
 - **The source is `/srv/overserr/config/`** (one `e` — §2.1) and the
   destination is the `seerr` PVC, so §4's relay runs with a different word
@@ -990,7 +991,10 @@ first start. Two departures from the §4 template, both in step 4:
   The Plex auth token lives in `settings.json` and survives because Plex's
   identity survived §8 — no re-authentication needed.
 
-- **Take a copy of the restored directory before scaling the pod back up.**
+- **Take a copy of the restored directory after §4's step 5 and before its
+  step 6 scales the pod back up** — after the `chown -R 1000:1000`, not
+  before it, or the tarball preserves the old server's uids and restoring
+  it hands Seerr (uid 1000) a directory it cannot write.
   Seerr's first start runs `server/lib/overseerrMerge.ts`, which recognises
   an Overseerr config by its missing `mediaServerType` and rewrites the
   sqlite schema **in place**. There is no downgrade path afterwards, and an

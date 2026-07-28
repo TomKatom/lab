@@ -360,6 +360,16 @@ only exists where there's:
   `SOPS_AGE_KEY` in that job), the same way every platform `-config`
   overlay with a `.sops.yaml` file is skipped.
 
+What splitting the config out costs, in both cases: app-template only
+stamps its `checksum/configMaps` pod annotation — the thing that rolls a
+Deployment when config content changes — over ConfigMaps declared in its
+own `configMaps:` values. A ConfigMap owned by a separate Application is
+invisible to it, so editing one of these directories syncs green in Argo
+while the running Pod keeps the old content, and the restart is manual.
+Weigh that drift window against the CI validation above before adding the
+next `-config` dir; an app whose config changes often is better off with
+the ConfigMap in its chart values.
+
 ## Media pipeline smoke test
 
 The phase-level acceptance check, in the same shape as

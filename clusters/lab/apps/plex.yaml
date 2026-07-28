@@ -138,7 +138,7 @@ spec:
           # Exactly one Service, so app-template names it `plex` after the
           # release rather than appending the identifier
           # (`_determineResourceNameFromValues.tpl`) — which is the name
-          # PLEX_URL in media-common/media-urls.yaml, and Seerr's,
+          # PLEX_HOST in media-common/media-urls.yaml, and Seerr's,
           # Tautulli's and Maintainerr's in-app server settings, all
           # depend on. Adding a second Service here would silently rename
           # this one; see ./README.md "A Service's name depends on how many

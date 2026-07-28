@@ -96,10 +96,12 @@ else claims — `auth.`, `bazarr.`, `tautulli.`, `maintainerr.` and
 timing guard (do not make new-server services resolve before you mean to),
 not a safety guard.
 
-The bare apex is in the same position as those four for the same reason —
-Tofu's record carries no ownership TXT either — which is why Homepage's
-host is not on the list above and never appears in external-dns's output at
-all.
+The bare apex is **not** on that list, and is in the same position as the
+four `CNAME`s the corollary below describes rather than the five names
+above it: a record external-dns does not own is already sitting there, so
+the `Create` is dropped. Tofu's apex record carries no ownership TXT
+either, which is why Homepage's host never appears in external-dns's output
+at all.
 
 **Corollary that shapes the whole procedure:** the four names the old server
 serves are already `CNAME`s, so external-dns will *never* adopt them — and,
@@ -270,13 +272,18 @@ dig +short tomkatom.com A                        # 145.239.3.55
 dig +short randomname-xyz123.tomkatom.com A      # 145.239.3.55 (wildcard now exists)
 dig +short vpn.tomkatom.com A                    # 145.239.3.55
 dig +short sonarr.tomkatom.com                   # CNAME → apex → 145.239.3.55
-curl -sI https://tomkatom.com | head -1          # HTTP/2 200 — Homepage, on the real chain
+curl -sI https://tomkatom.com | grep -iE '^HTTP|^location' | tr -d '\r'
+# HTTP/2 200 — Homepage, on the real chain, and no location: line
 ```
 
-That last line is the flip's user-visible result, and no `-k`: a TLS error
-there is precondition 7 having been wrong. Load it in a browser too — the
-apex is now a page people will be sent to, so "Traefik answers" is a weaker
-claim than it used to be.
+That last check is the flip's user-visible result, and no `-k`: a TLS error
+there is precondition 7 having been wrong. It greps for `location` as well
+as the status line because the apex Ingress is deliberately un-annotated
+(`clusters/lab/apps/homepage.yaml`): a `302` to `auth.tomkatom.com` here
+means forward-auth got onto this host, which would send exactly the viewers
+the page is written for to a login they have no account on. Load it in a
+browser too — the apex is now a page people will be sent to, so "Traefik
+answers" is a weaker claim than it used to be.
 
 Then open a follow-up PR deleting the `import` block (it has done its job;
 leaving it is harmless but it reads like pending work). At this point every

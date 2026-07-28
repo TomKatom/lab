@@ -136,11 +136,26 @@ spec:
                     type: HTTP
                     path: /api/v1/settings/public
                     port: 5055
+                  # ⚠ The chart's default startup budget (failureThreshold 3
+                  # × periodSeconds 10 = 30s) is not survivable here, so it
+                  # is widened to 5 minutes. server/index.ts awaits
+                  # checkOverseerrMerge() and then TypeORM's runMigrations()
+                  # *before* Express listens, so nothing answers on 5055 for
+                  # the whole of the one-way Overseerr → Seerr schema
+                  # rewrite. A startup probe that gives up mid-rewrite gets
+                  # the container killed and restarted onto a half-migrated
+                  # database — the exact unrecoverable state
+                  # docs/runbooks/media-migration.md §9 takes a tarball
+                  # against. failureThreshold applies only until the first
+                  # success, so this costs nothing on every later start.
                   startup:
                     enabled: true
                     type: HTTP
                     path: /api/v1/settings/public
                     port: 5055
+                    spec:
+                      periodSeconds: 10
+                      failureThreshold: 30
                 # A request portal for a handful of users: the work is TMDB
                 # lookups and the periodic availability sync against Plex
                 # and the *arrs, none of it heavy. The memory ceiling is

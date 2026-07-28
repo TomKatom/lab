@@ -98,11 +98,24 @@ spec:
                     type: HTTP
                     path: /api/health/ready
                     port: 6246
+                  # ⚠ Widened from the chart's default startup budget
+                  # (failureThreshold 3 × periodSeconds 10 = 30s), which is
+                  # *less* than the first boot upstream says it needs: the
+                  # image's own HEALTHCHECK declares
+                  # `--start-period=40s`, commented there as covering "the
+                  # first boot (UI base-path rewrite + Nest bootstrap +
+                  # migrations)". At the default the kubelet kills the
+                  # container before that finishes and the app never leaves
+                  # CrashLoopBackOff. failureThreshold applies only until
+                  # the first success, so this costs nothing afterwards.
                   startup:
                     enabled: true
                     type: HTTP
                     path: /api/health/ready
                     port: 6246
+                    spec:
+                      periodSeconds: 10
+                      failureThreshold: 30
                 # Idle almost all the time; the load is the scheduled rule
                 # evaluation, which walks the library through the Plex and
                 # *arr APIs in bursts. Nothing here streams or transcodes.

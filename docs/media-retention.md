@@ -3,8 +3,11 @@
 How the library is kept from filling `tank`, and what Maintainerr can and
 cannot do about it. Maintainerr's connection settings and rules live in its
 own SQLite database rather than in git, so this document is the source of
-truth for *what the rules are meant to say* — and the exported rule YAML
-under `maintainerr-rules/` is the source of truth for what they actually say.
+truth for *what the rules are meant to say*. Once the rules exist, the YAML
+exported out of Maintainerr becomes the source of truth for what they
+actually say — it lives beside this file under `maintainerr-rules/`, which
+the first export creates (nothing is committed there yet; the rules have
+not been built, see "Rules as code" below).
 
 ## The constraint
 

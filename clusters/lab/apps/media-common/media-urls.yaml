@@ -38,14 +38,17 @@ data:
   FLARESOLVERR_URL: http://flaresolverr.media.svc.cluster.local:8191
   SONARR_URL: http://sonarr.media.svc.cluster.local:8989
   RADARR_URL: http://radarr.media.svc.cluster.local:7878
-  PLEX_URL: http://plex.media.svc.cluster.local:32400
-  # The same Plex Service, split into the two fields Tautulli wants.
-  # Tautulli has no "server URL" setting to point at PLEX_URL: it composes
-  # its own from a host and a port held separately (`PMS_IP`/`PMS_PORT`,
-  # which it joins into `pms_url` itself in plexpy/plextv.py), so a
-  # consumer that only ever gets the joined string would have to take it
-  # apart again. Three keys, one Service, one port number — change all of
-  # them together or none.
+  # Plex is the one entry held split rather than as a `_URL`, because its
+  # only configMapKeyRef consumer wants it that way: Tautulli has no
+  # "server URL" setting, composing `pms_url` itself from a host and a port
+  # it keeps apart (`PMS_IP`/`PMS_PORT`, joined in plexpy/plextv.py). A
+  # joined `PLEX_URL` beside these would write `32400` down a second time
+  # with nothing checking the two against each other — the single-value
+  # rule at the top of this file applies to keys within it, not just across
+  # consumers. Anything that needs the joined form composes
+  # `http://<PLEX_HOST>:<PLEX_PORT>`; that is also what an operator types
+  # into Seerr's and Maintainerr's own server settings, which hold their
+  # copy in an app database rather than reading this map.
   PLEX_HOST: plex.media.svc.cluster.local
   PLEX_PORT: "32400"
   TAUTULLI_URL: http://tautulli.media.svc.cluster.local:8181

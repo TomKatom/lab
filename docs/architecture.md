@@ -294,12 +294,17 @@ which hangs `tofu plan`/`apply` on every run.
   `restrict_management` toggle keeps SSH/API rules open-to-any until
   WireGuard is verified (anti-lockout); reseller console is the fallback.
 - Least exposure: admin UIs sit behind **Authelia** (TOTP); Plex uses
-  plex.tv auth on its own port, outside Traefik/Authelia. Exactly two
-  Ingresses are deliberately un-annotated, both aimed at people who hold a
-  Plex account and no Authelia identity: Seerr's `requests.` (its own Plex
-  OAuth) and Homepage on the apex (a page of public links, no credential
-  read and no app polled — see
-  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md)).
+  plex.tv auth on its own port, outside Traefik/Authelia. Exactly three
+  Ingresses are deliberately un-annotated, and none of the three may be
+  "fixed". Two are aimed at people who hold a Plex account and no Authelia
+  identity: Seerr's `requests.` (its own Plex OAuth) and Homepage on the
+  apex (a page of public links, no credential read and no app polled — see
+  [`clusters/lab/apps/README.md`](../clusters/lab/apps/README.md)). The
+  third is Authelia's own `auth.` portal, un-annotated for an unrelated
+  reason: it has to answer unauthenticated or there is nowhere to
+  authenticate, and putting it behind its own forward-auth locks the
+  cluster out
+  ([`clusters/lab/platform/README.md`](../clusters/lab/platform/README.md)).
 - Secrets are never plaintext: `.sops.yaml` enforces encryption by path,
   `gitleaks` in CI blocks anything that slips through, and the age private
   key is held out-of-band (password manager), as the `SOPS_AGE_KEY` repo
