@@ -61,6 +61,14 @@ data:
   # [Required] Repack/Proper custom formats instead — the two mechanisms
   # fight if both are on.
   #
+  # ⚠ downloadPropersAndRepacks is the one key declared twice in this repo:
+  # ../recyclarr/configmap-recyclarr.yaml sets the same setting as
+  # `media_management.propers_and_repacks: do_not_prefer`, for the same
+  # reason. The values agree, so the two CronJobs converge rather than
+  # fight — but they are two declarations of one fact and nothing
+  # cross-validates them. Change one and you must change the other, or
+  # whichever ran last silently wins for an hour at a time.
+  #
   # recycleBin is a deliberate addition: Maintainerr deletes through this
   # API on a schedule, and a misjudged retention rule is otherwise
   # unrecoverable. Files land in /data/.recyclebin/sonarr for 7 days. It
