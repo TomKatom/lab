@@ -37,7 +37,7 @@ zone is shared and can change under you):
 |---|---|---|
 | `tomkatom.com` | `A 94.75.211.144` — exactly one record (§5a's duplicate-apex trap is not pre-tripped) | old server (already stopped) — **and, from flip 1 on, the cluster's Homepage** (see below) |
 | `sonarr` / `radarr` / `prowlarr` / `deluge` / `bazarr` / `www` | `CNAME → tomkatom.com` | old server (stopped); **collides with a cluster Ingress host — freed in §6a** |
-| `authelia` / `request` / `codeowner` / `codeowner-coolify` / `codeowner-pgadmin` / `b2-codeowner` / `realtime` / `proxmox` / `traefik` / `portainer` | `CNAME → tomkatom.com` | old server (stopped); **dead for good, unrelated project — deleted as zone hygiene in §6a** |
+| `authelia` / `request` / `codeowner` / `codeowner-coolify` / `codeowner-pgadmin` / `b2-codeowner` / `realtime` / `proxmox` / `traefik` / `portainer` | `CNAME → tomkatom.com` | old server (stopped); **dead for good — replaced under another name, or an unrelated project on the same box; deleted as zone hygiene in §6a** |
 | `*.tomkatom.com` | **NXDOMAIN** | nothing — there is no wildcard *record* yet (the old server has a wildcard *certificate*, which is a different thing) |
 | `vpn` / `auth` / `tautulli` / `maintainerr` / `requests` | **NXDOMAIN** | nothing — these are the cluster's own hosts, reachable over WireGuard only |
 | `*.lab.tomkatom.com` | `A` (internal addresses) | new server, WireGuard-only, already Tofu-managed and ungated |
@@ -64,8 +64,14 @@ different reasons:
   because anything is blocked**: `authelia`, `request` (singular — the
   cluster spells this host `requests.`, plural), `codeowner`,
   `codeowner-coolify`, `codeowner-pgadmin`, `b2-codeowner`, `realtime`,
-  `proxmox`, `traefik` and `portainer`. All ten belonged to an unrelated
-  project that lived on the old server and no longer exists. None has a
+  `proxmox`, `traefik` and `portainer`. Five of them were the old server's
+  own stack and are superseded by a named cluster replacement — `authelia`
+  by the cluster's `auth.`, `request` by `requests.`, `traefik` by the
+  Traefik in the `traefik` namespace, `portainer` by Argo CD, and `proxmox`
+  by `pve.lab.` on the tunnel (see `media-migration.md` §2.1 for the
+  old-server service list). The other five — `codeowner`,
+  `codeowner-coolify`, `codeowner-pgadmin`, `b2-codeowner` and `realtime` —
+  belonged to an unrelated project that lived on the same box. None has a
   cluster Ingress, so external-dns was never blocked by any of them and
   flip 2 does not need them gone — they are deleted anyway so the zone
   stops advertising names that resolve to a server that no longer exists.
@@ -371,11 +377,17 @@ still hand-made CNAMEs.
 this:** `authelia.` `request.` (singular — the cluster's host is
 `requests.`, plural) `codeowner.` `codeowner-coolify.`
 `codeowner-pgadmin.` `b2-codeowner.` `realtime.` `proxmox.` `traefik.` and
-`portainer.tomkatom.com` belonged to an unrelated project on the old
-server that no longer exists. None has a cluster Ingress, so external-dns
-was never blocked by any of them, and flip 2 does not need them gone —
-they are deleted anyway so the zone stops advertising names that resolve
-to a server that no longer exists. `proxmox` and `traefik` are worth
+`portainer.tomkatom.com`. Five were the old server's own stack and have a
+named cluster replacement already serving under a different name —
+`authelia` → `auth.`, `request` → `requests.`, `traefik` → the `traefik`
+namespace, `portainer` → Argo CD, `proxmox` → `pve.lab.` on the tunnel
+(`media-migration.md` §2.1 lists what the old box actually ran). The other
+five — `codeowner.` `codeowner-coolify.` `codeowner-pgadmin.`
+`b2-codeowner.` and `realtime.` — belonged to an unrelated project on the
+same box. None has a cluster Ingress, so external-dns was never blocked by
+any of them, and flip 2 does not need them gone — they are deleted anyway
+so the zone stops advertising names that resolve to a server that no
+longer exists. `proxmox` and `traefik` are worth
 deleting promptly: after flip 1 the wildcard would otherwise make them
 resolve to the *new* node, publicly advertising management-sounding names
 for services that are deliberately WireGuard-only (`pve.lab.` /
@@ -556,8 +568,11 @@ unexplained and worth chasing before you walk away.
 - **The ten dead-for-good `CNAME`s are also gone, but for hygiene, not
   because §6b needed them cleared.** `authelia`, `request`, `codeowner`,
   `codeowner-coolify`, `codeowner-pgadmin`, `b2-codeowner`, `realtime`,
-  `proxmox`, `traefik` and `portainer` belonged to an unrelated project on
-  the old server and had no cluster Ingress, so external-dns never had an
+  `proxmox`, `traefik` and `portainer` were either the old server's own
+  stack, already replaced under a different name (`auth.`, `requests.`, the
+  `traefik` namespace, Argo CD, `pve.lab.`), or part of an unrelated project
+  that lived on the same box. None had a cluster Ingress, so external-dns
+  never had an
   opinion on any of them — deleting them just stops the zone advertising
   names for a server that no longer exists. `proxmox` and `traefik` were
   the two worth prioritising: past flip 1 the wildcard would otherwise
