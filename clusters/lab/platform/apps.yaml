@@ -4,16 +4,24 @@
 # false`, so this file lands and syncs with no operator re-apply. From
 # here it does for `clusters/lab/apps` exactly what root-app does for
 # `clusters/lab/platform` — apply only the top-level `apps/*.yaml`
-# Application manifests, not the content of any subdirectory.
-#
-# recurse: false for the same reason as root-app: each app's own
-# non-Application content (a kustomize overlay, a ksops-encrypted Secret)
-# lives in a same-named subdirectory (clusters/lab/apps/<component>/),
+# Application manifests, not the content of any subdirectory: each app's
+# own non-Application content (a kustomize overlay, a ksops-encrypted
+# Secret) lives in a same-named subdirectory (clusters/lab/apps/<component>/),
 # discovered only by that component's own <component>-config.yaml
 # kustomize-source Application — never by this Application scanning
-# subdirectories. recurse:true would make it raw-apply everything under
-# those subdirectories (a kustomization.yaml, an encrypted Secret file,
-# ...) as top-level manifests, which is wrong.
+# subdirectories.
+#
+# No `directory.recurse` field here, unlike root-app.yaml — non-recursive
+# is already the default, and leaving it unset is deliberate, not an
+# oversight. This Application (unlike root-app itself) IS a resource that
+# root-app continuously diffs against git. Argo CD's `recurse` field has
+# `omitempty` and gets dropped on persist even when set explicitly to
+# `false`, so an explicit `recurse: false` here would make the live object
+# permanently disagree with git and pin `apps` OutOfSync forever
+# (upstream: argoproj/argo-cd#4501 — "the solution is to omit the field
+# entirely when you don't wish to recurse"). root-app.yaml is exempt
+# because nothing diffs it the same way: it's applied once by the Ansible
+# bootstrap role, not synced as a child resource of another Application.
 #
 # Sync-wave 3, after every platform wave (0-2): the media apps assume
 # Traefik/Authelia/cert-manager/external-dns already exist.
@@ -30,8 +38,6 @@ spec:
     repoURL: git@github.com:TomKatom/lab.git
     targetRevision: master
     path: clusters/lab/apps
-    directory:
-      recurse: false
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

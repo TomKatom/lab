@@ -6,12 +6,14 @@ Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
 Authelia, cert-manager and external-dns already exist) whose `source.path`
-is this directory with `directory.recurse: false`. Exactly like root-app
-one layer up, that means only the top-level `apps/*.yaml` Application
-manifests are applied directly; each app's own non-Application content —
-a kustomize overlay, a ksops-encrypted Secret — lives in a same-named
-subdirectory and is pulled in only by that component's own
-`<component>-config.yaml` Application. See
+is this directory, non-recursive (the default — `directory.recurse` is
+deliberately left unset rather than written as `false`; see
+[`platform/README.md`](../platform/README.md#component-layout) for why).
+Exactly like root-app one layer up, that means only the top-level
+`apps/*.yaml` Application manifests are applied directly; each app's own
+non-Application content — a kustomize overlay, a ksops-encrypted Secret —
+lives in a same-named subdirectory and is pulled in only by that
+component's own `<component>-config.yaml` Application. See
 [`platform/README.md`](../platform/README.md#component-layout) for the
 three-piece convention this mirrors.
 
