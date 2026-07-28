@@ -95,28 +95,6 @@ resource "cloudflare_dns_record" "management" {
   comment = each.value.comment
 }
 
-# One-shot, delete after the apply that consumes it (dns-cutover.md §5c).
-#
-# The apex A record predates this repo and points at the old server. The
-# wildcard and `vpn.` names do not exist in the zone, so `manage_dns = true`
-# creates those two cleanly — but the apex has to be ADOPTED, not created, or
-# Cloudflare ends up holding both records at one name and the zone
-# round-robins between the old and new servers.
-#
-# The ID below is zone-scoped and comes from dns-cutover.md §5a:
-#   curl -s -H "Authorization: Bearer $CF_TOKEN" \
-#     ".../zones/$ZONE/dns_records?type=A&name=tomkatom.com" | jq -r '.result[].id'
-#
-# `tofu plan` must then read `1 to import, 2 to add, 1 to change, 0 to
-# destroy`, with the apex showing an in-place content change
-# 94.75.211.144 -> 145.239.3.55. Zero destroys and the apex as a CHANGE rather
-# than an ADD are the two facts that matter; a destroy, or three adds, means
-# the ID did not match — stop and do not apply.
-import {
-  to = cloudflare_dns_record.records["apex"]
-  id = "096a4bdef4b6f25679ec97e558d04bf4/7c38e366be5f976e525b3afc0bd6b4b9"
-}
-
 # Renamed from the pre-for_each apex/wildcard/vpn resources — same records,
 # just addressed as records["..."] now. No destroy/recreate.
 moved {
