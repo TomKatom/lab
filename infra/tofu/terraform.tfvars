@@ -16,6 +16,14 @@
 cloudflare_zone_id = "096a4bdef4b6f25679ec97e558d04bf4" # Cloudflare dashboard -> tomkatom.com -> Overview -> API section -> Zone ID
 ovh_public_ip      = "145.239.3.55"                     # the dedicated server's single public IPv4
 
+# Flip 1 of the DNS cutover (docs/runbooks/dns-cutover.md §5): Tofu takes the
+# apex, wildcard and `vpn.` records and points them at ovh_public_ip. The old
+# server stopped serving before this merged. Do not apply this without the
+# import block in cloudflare.tf — Cloudflare holds several A records at one
+# name, so a bare apply adds a second apex record instead of moving the
+# existing one, and the zone round-robins between two servers.
+manage_dns = true
+
 # --- Proxmox connection -----------------------------------------------------
 
 proxmox_endpoint     = "https://145.239.3.55:8006/" # OVH public IP or hostname
