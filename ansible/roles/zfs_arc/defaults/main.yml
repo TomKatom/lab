@@ -1,0 +1,46 @@
+---
+# Role-private vars, prefixed zfs_arc_* so they can't collide with another
+# role's defaults.
+
+# ZFS ARC ceiling, in bytes. 32 GiB.
+#
+# This is a *correction*, not a tuning preference. The pre-IaC Proxmox
+# install (CLAUDE.md "Prior Setup") left this host pinned at 391 MiB
+# (409993216) — small enough that a 2.74 TB pool could not even hold its own
+# metadata resident (`arc_meta_used` sat at ~117 MB against a hard 391 MiB
+# ceiling), so every read walked the disks. On the `tank` HDD stripe that
+# turns each partial write into a read-modify-write of a whole 128 KiB
+# record, and the two spindles spend their IOPS re-reading data they just
+# had. Nothing in this repo ever set that value; it was inherited.
+#
+# Sizing, against 128 GiB installed (~125 GiB usable):
+#
+#   guests   34 GiB  — k3s-node 32 GiB + ci-runner 2 GiB, both `dedicated`
+#                      (infra/tofu/terraform.tfvars vm_memory_mb /
+#                      runner_vm_memory_mb; dedicated means no balloon
+#                      reclaim below that figure)
+#   ARC      32 GiB  — this value
+#   spare    ~59 GiB — host processes (virtiofsd, PVE, WireGuard) plus room
+#                      for a future guest without revisiting this number
+#
+# 32 GiB is far more than the pool's metadata working set needs; the surplus
+# is what absorbs the read-modify-write traffic above. Raising it further
+# has sharply diminishing returns here — Plex streaming and library-scan
+# reads have almost no reuse, so they do not benefit from a bigger cache —
+# while every GiB spent is a GiB unavailable to a future guest. Do not raise
+# this to chase streaming performance.
+#
+# The assert in tasks/main.yml refuses anything above half of installed RAM,
+# so a careless edit here fails the converge rather than the host.
+zfs_arc_max_bytes: 34359738368
+
+# This role owns this file outright — it is rendered from the template, not
+# edited in place. The only entry it has ever held on this host is the
+# inherited zfs_arc_max line above, so rendering loses nothing.
+zfs_arc_modprobe_path: /etc/modprobe.d/zfs.conf
+
+# Runtime knob for the same setting. Writing it applies the new ceiling to
+# the running kernel module immediately, which is what keeps this role from
+# needing a reboot to take effect — the modprobe file alone only lands at
+# the next boot.
+zfs_arc_sysfs_path: /sys/module/zfs/parameters/zfs_arc_max

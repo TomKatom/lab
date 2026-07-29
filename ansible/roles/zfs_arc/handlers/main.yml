@@ -1,0 +1,10 @@
+---
+- name: Update initramfs
+  # The host boots off rpool, so the zfs module loads from the initramfs —
+  # which embeds its own copy of /etc/modprobe.d. Without this the rendered
+  # file is correct on disk and ignored at every boot, and the ARC quietly
+  # reverts to the old ceiling the next time the box restarts. -k all so a
+  # kernel that is installed but not currently booted gets it too.
+  ansible.builtin.command:
+    cmd: update-initramfs -u -k all
+  changed_when: true
