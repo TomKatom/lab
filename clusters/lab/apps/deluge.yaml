@@ -313,6 +313,19 @@ spec:
               # 1 Gbit/s uplink, leaving headroom for Plex. It is the only
               # deliberate throttle; do not "fix" it to -1.
               #
+              # max_connections_per_torrent is 200, not the 80 this stack
+              # first shipped with. 80 was chosen to stop one large swarm
+              # eating the global budget, but it binds far below that on a
+              # real grab: a 144-seed swarm was measured pinned at 78
+              # connections, i.e. capped, with ~66 seeds it never talked to.
+              # The budget it was protecting is not actually scarce —
+              # permaseeds hold almost no connections, because a seed only
+              # connects to leechers and there are few (the whole 385-torrent
+              # session sat at 6 connections while idle). 200 lets a race use
+              # a full swarm and still leaves max_connections_global an order
+              # of magnitude of headroom, even with max_active_downloading
+              # torrents going at once.
+              #
               # dht/lsd/utpex/upnp/natpmp off is private-tracker hygiene,
               # and allow_remote: false keeps the daemon protocol on
               # localhost — deluged and deluge-web share this container and
@@ -351,7 +364,7 @@ spec:
                   "super_seeding": false,
 
                   "max_connections_global": 2500,
-                  "max_connections_per_torrent": 80,
+                  "max_connections_per_torrent": 200,
                   "max_upload_slots_global": -1,
                   "max_connections_per_second": 100,
                   "max_upload_speed": 100000,
