@@ -16,7 +16,9 @@
 # (hardening-vms.yml) targeting vm_guests, not anything in this host
 # playbook's role list — so it's appended last purely to keep the list
 # append-only, not because of an ordering dependency on zfs_tank
-# specifically.
+# specifically; zfs_arc likewise just appends — it sets a host-wide module
+# parameter (one ARC serves every pool, rpool included), so it needs neither
+# zfs_tank nor any pool to have run first.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -49,3 +51,4 @@
         hardening_is_pve_host: true
     - zfs_tank
     - pve_permissions
+    - zfs_arc

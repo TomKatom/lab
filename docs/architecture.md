@@ -210,6 +210,13 @@ else default-drop.
 - **Single `/data` tree** (`/data/torrents` + `/data/media`, TRaSH layout)
   so Sonarr/Radarr do **atomic hardlink moves** — instant imports, no
   copies, same inode.
+- **ARC is sized once, host-wide** (`ansible/roles/zfs_arc`, 32 GiB) — one
+  cache serves both pools. It is declared because the pre-IaC install left
+  it at 391 MiB, too small for `tank` to hold even its own metadata, which
+  made every partial write to the HDD stripe a read-modify-write of a whole
+  128 KiB record. That role's `defaults/main.yml` carries the sizing
+  derivation against the memory the guests reserve; change it there, not on
+  the host.
 
 ### Guest agent
 

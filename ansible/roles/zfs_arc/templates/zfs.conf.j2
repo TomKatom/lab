@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Managed by ansible/roles/zfs_arc — edits here are overwritten on the next
+# converge. The ARC ceiling and its derivation live in that role's
+# defaults/main.yml.
+#
+# This file is read at module load. On a ZFS-root host the zfs module loads
+# from the initramfs, which carries its own copy of /etc/modprobe.d — so a
+# change here only reaches the next boot after update-initramfs runs. The
+# role's handler does that, and it also writes the running module parameter
+# so the change applies without a reboot.
+options zfs zfs_arc_max={{ zfs_arc_max_bytes }}

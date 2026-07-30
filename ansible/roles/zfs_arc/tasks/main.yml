@@ -1,0 +1,94 @@
+---
+# Sets the ZFS ARC ceiling on the Proxmox host, in both places it has to be
+# set: /etc/modprobe.d/zfs.conf (survives a reboot) and the live module
+# parameter (takes effect now, so this role never requires one).
+#
+# Host-wide by design — one ARC serves every pool on the box, so this covers
+# `rpool` (VM system disks, app configs) as well as `tank`. That is why it
+# is its own role rather than part of zfs_tank, which owns one pool.
+
+- name: Assert the requested ARC maximum leaves the guests their memory
+  # Half of installed RAM is the ceiling this role will accept, well clear of
+  # the ~34 GiB the two guests reserve (see defaults/main.yml). The lower
+  # bound catches a truncated or unit-confused edit — anything under 1 GiB on
+  # a host this size is the class of value this role exists to correct.
+  ansible.builtin.assert:
+    that:
+      - zfs_arc_max_bytes | int >= 1073741824
+      - (zfs_arc_max_bytes | int) <= (ansible_memtotal_mb | int * 1048576 // 2)
+    fail_msg: >-
+      zfs_arc_max_bytes ({{ zfs_arc_max_bytes }}) must be at least 1 GiB and
+      no more than half of this host's {{ ansible_memtotal_mb }} MiB of RAM.
+      Raising it further would come out of the memory the k3s and runner VMs
+      reserve — resize those in infra/tofu/terraform.tfvars first.
+    success_msg: >-
+      zfs_arc_max_bytes is {{ (zfs_arc_max_bytes | int / 1073741824) | round(1) }} GiB,
+      within half of the host's {{ (ansible_memtotal_mb | int / 1024) | round(1) }} GiB.
+
+- name: Render the ZFS module options file
+  ansible.builtin.template:
+    src: zfs.conf.j2
+    dest: "{{ zfs_arc_modprobe_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update initramfs
+
+- name: Check whether the running kernel exposes the ARC maximum
+  ansible.builtin.stat:
+    path: "{{ zfs_arc_sysfs_path }}"
+  register: zfs_arc_sysfs
+
+- name: Read the running ARC maximum
+  ansible.builtin.slurp:
+    src: "{{ zfs_arc_sysfs_path }}"
+  register: zfs_arc_running
+  when: zfs_arc_sysfs.stat.exists
+
+- name: Apply the ARC maximum to the running module
+  # sysfs, so this is a plain write and not a file the copy/template modules
+  # can manage (they stage a temp file and rename, which sysfs rejects). The
+  # `when` is what makes it idempotent: on a converged host the running value
+  # already matches and this task is skipped, so it never reports a spurious
+  # change.
+  #
+  # Raising the ceiling does not allocate anything — it only lets the ARC
+  # grow into memory as reads warm it, so there is no reclaim spike here.
+  ansible.builtin.shell:
+    cmd: "echo {{ zfs_arc_max_bytes | int }} > {{ zfs_arc_sysfs_path }}"
+  changed_when: true
+  when:
+    - zfs_arc_sysfs.stat.exists
+    - (zfs_arc_running.content | b64decode | trim | int) != (zfs_arc_max_bytes | int)
+
+- name: Read back the ARC ceiling the kernel is actually enforcing
+  # arcstats c_max, not the module parameter — the parameter is only the
+  # request, and ZFS clamps it against arc_min. This is the value that
+  # governs.
+  #
+  # check_mode: false so a --check run still reports the host's current
+  # ceiling instead of skipping and leaving the register undefined.
+  ansible.builtin.command:
+    cmd: awk '/^c_max/ {print $3}' /proc/spl/kstat/zfs/arcstats
+  register: zfs_arc_c_max
+  changed_when: false
+  check_mode: false
+  when: zfs_arc_sysfs.stat.exists
+
+- name: Assert the ARC ceiling took effect
+  # Not under --check: the write above is skipped there, so an unconverged
+  # host would still be reporting its old ceiling and this would fail for
+  # the one reason a dry run cannot do anything about.
+  ansible.builtin.assert:
+    that:
+      - (zfs_arc_c_max.stdout | trim | int) == (zfs_arc_max_bytes | int)
+    fail_msg: >-
+      ARC ceiling is {{ zfs_arc_c_max.stdout | trim }} bytes, expected
+      {{ zfs_arc_max_bytes }} — the running module did not accept the new
+      value, so the host is still capped where it was.
+    success_msg: >-
+      ARC ceiling is {{ (zfs_arc_c_max.stdout | trim | int / 1073741824) | round(1) }} GiB
+      as configured.
+  when:
+    - zfs_arc_sysfs.stat.exists
+    - not ansible_check_mode
