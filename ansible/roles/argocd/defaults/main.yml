@@ -34,7 +34,7 @@ argocd_helm_repo_url: https://argoproj.github.io/argo-helm
 # client/server skew. Bump this alongside argocd_chart_version, not
 # independently.
 # renovate: datasource=github-releases depName=argoproj/argo-cd
-argocd_cli_version: "3.4.5"
+argocd_cli_version: "3.4.6"
 # SHA256 of the argocd-linux-amd64 binary, cross-checked on 2026-07-25
 # against https://github.com/argoproj/argo-cd/releases/download/v3.4.5/cli_checksums.txt
 # and a local sha256 of the downloaded binary. Both matched.
