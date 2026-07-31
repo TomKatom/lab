@@ -81,7 +81,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
 
-      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
@@ -224,7 +224,7 @@ jobs:
           name: tofu-plan
           path: infra/tofu
 
-      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
