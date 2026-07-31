@@ -12,11 +12,15 @@
   },
   "kubernetes": {
     "enabled": true,
-    "fileMatch": ["clusters/lab/.*\\.ya?ml$"]
+    "managerFilePatterns": [
+      "/clusters/lab/.*\\.ya?ml$/"
+    ]
   },
   "argocd": {
     "enabled": true,
-    "fileMatch": ["clusters/lab/.*\\.ya?ml$"]
+    "managerFilePatterns": [
+      "/clusters/lab/.*\\.ya?ml$/"
+    ]
   },
   "terraform": {
     "enabled": true
@@ -40,11 +44,11 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": [
-        "^ansible/roles/[^/]+/defaults/main\\.ya?ml$",
-        "^\\.github/workflows/[^/]+\\.ya?ml$",
-        "^\\.github/actions/[^/]+/action\\.ya?ml$",
-        "^clusters/lab/apps/[^/]+\\.ya?ml$"
+      "managerFilePatterns": [
+        "/^ansible/roles/[^/]+/defaults/main\\.ya?ml$/",
+        "/^\\.github/workflows/[^/]+\\.ya?ml$/",
+        "/^\\.github/actions/[^/]+/action\\.ya?ml$/",
+        "/^clusters/lab/apps/[^/]+\\.ya?ml$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s+\\w+\\s*[:=]\\s*[\"']?(?<currentValue>[^\"'\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?[\"']?"
