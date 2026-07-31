@@ -4,14 +4,19 @@
 
 # renovate: datasource=github-releases depName=actions/runner
 github_runner_version: "2.336.0"
-# SHA256 of actions-runner-linux-x64-2.335.1.tar.gz. Verified two ways on
-# 2026-07-19: downloaded the asset and ran `shasum -a 256` locally, and
+# SHA256 of actions-runner-linux-x64-2.336.0.tar.gz. Verified two ways on
+# 2026-07-31: downloaded the asset and ran `shasum -a 256` locally, and
 # cross-checked against the "digest" field the GitHub Releases API reports
-# for this asset (https://api.github.com/repos/actions/runner/releases/latest,
-# tag_name v2.335.1). Both matched. Reviewer: worth a spot-check against
-# https://github.com/actions/runner/releases/tag/v2.335.1 before merge
-# since this pin can't be re-verified from this PR's diff alone.
-github_runner_sha256: "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
+# for this asset (https://api.github.com/repos/actions/runner/releases/tags/v2.336.0).
+# Both matched.
+#
+# The renovate `github-releases` datasource bumps github_runner_version
+# automatically but has no way to know this checksum exists or update it —
+# it's a plain string, not a lockfile entry. Bumping the version here always
+# requires manually re-deriving this value in the same commit, or ansible
+# apply fails closed with a checksum mismatch (as it did when #90 bumped the
+# version alone and left the 2.335.1 checksum in place).
+github_runner_sha256: "04cf0be1aff4c3ec3554466c39124ca250e3effd8873bb7e8d68535aa9505d5d"
 
 github_runner_arch: x64
 github_runner_user: runner
