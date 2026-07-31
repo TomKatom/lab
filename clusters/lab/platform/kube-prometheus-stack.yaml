@@ -201,6 +201,16 @@ spec:
         grafana:
           env:
             GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+          # Added alongside loki.yaml. The subchart provisions Prometheus
+          # itself and marks it default; this appends Loki to the same
+          # provisioning ConfigMap so Explore has a logs datasource without a
+          # click. `access: proxy` keeps the query server-side — the browser
+          # never needs to reach a ClusterIP.
+          additionalDataSources:
+            - name: Loki
+              type: loki
+              access: proxy
+              url: http://loki.monitoring.svc:3100
           persistence:
             enabled: false
           resources:
