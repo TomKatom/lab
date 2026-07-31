@@ -9,12 +9,20 @@
 # and a later converge run picks it up once hardening-vms.yml has installed
 # the agent.
 #
-# The API token is the one thing this role cannot provision: the PVE API
+# It also provisions the read-only counterpart at the bottom of this file:
+# the monitoring@pve user prometheus-pve-exporter polls the API as, bound to
+# the built-in PVEAuditor role. Two identities rather than one because the
+# exporter's credential lives in the cluster, where the blast radius of the
+# Terraform role would be everything this server runs.
+#
+# The API tokens are the one thing this role cannot provision: the PVE API
 # reveals a token's secret exactly once, at creation, and this role runs in
-# CI where echoing it would land it in the job log and its SOPS destination
-# (infra/tofu/secrets.sops.tfvars.json) lives in the repo, not on the host.
-# The operator mints it once with scripts/mint-pve-token.sh; this role only
-# reports whether it exists.
+# CI where echoing one would land it in the job log, while their destinations
+# (infra/tofu/secrets.sops.tfvars.json,
+# clusters/lab/platform/monitoring/pve-token.sops.yaml) live in the repo, not
+# on the host. The operator mints them once with scripts/mint-pve-token.sh
+# and scripts/mint-pve-monitoring-token.sh; this role only reports whether
+# they exist.
 
 - name: Read the current PVE role list
   ansible.builtin.command:
@@ -224,3 +232,118 @@
       The Terraform PVE role has all required base privileges{{ ' and the
       guest-agent grant' if pve_permissions_agents_ready else ' (guest-agent
       grant deferred until agents respond)' }}.
+
+# ---------------------------------------------------------------------------
+# Read-only monitoring identity for prometheus-pve-exporter.
+#
+# Deliberately self-contained: it re-reads the user and ACL lists rather than
+# reusing the registers from the Terraform block above. Those reads happened
+# before several `pveum` mutations, and while none of them touches this user or
+# this ACL today, reusing them would make correctness depend on that staying
+# true — an invariant nothing enforces and a future task could break silently
+# (the `when:` would evaluate against a stale list, the create would be skipped,
+# and nothing would fail until the exporter got a 401).
+#
+# No role is created: pve_permissions_monitoring_role is PVEAuditor, a PVE
+# built-in. `pveum acl modify` fails loudly if it is ever absent, which is the
+# only check worth having for something Proxmox ships.
+# ---------------------------------------------------------------------------
+
+- name: Read the PVE user list before adding the monitoring user
+  ansible.builtin.command:
+    cmd: pveum user list --output-format json
+  register: pve_permissions_monitoring_user_list
+  changed_when: false
+
+- name: Create the monitoring PVE user
+  # Same shape as the terraform user: no password, no realm login. It exists
+  # only as an anchor for the API token and the ACL below.
+  ansible.builtin.command:
+    cmd: >-
+      pveum user add {{ pve_permissions_monitoring_user }}
+      --comment "prometheus-pve-exporter (token-only, read-only, no login)"
+  when: >-
+    (pve_permissions_monitoring_user_list.stdout | from_json
+      | selectattr('userid', 'equalto', pve_permissions_monitoring_user)
+      | list | length) == 0
+  changed_when: true
+
+- name: Read the ACL list before binding the monitoring user
+  ansible.builtin.command:
+    cmd: pveum acl list --output-format json
+  register: pve_permissions_monitoring_acl_list
+  changed_when: false
+
+- name: Bind PVEAuditor to the monitoring user at /
+  # Root path, propagating, for the same reason the Terraform binding uses it:
+  # the exporter walks /cluster/resources, which reports guests, storages and
+  # nodes across the whole tree, and a narrower path would silently shorten the
+  # metric set as resources are added rather than fail. The read-only role is
+  # what makes a `/` grant acceptable here. The token is minted --privsep 0
+  # (scripts/mint-pve-monitoring-token.sh), so this user ACL is the single
+  # place the exporter's effective permissions come from — no separate token
+  # ACL to keep in sync.
+  ansible.builtin.command:
+    cmd: >-
+      pveum acl modify /
+      --roles {{ pve_permissions_monitoring_role }}
+      --users {{ pve_permissions_monitoring_user }}
+  when: >-
+    (pve_permissions_monitoring_acl_list.stdout | from_json
+      | selectattr('path', 'equalto', '/')
+      | selectattr('roleid', 'equalto', pve_permissions_monitoring_role)
+      | selectattr('ugid', 'equalto', pve_permissions_monitoring_user)
+      | list | length) == 0
+  changed_when: true
+
+- name: Read the monitoring user's API token list
+  ansible.builtin.command:
+    cmd: pveum user token list {{ pve_permissions_monitoring_user }} --output-format json
+  register: pve_permissions_monitoring_token_list
+  changed_when: false
+
+- name: Report whether the pve-exporter API token exists
+  # A report, not an assert, for the same reason as the tofu one above: on a
+  # clean provision this role creates the user before the operator can possibly
+  # have minted a token against it, and failing here would wedge the first host
+  # converge. A missing token fails loudly at the exporter instead — every
+  # scrape 401s and `up{job="pve-exporter"}` sits at 0.
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'API token ' + pve_permissions_monitoring_user + '!'
+        + pve_permissions_monitoring_token + ' exists.'
+        if pve_permissions_monitoring_token_exists
+        else 'API TOKEN MISSING: run scripts/mint-pve-monitoring-token.sh
+        (operator, one-time) and seal the value into
+        clusters/lab/platform/monitoring/pve-token.sops.yaml —
+        prometheus-pve-exporter cannot authenticate until then.' }}
+  vars:
+    pve_permissions_monitoring_token_exists: >-
+      {{ (pve_permissions_monitoring_token_list.stdout | from_json
+        | selectattr('tokenid', 'equalto', pve_permissions_monitoring_token)
+        | list | length) > 0 }}
+
+- name: Re-read the ACL list
+  ansible.builtin.command:
+    cmd: pveum acl list --output-format json
+  register: pve_permissions_acl_list_after
+  changed_when: false
+
+- name: Assert the monitoring user is bound to PVEAuditor at /
+  # The one thing worth asserting on this side: without the binding the user
+  # authenticates fine and every collector returns an empty result set, so the
+  # exporter looks healthy and reports nothing.
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pve_permissions_acl_list_after.stdout | from_json
+          | selectattr('path', 'equalto', '/')
+          | selectattr('roleid', 'equalto', pve_permissions_monitoring_role)
+          | selectattr('ugid', 'equalto', pve_permissions_monitoring_user)
+          | list | length) > 0
+    fail_msg: >-
+      {{ pve_permissions_monitoring_user }} is not bound to
+      {{ pve_permissions_monitoring_role }} at / after attempting the grant.
+    success_msg: >-
+      {{ pve_permissions_monitoring_user }} is bound to
+      {{ pve_permissions_monitoring_role }} at / (read-only).

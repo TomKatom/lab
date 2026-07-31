@@ -1,0 +1,51 @@
+# The PVE host's node_exporter, scraped from inside the cluster. It is the one
+# target in this stack that Kubernetes service discovery cannot find, because
+# it is not in Kubernetes: node_exporter runs on the hypervisor itself
+# (ansible/roles/node_exporter), one layer below the VM this Prometheus lives
+# in. A ScrapeConfig with a static target is the operator-native way to say
+# that, as opposed to hand-editing additionalScrapeConfigs into a Secret, which
+# is the pre-CRD form and is neither validated nor visible in `kubectl get`.
+#
+# The target address is config/lab.yml's `network.vmbr1_host_address`
+# (10.10.10.1/24) with the prefix dropped, on node_exporter's default port
+# 9100. Argo renders straight from git with no templating layer, so this is a
+# hand-copied constant that must track lab.yml by hand — the same arrangement
+# as ./pve-exporter-servicemonitor.yaml's `target` param and external-dns.yaml's
+# `domainFilters`. vmbr1 is the right side of the host to scrape: it is the
+# bridge this VM is attached to, and the host's public interface is firewalled.
+#
+# `jobName: pve-node` is the whole reason this file is separate from the
+# pve-exporter ServiceMonitor rather than another endpoint on it. The operator
+# always controls the rendered `job_name` itself (it namespaces them as
+# `scrapeConfig/<ns>/<name>` so two CRs cannot collide, which Prometheus
+# rejects), so this field does not set that — it sets the `job` *label* on the
+# scraped metrics, by means of a relabeling. The alert rules in the next PR
+# select on `job="pve-node"` to separate the hypervisor's node_exporter from
+# the one kube-prometheus-stack runs as a DaemonSet inside the cluster, whose
+# metrics are otherwise identical in name and would make a host-level alert
+# fire for a container-level condition.
+#
+# It lives in the `monitoring` namespace because the chart leaves
+# `scrapeConfigNamespaceSelector` at `{}`, which in operator terms means the
+# Prometheus object's own namespace — not all namespaces. `scrapeConfigSelector`
+# is `{}` too (via scrapeConfigSelectorNilUsesHelmValues: false), so no
+# `release:` label is needed; see ./pve-exporter-servicemonitor.yaml.
+#
+# Until the node_exporter role lands on the host this target is simply DOWN.
+# That is the intended failure mode, not a reason to delay the CR: an absent
+# target produces no `up` series at all, and nothing would alert on the
+# hypervisor being unmonitored.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: pve-node
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: pve-node
+spec:
+  jobName: pve-node
+  scrapeInterval: 30s
+  staticConfigs:
+    # config/lab.yml network.vmbr1_host_address, prefix dropped, + 9100.
+    - targets:
+        - "10.10.10.1:9100"

@@ -51,3 +51,25 @@ pve_permissions_role_privs:
 # access is all Tofu needs).
 pve_permissions_agent_privs:
   - VM.GuestAgent.Audit
+
+# The read-only half: prometheus-pve-exporter (clusters/lab/platform/monitoring)
+# polls the PVE API as this user for /cluster/status, /cluster/resources and the
+# per-node config/replication endpoints.
+#
+# PVEAuditor is a PVE *built-in* role, so unlike the Terraform role above there
+# is no privilege list here to create, append to or keep in sync — and that is
+# the point, not a shortcut. Its privilege set is Audit-only by construction, so
+# a credential that leaks out of the cluster cannot start, stop, reconfigure or
+# delete anything, and no future edit to this file can quietly widen it the way
+# adding one line to pve_permissions_role_privs would. Defining a custom
+# read-only role instead would buy nothing and would need maintaining against
+# every PVE release that adds an Audit privilege.
+pve_permissions_monitoring_user: monitoring@pve
+pve_permissions_monitoring_role: PVEAuditor
+# Token id the exporter authenticates with (PVE_TOKEN_NAME in
+# pve-exporter-deployment.yaml; the secret half is PVE_TOKEN_VALUE, delivered
+# from clusters/lab/platform/monitoring/pve-token.sops.yaml). Same single-reveal
+# problem as the tofu token above — the API shows a token's secret exactly once,
+# at creation — so this role never creates it either. That is
+# scripts/mint-pve-monitoring-token.sh, run once by the operator.
+pve_permissions_monitoring_token: prometheus
