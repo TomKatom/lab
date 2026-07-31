@@ -115,7 +115,7 @@ jobs:
       group: ansible-apply-check-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.head_ref }}
 
@@ -133,7 +133,7 @@ jobs:
           "$HOME/.venvs/ansible/bin/pip" install ansible-core==2.21.2
           echo "$HOME/.venvs/ansible/bin" >> "$GITHUB_PATH"
 
-      - uses: webfactory/ssh-agent@v0.9.0
+      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
@@ -237,7 +237,7 @@ jobs:
       group: ansible-apply
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # See the `check` job's identical step for why: no actions/setup-python
       # here - this runner's Debian 13 image has no prebuilt CPython in that
@@ -248,7 +248,7 @@ jobs:
           "$HOME/.venvs/ansible/bin/pip" install ansible-core==2.21.2
           echo "$HOME/.venvs/ansible/bin" >> "$GITHUB_PATH"
 
-      - uses: webfactory/ssh-agent@v0.9.0
+      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
           ssh-private-key: ${{ secrets.PROXMOX_SSH_PRIVATE_KEY }}
 
