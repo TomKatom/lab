@@ -1,0 +1,584 @@
+# "Media stack" — the one dashboard for the layer this lab actually exists to
+# run. Hand-written rather than vendored from grafana.com, because there is no
+# published dashboard for this combination of exporters and because a hand
+# written panel is only as correct as its query: every expression below uses a
+# metric name read out of the exporter's source, not out of a README.
+#
+# Three series a reasonable person would get wrong — two by name, one by
+# shape, and all three verified against the exporter that emits them:
+#
+#   deluge_libtorrent_net_sent_payload_bytes_TOTAL — the exporter declares the
+#     libtorrent session counters through prometheus_client's
+#     CounterMetricFamily, which appends `_total` to the exposed sample name.
+#     The name as it appears in the exporter's source has no suffix; the name
+#     Prometheus stores does. Verified by exposing the same declaration through
+#     prometheus_client rather than by reading the docs.
+#   plex_video_transcode_sessions_count — there is no transcode-decision label
+#     anywhere in the Plex exporter. The decision is encoded in the metric NAME:
+#     videoDecision == "transcode" increments this, audioDecision == "transcode"
+#     increments a different metric, and a direct-play session appears in
+#     neither. So "direct play" on this dashboard is the distance between the
+#     sessions line and the two transcode lines, not a series of its own.
+#   <app>_queue_total — one series per scrape at the pinned exportarr v2.3.0,
+#     not one per queue state. Its collector overwrites a single metric
+#     variable inside the loop over records and sends only the last
+#     (queue.go:88-96 at that tag), so the series holds the TOTAL queue length
+#     under whichever record's labels came last. The queue panel therefore
+#     sums by `url` alone. `sum by (url, download_state)` renders without
+#     error, plots one arbitrarily-labelled line at the total, and looks
+#     exactly like a working breakdown — which is why it is called out here
+#     rather than left as a query someone tidies back in.
+#     (The label itself is `download_state`, camelCase values, NOT
+#     trackedDownloadState and not snake_case, for whenever upstream's
+#     per-state grouping reaches a release. rules-media.yaml's header holds
+#     the restore recipe for that day.)
+#
+# The Deluge state panel deliberately drops two of the exporter's own states.
+# `total` and `active` are supersets of the rest (the exporter's own HELP
+# string says so), so a stacked or summed view including them double-counts
+# every torrent. If a total is ever wanted here it should be a separate stat
+# panel reading state="total", not another series on this one.
+#
+# Panel 7 reads a metric that comes from neither this cluster nor these
+# exporters: the Proxmox host's node_exporter textfile collector emits
+# media_backup_newest_mtime_seconds{app} from the .zip files under
+# /tank/data/backups. It is on this dashboard rather than the node one because
+# the question it answers — "are the *arrs still backing themselves up" — is a
+# media question that happens to be measured on the hypervisor.
+#
+# The datasource is pinned by uid rather than left to the default. Revision 45
+# of the vendored node-exporter dashboard beside this one relies on default
+# resolution and says why that works; a hand-written dashboard has no such
+# excuse, and `uid: prometheus` is what ../kube-prometheus-stack.yaml
+# provisions. If a second Prometheus datasource is ever added, this dashboard
+# keeps pointing at the right one and that one does not.
+#
+# `grafana_dashboard: "1"` is what makes Grafana notice this at all, and the
+# VALUE matters as much as the key: the chart renders its sidecar with
+# LABEL_VALUE=1, so a bare `grafana_dashboard: ""` is not picked up. NAMESPACE
+# is ALL, which is why this may live in `monitoring` with the rest of the
+# overlay. See ./dashboard-node-exporter-full.yaml's header for the full
+# reading of the sidecar's environment.
+#
+# No ServerSideApply annotation here, unlike that file. This JSON is ~13 KiB
+# against its 228 KiB, nowhere near the 262144-byte
+# last-applied-configuration cap that forces server-side apply there, so it
+# applies the same way every other object in this overlay does.
+#
+# `editable: false` and a pinned `uid`: edits made in the Grafana UI live only
+# until the sidecar reloads this ConfigMap, so making the panel look editable
+# is a way to lose work. Change it here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-media
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-media
+data:
+  media-stack.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": false,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "The transcode decision is the metric NAME, not a label — this exporter has no decision label. Direct play and direct stream are the gap between the top line and the two below it.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(plex_sessions_count)",
+              "legendFormat": "all sessions",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(plex_video_transcode_sessions_count)",
+              "legendFormat": "video transcode",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(plex_audio_transcode_sessions_count)",
+              "legendFormat": "audio transcode",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "Plex — sessions and transcodes",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Feeds PlexVideoTranscodeSession. Stale label sets are reset to 0 rather than deleted, so the > 0 filter is what keeps every user who has ever streamed off this panel.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (username) (plex_video_transcode_sessions_count) > 0",
+              "legendFormat": "{{username}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Plex — video transcodes by user",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "The exporter also emits state=\"total\" and state=\"active\", which are supersets of these — they are excluded because summing or stacking across overlapping states is meaningless.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "id": 3,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "deluge_torrents{state=~\"downloading|seeding|paused|checking|queued|error|moving|allocating\"}",
+              "legendFormat": "{{state}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Deluge — torrents by state",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Payload only, so protocol and tracker overhead are excluded. The _total suffix is added by the Python client because these libtorrent stats are declared as counters; the name without it matches nothing.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "id": 4,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "rate(deluge_libtorrent_net_sent_payload_bytes_total[5m])",
+              "legendFormat": "sent",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "rate(deluge_libtorrent_net_recv_payload_bytes_total[5m])",
+              "legendFormat": "received",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Deluge — payload throughput",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Total items in each *arr's queue, including the ones the API hides by default (ENABLE_UNKNOWN_QUEUE_ITEMS). NOT broken down by download_state: exportarr v2.3.0 emits a single queue series per scrape, valued at the total and labelled with whichever record happened to be last, so any by(download_state) split here would be fiction. A queue that never comes back down is the visible form of items that are not draining. See rules-media.yaml's header.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 16
+          },
+          "id": 5,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (url) ({__name__=~\"(sonarr|radarr)_queue_total\"})",
+              "legendFormat": "{{url}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "*arr — queue size",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "One series per open issue, value always 1, plus a single all-empty-label series at 0 when there are none.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 16
+          },
+          "id": 6,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (url, type) ({__name__=~\"(sonarr|radarr|prowlarr)_system_health_issues\"})",
+              "legendFormat": "{{url}} {{type}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "*arr — health issues by severity",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "From the Proxmox host's node_exporter textfile collector, not from the *arrs — it measures the files on disk under /tank/data/backups. An app with no backups at all emits no series and shows nothing here; MediaBackupStale is the rule that covers that case.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "id": 7,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - media_backup_newest_mtime_seconds{job=\"pve-node\"}",
+              "legendFormat": "{{app}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Newest *arr backup age",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "tags": [
+        "lab",
+        "media"
+      ],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Media stack",
+      "uid": "lab-media-stack",
+      "version": 1,
+      "weekStart": ""
+    }

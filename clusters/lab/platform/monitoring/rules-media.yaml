@@ -1,0 +1,247 @@
+# The media stack's own alerts: the *arrs, Plex and Deluge. Nothing in
+# kube-prometheus-stack knows any of these applications exist, and — more to
+# the point — nothing any of them exposes as a *health* endpoint would have
+# caught either of the two conditions this file was written for.
+#
+# The first is 21 queue items sitting permanently in `importBlocked`. Sonarr
+# and Radarr answer /ping normally the whole time; the queue simply stops
+# draining, and the API hides the worst of it by default (see below). The
+# second is indexers that have been failing long enough for Prowlarr to stop
+# retrying them, which presents as "search results got worse" and nothing
+# else. Both were found by a human reading a UI. These rules are the machine
+# version of that read — of the second one completely, and of the first only
+# as far as the pinned exporter can honestly support, which is the subject of
+# the next four paragraphs.
+#
+# ⚠ There is deliberately NO queue-state alert in this file, and the reason is
+# the exporter rather than the query. exportarr v2.3.0 — the newest tagged
+# release, and what ../../apps/exportarr.yaml pins by digest — collapses the
+# entire queue into ONE `<app>_queue_total` series per scrape. Its collector
+# assigns to a single `prometheus.Metric` variable inside the loop over queue
+# records and sends only whatever the last iteration left there
+# (internal/arr/collector/queue.go:88-96 at tag v2.3.0, blob 3bcb3f9c). The
+# one surviving series carries the value of the TOTAL queue length and the
+# labels of whichever record happened to be last. A matcher on
+# download_state=~"importBlocked|importFailed" would therefore fire on a coin
+# flip and report the wrong number when it did — the exact failure mode
+# ../../apps/exportarr.yaml's header calls worse than no alert, because it
+# reads as proof that somebody checked.
+#
+# Established by execution rather than by reading. Upstream's own
+# TestQueueCollect at tag v2.3.0, re-run against a three-record queue fixture
+# (one `downloading`, two `importBlocked`), emits exactly:
+#
+#   sonarr_queue_total{download_state="importBlocked",download_status="warning",
+#                      status="completed",url="..."} 3
+#
+# One series, the last record's state, the total count. Upstream's own fixture
+# holds a single record, which is why upstream's tests do not catch this.
+#
+# The grouping fix — one series per distinct label triple, plus a zero series
+# so an empty queue is distinguishable from a failed scrape — exists only on
+# the exporter's unreleased main branch (blob 15ede7c4, upstream #389). When a
+# release LATER than v2.3.0 ships it, restore the alert as:
+#
+#   - alert: ArrQueueImportBlocked
+#     expr: sum by (job, url, download_state) (
+#             {__name__=~"(sonarr|radarr)_queue_total",
+#              download_state=~"importBlocked|importFailed"}
+#           ) > 0
+#     for: 2h
+#
+# 2h because an item legitimately passes through importPending and importing
+# on its way to done and a busy import can hold one for a while, while the 21
+# that prompted this had been stuck for weeks. Restoring it also makes
+# ENABLE_UNKNOWN_QUEUE_ITEMS in ../../apps/exportarr.yaml load-bearing for an
+# alert rather than only for the dashboard's queue-size panel: an item lands
+# in importBlocked precisely because the *arr can no longer match it to a
+# series or movie, so the default filtered queue view hides most of what such
+# an alert exists to find. Do not restore one without the flag.
+#
+# Until that release exists, the two surviving signals for a queue that has
+# stopped draining are ArrHealthErrors below — which catches the subset of
+# blocked-import causes Servarr raises as a health issue, such as a broken
+# remote path mapping, an unavailable download client or a missing root
+# folder — and the "*arr — queue size" panel on the media dashboard, where a
+# queue that never drains is a line that never comes down. Neither is a
+# replacement, and the gap is recorded in docs/observability.md rather than
+# left to be rediscovered.
+#
+# Every exportarr series carries a constant `url` label holding the *arr's own
+# address (internal/arr/collector/helpers.go, newDesc). It is the only label
+# that survives a `sum by (...)` and still names which app a regex-matched
+# metric came from, which is why it appears in every grouping below rather
+# than the more obvious `job`. `job` is here too, from
+# ../../apps/exportarr.yaml's `jobLabel: app.kubernetes.io/service`, so the
+# three exporters are `exportarr-sonarr`, `exportarr-radarr` and
+# `exportarr-prowlarr` rather than one collapsed `exportarr`.
+#
+# Three metric-name facts that the obvious PromQL gets wrong, all verified
+# against the exporters' source rather than their READMEs:
+#
+#   1. The queue label is `download_state`, not `trackedDownloadState` and not
+#      `tracked_download_state`. exportarr snake-cases the label NAME but
+#      passes the API's value through verbatim (queue.go:84), so the values
+#      stay camelCase: `importBlocked`, `importFailed`, `importPending`,
+#      `downloading`. A matcher on `import_blocked` matches nothing forever.
+#      Nothing here selects on it today — see the collapse above — but the
+#      restore recipe does, and so would anyone adding a queue panel.
+#   2. There is no transcode-decision label on any Plex metric. The exporter
+#      reads TranscodeSession.videoDecision itself and increments a separate
+#      metric — the NAME is the decision. plex_sessions_count{decision=...}
+#      matches nothing.
+#   3. `deluge_up` does not exist, in either published Deluge exporter. See
+#      DelugeDown below for what replaces it and why `up` cannot.
+#
+# `type="error"` on the health rule is the one matcher here not confirmed
+# against a fixture. exportarr passes Servarr's HealthCheckResult through
+# verbatim and does no mapping (health.go:32,58,68); the enum is
+# ok/notice/warning/error, but only `warning` appears in exportarr's testdata,
+# so nothing proves an `error` value has ever been emitted by this exact
+# version. If a known-bad health condition ever fails to page, widen this to
+# `type=~"error|warning"` — at the cost of alerting on the notices the *arrs
+# raise routinely, which is why it is not written that way to begin with.
+#
+# The health-issue metric is a gauge whose value is always 1, one series per
+# issue, with a single all-empty-label series at 0 when there are none — so
+# `> 0` after a `sum by` is the correct shape and `absent()` would be wrong.
+# `prowlarr_indexer_unavailable` is the opposite: it has no zero form at all
+# and the series simply disappears when the health message clears
+# (prowlarr.go:47-70). That makes `for: 6h` mean six continuous hours of the
+# series existing, which is the intent, and it also means a healthy Prowlarr
+# produces no series for this rule to evaluate — normal, not a fault.
+#
+# No `release: kube-prometheus-stack` label, for the reason in
+# ./rules-pve-host.yaml's header: the rendered Prometheus CR has
+# `ruleSelector: {}` and picks up every PrometheusRule in every namespace.
+#
+# Annotations avoid angle brackets, like every other rules file here: the
+# Telegram receiver runs with parse_mode HTML and a stray "<" makes the whole
+# notification fail to send. Note that $labels.message on ArrHealthErrors
+# interpolates a Servarr-authored string — those read like "Indexers
+# unavailable due to failures for more than 6 hours: NAME" and carry no
+# markup today, but they are the one value in this file this repo does not
+# control.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: media
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: media
+spec:
+  groups:
+    - name: media
+      rules:
+        - alert: ArrHealthErrors
+          expr: |-
+            sum by (job, url, source, message) (
+              {__name__=~"(sonarr|radarr|prowlarr)_system_health_issues", type="error"}
+            ) > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.job }} reports a health error: {{ $labels.source }}"
+            description: >-
+              {{ $labels.url }} has raised the health check
+              {{ $labels.source }} at severity error for an hour:
+              "{{ $labels.message }}". The app keeps answering its health
+              endpoint in this state, which is why this reads the API instead.
+
+        # No ArrQueueImportBlocked here on purpose. See the header: at the
+        # pinned exportarr v2.3.0 the queue collector emits one series per
+        # scrape, so a per-state matcher cannot reliably fire and misreports
+        # the count when it does. The restore recipe and the release that
+        # unblocks it are in the header.
+
+        - alert: ProwlarrIndexerUnhealthy
+          expr: prowlarr_indexer_unavailable > 0
+          for: 6h
+          labels:
+            severity: warning
+          annotations:
+            summary: Prowlarr indexer {{ $labels.indexer }} is unavailable
+            description: >-
+              Prowlarr has reported indexer {{ $labels.indexer }} as failing
+              for six hours. Every *arr search runs through Prowlarr, so a dead
+              indexer is silently missing releases rather than raising an
+              error anywhere. Check the indexer's own status page and
+              Prowlarr's History for the failure reason.
+
+        - alert: PlexDown
+          expr: plex_up == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Plex is not answering
+            description: >-
+              The exporter's request to Plex's /identity endpoint has failed
+              for five minutes. This is the one metric that means Plex itself
+              rather than the exporter: a bad PLEX_TOKEN or a dead exporter pod
+              show up as a failed scrape instead, which the chart's own
+              TargetDown covers.
+
+        # The locked policy for this lab is direct play. There is no GPU in an
+        # E5-1650v4, so every video transcode is software libx264 on the cores
+        # the *arrs and Deluge are also using, and a session that is still
+        # transcoding video 15 minutes in is not a brief negotiation — it is a
+        # client or a file outside the quality tiers the library is built to.
+        # Audio-only transcodes are cheap and deliberately not alerted on.
+        - alert: PlexVideoTranscodeSession
+          expr: sum by (username) (plex_video_transcode_sessions_count) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Plex is transcoding video for {{ $labels.username }}
+            description: >-
+              {{ $labels.username }} has had {{ $value }} video-transcoding
+              session(s) running for 15 minutes. Direct play is the policy
+              here; find the file and the client in Tautulli and decide which
+              of the two is wrong.
+
+        # There is no deluge_up to compare against, and `up` cannot stand in
+        # for one. On an RPC failure this exporter logs the error and returns
+        # from collect() without yielding anything — the HTTP scrape still
+        # succeeds with 200 and a near-empty body, so Prometheus records
+        # up == 1 for a completely dead daemon. `deluge_info` is emitted on
+        # every successful collect and only then, which makes its absence the
+        # honest signal. This also covers the exporter container being gone,
+        # since that produces no series either.
+        - alert: DelugeDown
+          expr: absent(deluge_info)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Deluge is not reporting any metrics
+            description: >-
+              No deluge_info series has been present for five minutes. Either
+              deluged has stopped answering RPC on 127.0.0.1:58846 or the
+              metrics sidecar in the deluge pod is not running. Note that the
+              scrape can still be succeeding — check "kubectl -n media logs
+              deploy/deluge -c metrics" before assuming the pod is down. While
+              this is firing nothing is seeding and no *arr grab completes.
+
+        # Today this is 0 of ~390 torrents, so the floor is not "a few errors
+        # are normal" — any error state is signal. 30m rather than
+        # immediately, because a tracker hiccup or a moment of unreachable
+        # storage puts a torrent into error and takes it out again without
+        # anyone needing to know. State values are lowercase in this exporter
+        # (deluge_exporter.py:150 lowercases them); state="Error" matches
+        # nothing.
+        - alert: DelugeTorrentsInError
+          expr: deluge_torrents{state="error"} > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} Deluge torrents are in the error state"
+            description: >-
+              {{ $value }} torrents have been in Deluge's error state for 30
+              minutes. On a private tracker an errored torrent is a stalled
+              seed and counts against ratio; the usual causes are a missing
+              path under /data/torrents or a tracker that has stopped
+              accepting announces.
