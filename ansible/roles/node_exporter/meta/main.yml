@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: node_exporter
+  author: tomkatom
+  description: Prometheus node_exporter on the Proxmox host, bound to the vmbr1 management address, with the packaged SMART textfile collector and a lab textfile collector for ZFS pool capacity and *arr backup freshness
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

@@ -52,8 +52,8 @@ comments for the full failure mode).
 ## WireGuard management plane
 
 There is no public SSH, no IPMI, and no console — WireGuard is the only way
-to reach management surfaces (SSH/22, Proxmox API/8006, k8s API/6443). The
-tunnel itself is:
+to reach management surfaces (SSH/22, Proxmox API/8006, k8s API/6443, host
+metrics/9100). The tunnel itself is:
 
 - **Interface:** `wg0` on the host (`wireguard_interface` in
   `ansible/inventory/group_vars/all.yml`), listening on public
@@ -154,9 +154,19 @@ ports all read the same values:
 | `ssh` | 22/tcp | WireGuard-only |
 | `pve_api` | 8006/tcp | WireGuard-only |
 | `k8s_api` | 6443/tcp | WireGuard-only |
+| `node_exporter` | 9100/tcp | WireGuard-only |
 
 Everything not listed as public above is default-drop at the Proxmox filter
 firewall.
+
+"WireGuard-only" is shorthand for the `+mgmt` ipset behind Tofu's
+`node_mgmt_rules`, which is `internal_subnet` **plus** `wireguard_subnet`.
+That matters for `node_exporter` specifically: Prometheus scrapes the host
+exporter from the k3s VM (`10.10.10.10`) and clears the same rule an
+operator's tunnel does, so the metrics endpoint needs no rule of its own.
+It is deliberately absent from `nat_ingress_rules` below — a DNAT entry
+there would publish the host's disk, filesystem and process inventory to
+the internet.
 
 ## DNAT ingress rules
 

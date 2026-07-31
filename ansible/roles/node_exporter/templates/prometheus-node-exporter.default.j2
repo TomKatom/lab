@@ -1,0 +1,9 @@
+# Managed by Ansible (roles/node_exporter) — do not edit by hand.
+#
+# Read by prometheus-node-exporter.service as an EnvironmentFile; ExecStart is
+# `/usr/bin/prometheus-node-exporter $ARGS`.
+#
+# --collector.textfile.directory is deliberately absent: Debian defaults it to
+# /var/lib/prometheus/node-exporter already. See roles/node_exporter/tasks/main.yml
+# for why restating it here is a regression, not a belt-and-braces.
+ARGS="--web.listen-address={{ node_exporter_listen_address }}:{{ node_exporter_listen_port }}"

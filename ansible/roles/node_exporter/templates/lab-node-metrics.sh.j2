@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/node_exporter) — do not edit by hand.
+#
+# The two facts nothing on this host already exports.
+#
+# 1. ZFS pool capacity. node_exporter's zfs collector reads
+#    /proc/spl/kstat/zfs/*, which carries I/O counters and pool *state* but no
+#    size/alloc/free at all — pool capacity has no procfs source, so it can
+#    only come from zpool(8), which means a textfile collector. Health is
+#    emitted alongside it even though node_zfs_zpool_state{zpool,state}
+#    already covers that ground: the kstat reports the pool state enum, while
+#    zpool's health string is what an operator reading an alert expects to
+#    see, and having both costs two series per pool.
+#
+# 2. *arr backup freshness. Sonarr and Radarr write their scheduled backups
+#    into /data/backups/<app> in the k3s VM, which is this host's
+#    <backups_dir>/<app> through the virtiofs share. Nothing in the media
+#    stack exports a "last backup" timestamp, so the newest archive's mtime is
+#    the only available signal — and the host is the only place it can be read
+#    without giving a scraper access to the *arrs' filesystems.
+#
+# ZERO BACKUPS EMITS NO SERIES, deliberately. The obvious alternative — a 0
+# for "never backed up" — makes `time() - metric` evaluate to the entire Unix
+# epoch, so a staleness alert fires forever and cannot be silenced by fixing
+# the backup. Absence is the honest encoding; the staleness alert has to pair
+# its comparison with an absent() clause to catch "no backups at all", e.g.
+#   time() - media_backup_newest_mtime_seconds{app="sonarr"} > 2 * 86400
+#     or absent(media_backup_newest_mtime_seconds{app="sonarr"})
+#
+# Everything is written to a temp file in the same directory and renamed into
+# place. node_exporter parses these files on every scrape, and a half-written
+# one is a parse error that fails the whole textfile collector — not just this
+# file. rename(2) within a directory is atomic, so a scrape either sees the
+# previous complete file or the new complete one. The EXIT trap means a
+# failure partway through leaves the last good file untouched rather than
+# publishing a truncated one.
+
+set -eu
+
+out='{{ node_exporter_textfile_path }}'
+tmp="${out}.$$.tmp"
+backups_dir='{{ node_exporter_backups_dir }}'
+apps=({{ node_exporter_backup_apps | map('quote') | join(' ') }})
+
+# HELP/TYPE are printed unconditionally, before anything that can decline to
+# produce samples: a family that is declared but empty is valid exposition,
+# and it keeps the file self-describing on a host where zfs or the backup
+# tree is missing.
+emit_zfs() {
+  printf '# HELP zfs_pool_capacity_ratio Fraction of the pool in use, from zpool list -o cap.\n'
+  printf '# TYPE zfs_pool_capacity_ratio gauge\n'
+  printf '# HELP zfs_pool_health Pool health from zpool(8); 1 on the series whose health label is current.\n'
+  printf '# TYPE zfs_pool_health gauge\n'
+
+  local listing=''
+  if command -v zpool > /dev/null 2>&1; then
+    # No pipefail anywhere in this script: `set -e` plus a failing head of a
+    # pipeline would abort before the rename and drop the other family too.
+    # Failures are absorbed explicitly instead, per command.
+    listing=$(zpool list -Hp -o name,cap,health 2> /dev/null) || listing=''
+  fi
+  [ -n "$listing" ] || return 0
+
+  local name cap health
+  while read -r name cap health; do
+    [ -n "$name" ] || continue
+    # Health FIRST, and guarded on its own. A pool that is FAULTED or UNAVAIL
+    # has no readable config, so zpool prints `-` for every numeric property
+    # including cap — if the capacity guard below came first it would skip the
+    # whole pool, and the only pools that would ever lose their health sample
+    # would be exactly the ones an alert exists to catch.
+    if [ -n "$health" ]; then
+      printf 'zfs_pool_health{pool="%s",health="%s"} 1\n' "$name" "$health"
+    fi
+    # -p should give a bare integer, but older zpool builds print `47%` for
+    # the cap property regardless; strip it rather than emit a broken sample.
+    cap=${cap%\%}
+    case $cap in
+      '' | *[!0-9]*) continue ;;
+    esac
+    # 10# so a zero-padded value is never read as octal. Integer percent to a
+    # ratio without shelling out to awk for one division.
+    cap=$((10#$cap))
+    printf 'zfs_pool_capacity_ratio{pool="%s"} %d.%02d\n' "$name" "$((cap / 100))" "$((cap % 100))"
+  done <<< "$listing"
+}
+
+emit_backups() {
+  printf '# HELP media_backup_newest_mtime_seconds Unix mtime of the newest *arr backup archive on this host.\n'
+  printf '# TYPE media_backup_newest_mtime_seconds gauge\n'
+
+  local app newest
+  for app in "${apps[@]}"; do
+    # The *arrs nest backups under manual/ scheduled/ update/, so this walks
+    # the tree rather than globbing one level. -printf '%T@' + sort -rn is the
+    # newest-file primitive that does not depend on filename ordering. A
+    # missing directory is not an error here: backups/ is created by the
+    # migration runbook, not by roles/virtiofs.
+    newest=$(find "${backups_dir}/${app}" -type f -name '*.zip' -printf '%T@\n' 2> /dev/null | sort -rn | head -n 1) || newest=''
+    [ -n "$newest" ] || continue
+    printf 'media_backup_newest_mtime_seconds{app="%s"} %s\n' "$app" "${newest%%.*}"
+  done
+}
+
+# 022 so node_exporter, which runs as the unprivileged `prometheus` user, can
+# read what this root-owned unit writes.
+umask 022
+trap 'rm -f "$tmp"' EXIT
+
+{
+  emit_zfs
+  emit_backups
+} > "$tmp"
+
+mv -f "$tmp" "$out"

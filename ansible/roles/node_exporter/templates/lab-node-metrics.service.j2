@@ -1,0 +1,8 @@
+# Managed by Ansible (roles/node_exporter) — do not edit by hand.
+[Unit]
+Description=Write the lab textfile metrics for node_exporter (ZFS pool capacity, *arr backup freshness)
+Documentation=https://github.com/prometheus/node_exporter#textfile-collector
+
+[Service]
+Type=oneshot
+ExecStart={{ node_exporter_textfile_script_path }}

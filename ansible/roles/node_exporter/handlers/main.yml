@@ -1,0 +1,26 @@
+---
+- name: Restart node_exporter
+  # The bind address lives in EnvironmentFile, which systemd only re-reads on
+  # a restart — a reload would leave the exporter on its previous address.
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_service_name }}"
+    state: restarted
+
+- name: Reload lab-node-metrics
+  # Unit files changed on disk: daemon_reload picks them up, and restarting
+  # the timer re-arms it against the new schedule. Restarting the *timer*
+  # also re-evaluates OnBootSec, which on an already-booted host has elapsed,
+  # so the collector runs once straight after — no separate refresh needed
+  # for this path.
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_textfile_script_name }}.timer"
+    daemon_reload: true
+    state: restarted
+
+- name: Refresh lab-node-metrics
+  # Script changed: run the oneshot now rather than waiting up to
+  # node_exporter_textfile_interval for stale numbers to roll over. `state:
+  # restarted` is the documented way to invoke a Type=oneshot unit on demand.
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_textfile_script_name }}.service"
+    state: restarted

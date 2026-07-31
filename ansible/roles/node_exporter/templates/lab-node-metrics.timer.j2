@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/node_exporter) — do not edit by hand.
+[Unit]
+Description=Run {{ node_exporter_textfile_script_name }} every {{ node_exporter_textfile_interval }}
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ node_exporter_textfile_interval }}
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

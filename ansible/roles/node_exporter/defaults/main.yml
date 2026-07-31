@@ -1,0 +1,70 @@
+---
+# Role-private vars, prefixed node_exporter_* so they can't collide with
+# another role's defaults. The two values that are NOT role-private —
+# the listen address and port — are read straight out of config/lab.yml's
+# `network`/`ports` (loaded by playbooks/proxmox-host.yml's vars_files), the
+# same way hardening_ssh_port does. Nothing here restates a fact that lives
+# there.
+
+# Debian packages, not an upstream tarball or a container: unattended-upgrades
+# (roles/hardening) keeps them patched, and none of them matches that role's
+# `proxmox-*`/`pve-*` hold list, so security updates actually land. The
+# collectors package brings the packaged smartmon textfile script and its
+# systemd timer; smartmontools is only a Recommends of it, so it is named
+# here explicitly rather than left to apt's recommends policy.
+node_exporter_packages:
+  - prometheus-node-exporter
+  - prometheus-node-exporter-collectors
+  - smartmontools
+
+# Bind to the vmbr1 host address only. The package default is a wildcard
+# bind, which would answer on the public uplink too and rely on the Proxmox
+# firewall alone; this makes the exporter unreachable off the management
+# plane even if a firewall rule is ever lost. The /CIDR that lab.yml carries
+# on vmbr1_host_address is an interface fact, not part of a bind address, so
+# it is stripped here the same way infra/tofu/locals.tf strips it.
+node_exporter_listen_address: "{{ network.vmbr1_host_address | ansible.builtin.split('/') | first }}"
+node_exporter_listen_port: "{{ ports.node_exporter }}"
+
+node_exporter_service_name: prometheus-node-exporter
+node_exporter_defaults_path: /etc/default/prometheus-node-exporter
+
+# Where the exporter reads *.prom from. This is Debian's patched default for
+# --collector.textfile.directory (see tasks/main.yml) — declared here because
+# this role writes into the directory, NOT so it can be passed as a flag.
+node_exporter_textfile_dir: /var/lib/prometheus/node-exporter
+node_exporter_textfile_path: "{{ node_exporter_textfile_dir }}/lab.prom"
+
+# The packaged SMART collector: script + oneshot unit + 15-minute timer, all
+# shipped by prometheus-node-exporter-collectors. dpkg already enables the
+# timer on install; the role asserts that state rather than assuming it, so a
+# host where it was masked converges back.
+node_exporter_smartmon_timer: prometheus-node-exporter-smartmon.timer
+
+# The lab's own textfile collector — ZFS pool capacity and *arr backup
+# freshness, the two things nothing upstream emits (see the script template).
+# `lab-` prefixed like lab-nat.service so it can never collide with a unit
+# the collectors package might ship under its own prometheus-node-exporter-*
+# namespace later and silently mask it.
+node_exporter_textfile_script_name: lab-node-metrics
+node_exporter_textfile_script_path: /usr/local/bin/lab-node-metrics
+# 5 minutes: pool capacity and a nightly backup's mtime both move far slower
+# than the scrape interval, so anything tighter only costs `zpool list` calls
+# and a walk of the backup tree.
+node_exporter_textfile_interval: 5min
+
+# Host-side root of the *arrs' backups. The chain: roles/zfs_tank mounts the
+# tank/data dataset at zfs_tank_mountpoint; infra/tofu/storage-virtiofs.tf
+# maps that same path into the k3s VM; roles/virtiofs mounts it in the guest
+# at virtiofs_mount_path (/data), which is where Sonarr/Radarr write
+# /data/backups/<app>. Same inodes, two names — this role runs on the host,
+# so it needs the host name for them. zfs_tank runs earlier in the same play
+# and its default is in scope by then; the literal is the standalone-run
+# fallback, not a second source of truth.
+node_exporter_backups_dir: "{{ zfs_tank_mountpoint | default('/tank/data') }}/backups"
+# NOT created by roles/virtiofs (backups/ is absent from virtiofs_subdirs —
+# it exists because docs/runbooks/media-migration.md mkdir'd it), so the
+# script must tolerate any of these being missing.
+node_exporter_backup_apps:
+  - sonarr
+  - radarr
