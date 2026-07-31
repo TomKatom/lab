@@ -1,0 +1,18 @@
+# Rendered by the ksops-patched Argo repo-server (Phase 4) — `kustomize build`
+# here needs `--enable-alpha-plugins --enable-exec` plus the age key, which is
+# why CI skips this directory (see ../README.md "Pre-merge review"). The skip
+# is automatic: CI's "kustomize build secret overlays" step greps each
+# kustomization's directory for `kind: ksops` and moves on.
+#
+# No `namespace:` transformer: every resource here carries its own, the same
+# way ../cert-manager/ and ../authelia/ do.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators:
+  - secret-generator.yaml
+
+# The later monitoring PRs land their ServiceMonitors, ScrapeConfigs and
+# PrometheusRules alongside this one.
+resources:
+  - networkpolicy-grafana.yaml

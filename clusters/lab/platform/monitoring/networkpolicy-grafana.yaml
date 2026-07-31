@@ -1,0 +1,59 @@
+# Grafana has no authentication of its own — the login form is off, basic auth
+# is off, and `auth.proxy` believes whatever `Remote-User` header arrives (see
+# ../kube-prometheus-stack.yaml). The Ingress annotation makes that safe for
+# traffic that comes *through* Traefik, because Traefik overwrites the header
+# from Authelia's reply. It does nothing at all for traffic that never touches
+# Traefik: the Grafana Service is an ordinary ClusterIP, so without this policy
+# any pod in the cluster can
+#
+#   curl -H 'Remote-User: whoever' http://kube-prometheus-stack-grafana.monitoring
+#
+# and, because `auto_sign_up` is on and `auto_assign_org_role` is Admin, be
+# created as an Org Admin on the spot. That matters here specifically because
+# the neighbours are the media namespace — Deluge, the *arrs, FlareSolverr —
+# which exist to parse hostile input from indexers and trackers. This is the
+# first NetworkPolicy in the repo; it is scoped to Grafana rather than
+# generalised because Grafana is the one service whose authentication is
+# delegated to a header.
+#
+# A NetworkPolicy is the fix rather than Grafana's own `auth.proxy.whitelist`
+# because that whitelist matches on source IP, and every pod in the cluster —
+# Traefik and Sonarr alike — draws from the same flannel pod CIDR, so any
+# whitelist wide enough to admit Traefik admits the attacker too.
+#
+# Selecting a pod for ingress denies everything not listed below, so the list
+# has to be complete: Traefik (real users) and the monitoring namespace itself
+# (Prometheus scraping the chart's grafana ServiceMonitor at /metrics on the
+# same port). Kubelet's readiness/liveness probes are not listed and do not
+# need to be — k3s's built-in policy controller is kube-router, which prepends
+# an `--src-type LOCAL` accept to every pod's ingress chain precisely so
+# node-originated probe traffic is never filtered. The dashboard sidecar
+# reloads Grafana over the pod's own loopback, which NetworkPolicy never sees.
+#
+# `kubernetes.io/metadata.name` is the label the API server stamps on every
+# Namespace itself, not something ../traefik/ has to opt into.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-allow-traefik-and-scrape
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+      app.kubernetes.io/instance: kube-prometheus-stack
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        # The container port, not the Service's 80 — NetworkPolicy is enforced
+        # after kube-proxy has already rewritten the destination.
+        - protocol: TCP
+          port: 3000
