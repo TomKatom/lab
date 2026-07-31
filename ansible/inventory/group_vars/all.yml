@@ -65,3 +65,6 @@ wireguard_peers:
   - name: toms-macbook
     public_key: "nLi+BSIB6VIf99D1cLlIsbqZ3AU8jp+z2rp/n0LB/TQ="
     address: 10.10.20.2/32
+  - name: toms-pc
+    public_key: "AZ9c31nOcvfx01grp7AMnczZHoCDCqdcSnuWThgiPXw="
+    address: 10.10.20.3/32
