@@ -55,7 +55,18 @@
       ],
       "datasourceTemplate": "{{{datasource}}}",
       "depNameTemplate": "{{{depName}}}",
-      "registryUrlTemplate": "{{{registryUrl}}}"
+      "registryUrlTemplate": "{{#if registryUrl}}{{{registryUrl}}}{{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Combined `image: repo:tag` form used by raw Helm values (e.g. Argo CD initContainers), as opposed to the split repository/tag form under clusters/lab/apps/",
+      "fileMatch": ["^clusters/lab/bootstrap/[^/]+\\.ya?ml$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s+image:\\s*[\"']?[^\"'\\s:]+:(?<currentValue>[^\"'\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?[\"']?"
+      ],
+      "datasourceTemplate": "{{{datasource}}}",
+      "depNameTemplate": "{{{depName}}}",
+      "registryUrlTemplate": "{{#if registryUrl}}{{{registryUrl}}}{{/if}}"
     }
   ]
 }
