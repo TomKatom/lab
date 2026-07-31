@@ -32,12 +32,58 @@ Cluster platform services, synced before any media app depends on them:
   top-level `platform/*.yaml` manifest, and it in turn discovers every
   `clusters/lab/apps/*.yaml` Application — see
   [`../apps/README.md`](../apps/README.md). **Implemented (Phase 6).**
-- `monitoring/` — placeholder namespace; kube-prometheus-stack + Loki land
-  here later (Phase 7).
+- `kube-prometheus-stack.yaml` + `loki.yaml` + `alloy.yaml` +
+  `monitoring-config.yaml` + `monitoring/` — metrics, logs and alerting.
+  **Implemented (Phase 7).** See "The monitoring stack" below and
+  [`../../../docs/observability.md`](../../../docs/observability.md).
 
-Every platform component Phase 5 set out to build is now in place;
-`monitoring/` is the only entry above still a placeholder, and it belongs to
-Phase 7.
+Every platform component Phase 5 set out to build is in place, and Phase 7
+added the monitoring stack on top of it.
+
+## The monitoring stack
+
+Monitoring is the one place here that deliberately bends the component
+layout above. It is **four** chart `Application`s sharing **one** namespace
+and **one** config app, rather than four independent three-piece components:
+
+| File | Wave | Namespace op |
+|---|---|---|
+| `kube-prometheus-stack.yaml` | `"4"` | `CreateNamespace=true` + `ServerSideApply=true` |
+| `loki.yaml` | `"4"` | — |
+| `alloy.yaml` | `"5"` | — |
+| `monitoring-config.yaml` → `monitoring/` | `"5"` | — |
+
+Two things about that are worth stating explicitly, because both are easy to
+"tidy up" into a bug:
+
+- **One shared `monitoring/` overlay, not four.** The CRs in it are not
+  separable by component the way cert-manager's ClusterIssuers are: a
+  `PrometheusRule` about ZFS pools is authored against the *pve-exporter's*
+  metrics but is consumed by *Prometheus*, and the Alertmanager config
+  Secret is read by Prometheus's Alertmanager but written for the alerts the
+  rules define. Splitting them would put a sync-ordering edge between files
+  that always change together. This mirrors `../apps/media-common/`, and it
+  is the same reasoning: shared trust domain, shared lifecycle. Adding a
+  rule or dashboard is dropping a file into `monitoring/` and listing it in
+  its `kustomization.yaml`.
+- **`CreateNamespace=true` lives on `kube-prometheus-stack.yaml` alone.**
+  It is the wave-4 Application that gets there first. Adding it to `loki.yaml`
+  or `alloy.yaml` as well would be harmless-looking and wrong — the
+  convention across this directory is that exactly one Application owns a
+  namespace's creation, so there is one place to look when it does not exist.
+
+`ServerSideApply=true` on `kube-prometheus-stack.yaml` is not optional. The
+chart ships ~4.4 MB of CRDs across ten objects, six of them individually
+larger than the 262 144-byte `kubectl.kubernetes.io/last-applied-configuration`
+annotation that client-side apply writes (`prometheuses.monitoring.coreos.com`
+alone is ~830 kB). Without SSA the sync fails with `metadata.annotations: Too
+long`. Same trap, same fix as cert-manager and Traefik.
+
+Waves 4–5 sit strictly after `apps.yaml` (wave 3) on purpose: monitoring
+scrapes everything and nothing depends on monitoring, so it is last in and
+first out. `monitoring-config.yaml` is a wave behind the charts because its
+CRs (`ServiceMonitor`, `PrometheusRule`, `ScrapeConfig`) need the
+kube-prometheus-stack CRDs to already be established.
 
 ## Component layout
 
