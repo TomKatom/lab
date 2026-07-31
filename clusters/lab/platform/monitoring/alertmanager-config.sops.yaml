@@ -1,0 +1,69 @@
+# TEMPLATE — not applied, not encrypted, not read by anything. It exists so the
+# shape of the real file is reviewable in git while the real file is opaque
+# ciphertext. Copy it to `alertmanager-config.sops.yaml`, fill the two
+# placeholders, encrypt with `sops -e -i`, and commit the encrypted result
+# alongside this template (which stays, as the diffable reference).
+#
+# The whole Alertmanager configuration lives inside one Secret value rather
+# than in the chart's `alertmanager.config` values block for two reasons. The
+# bot token is a credential, so it cannot sit in a committed valuesObject. And
+# `chat_id` has to be a bare integer: Telegram group ids are negative all-digit
+# numbers, Alertmanager's parser is strict and rejects a quoted one, while this
+# repo's rule that every SOPS value must be a quoted string binds the *outer*
+# `alertmanager.yaml` value — a block scalar, which is a string — and says
+# nothing about the YAML nested inside it. Keeping the config in the Secret is
+# what lets both rules hold at once.
+#
+# ⚠ When editing the real file with `sops`, the value under `alertmanager.yaml`
+# must stay a block scalar (`|`). If it ever gets re-typed as a plain flow
+# scalar the Secret still encrypts and still applies, and Alertmanager then
+# fails to parse it at startup.
+#
+# Hand-writing this config means opting out of the chart's default one, and
+# the chart's default is not just a route to `null` — it also carries four
+# inhibit rules that exist to tame the rules the chart itself ships. Two of
+# them are about `InfoInhibitor`, a synthetic alert in the `general.rules`
+# group whose own description reads "This alert should be routed to a null
+# receiver and configured to inhibit alerts with severity=info". It fires
+# whenever any `severity: info` alert is firing in a namespace with no
+# warning/critical alongside it, and 87.21.0 ships seven info-level alerts
+# that a home lab trips routinely — CPUThrottlingHigh, KubeletTooManyPods,
+# NodeCPUHighUsage, KubeNodePressure, KubeNodeEviction, KubeQuotaAlmostFull,
+# KubeQuotaFullyUsed. Miss it and Telegram gets a meaningless "Info-level
+# alert inhibition" message every 12h forever. Note it carries
+# `severity: none`, not `info`, so no severity-based rule or route catches it
+# by accident — it has to be named. It is named twice below: matched onto the
+# `null` route (unconditional, and the reason the chart's fourth default rule
+# — an inhibit rule with an empty source, relying on the always-firing
+# Watchdog to suppress it — is not reproduced here), and kept as an inhibit
+# *source* so the info alerts it stands in for are suppressed too.
+#
+# Validated against Alertmanager v0.33.1 (the version kube-prometheus-stack
+# 87.21.0 deploys) with `amtool check-config`. Alertmanager unmarshals its
+# config strictly — an unknown or misspelled key is a hard startup failure, not
+# a warning — so any edit here should be re-checked the same way. Note that
+# `check-config` validates syntax only: it accepted the earlier version of
+# this file that had none of the InfoInhibitor handling at all.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: alertmanager-config
+    namespace: monitoring
+type: Opaque
+stringData:
+    alertmanager.yaml: ENC[AES256_GCM,data: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,iv:zPmdjjco6mJmx7L+fm6nmsqxhtXg9Ts8o2OEJ9jRMsk=,tag:wF5gUY/4hCqiqW/+75VFLg==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB5UWhUaC9ZRG1iK1NoeXdh
+            Ui9MSEh1WnJTWlhIRVhpQWFqaldLTko1OWp3CnVrTCtrK201T3pPV05FSzMwRnNT
+            OVFkejlnRDZteTIrWnQwT2RFZEJhVzgKLS0tICtYMS9DV2pHQTZkSno5MGoyUDRy
+            TlhqckZmWTYyektWZDJVU0JhaXlTSlkK9qrHA1WRdJxoVCOX6PNbS3qJNQk5yrUL
+            FThTUXcwM+joUPDzb1Cf8odZCpx+f6M86usC8XLSLf4cYpogQEDGyA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-31T17:12:42Z"
+    mac: ENC[AES256_GCM,data:0KXIWFMyseG2280e/hXlAkzDyudoXfbW1mQFPxRZutImA9UyNFmiR5hGVDlQYd05kJX9+Vozo5bAHPyYAhREIcZL0ooJAj9CVlA+5DohI8Trt3a8cn1YqCcREPR+mfgx8Vb3CUg1aBYBSKvp/NnAftoP6ezf3MMikuR1ia5cJJI=,iv:v5SY0K4bPiGwjjq6kfQiY9iq/pSYv/Xf5miAwTSDd60=,tag:XjQiYxlC0cO4g6uFN9bGWw==,type:str]
+    version: 3.13.2
