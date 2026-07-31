@@ -7,6 +7,8 @@
   ],
   "schedule": ["before 6am on monday"],
   "labels": ["dependencies"],
+  "rebaseWhen": "behind-base-branch",
+  "platformAutomerge": true,
   "helm-values": {
     "enabled": true
   },
@@ -39,6 +41,15 @@
     {
       "matchDatasources": ["docker"],
       "groupName": "container images"
+    },
+    {
+      "description": "CI-only bumps (GitHub Actions + the self-hosted runner version) never touch cluster manifests or ansible infra roles, so they're safe to automerge unattended",
+      "matchFileNames": [
+        ".github/workflows/**",
+        ".github/actions/**",
+        "ansible/roles/github_runner/defaults/main.yml"
+      ],
+      "automerge": true
     }
   ],
   "customManagers": [
