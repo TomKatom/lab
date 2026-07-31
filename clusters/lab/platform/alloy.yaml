@@ -1,0 +1,168 @@
+# Grafana Alloy — the collector that fills Loki. A DaemonSet on every node
+# (there is one) tailing two sources: container logs for every pod in the
+# cluster, and the host's systemd journal. Wave 5, a wave behind loki.yaml so
+# there is somewhere to push to, and without CreateNamespace — that belongs to
+# kube-prometheus-stack.yaml alone.
+#
+# The journal is not a nice-to-have second source. Pod logs stop existing the
+# moment the thing that writes them stops: a k3s server that crash-loops, an
+# OOM killer that takes a container out, a node that reboots — all of that is
+# only ever visible in the journal, and those are precisely the events the
+# alerting rules in a later PR fire on. Collecting pod logs alone would give a
+# system that is blind to exactly the failures worth waking up for.
+#
+# The single most dangerous line in this file is the nesting of the config:
+# `alloy.configMap.content`, NOT top-level `configMap.content`. A top-level
+# `configMap:` block is not an error — the chart ignores it, renders the
+# ConfigMap with an empty `config.alloy`, and Alloy starts happily, collects
+# nothing and reports healthy. Verified by rendering both ways.
+#
+# The journal mount needs BOTH `controller.volumes.extra` (the pod volume) and
+# `alloy.mounts.extra` (the container mount). They are separate lists in this
+# chart and neither implies the other; supplying only one renders a pod with a
+# volume nothing mounts, or a mount referencing a volume that does not exist —
+# the second at least fails loudly. `alloy.mounts.varlog: true` would also
+# expose the journal, but it mounts the whole of /var/log read-write, which is
+# more host filesystem than a log shipper has any business holding.
+#
+# `hostPath.type: DirectoryOrCreate`, not `Directory`, and that is a considered
+# trade. /var/log/journal only exists when journald is configured
+# `Storage=persistent`; with the volatile default the journal lives in
+# /run/log/journal and this path is absent. With `Directory` an absent path
+# parks the DaemonSet in ContainerCreating, which fails loudly but also leaves
+# this Application un-Healthy and takes pod-log collection down with it over a
+# host setting this repo does not yet manage. `DirectoryOrCreate` degrades
+# instead: an empty directory, no journal lines, pod logs unaffected. The cost
+# is that the failure is quiet, so it is not left to chance — the PR carries a
+# post-merge check that queries Loki for `{job="systemd-journal"}` and the fix
+# is journald `Storage=persistent` on the node, not a change here.
+#
+# No securityContext is set anywhere below, deliberately. The upstream
+# grafana/alloy image declares no user, so the container runs as uid 0 — that
+# is the image's default, not a privilege this repo requested, and it is what
+# makes the journal readable (journal files are root:systemd-journal 2640). The
+# tempting-looking alternative, dropping to `runAsGroup: <systemd-journal gid>`,
+# is worse than it looks: that GID is distribution-dependent and unpinned, so it
+# would silently stop matching on a node rebuild and the journal would go quiet.
+# Nothing here adds capabilities, host PID/network, or a privileged flag.
+#
+# `crds.create: false`: the only CRD this chart ships is
+# `podlogs.monitoring.grafana.com`, which is the CRD-driven alternative to the
+# `discovery.kubernetes` + `loki.source.kubernetes` pipeline configured below.
+# This lab configures collection in the Alloy config, so installing the CRD
+# would leave a cluster-scoped object nothing ever creates a CR for.
+#
+# On the config itself: `loki.source.kubernetes` reads pod logs through the
+# Kubernetes API rather than by tailing /var/log/pods off the host, which is why
+# there is no host mount for container logs — the chart's default RBAC already
+# grants pods/log. The relabel rules turn discovery metadata into the label set
+# every query and every alert rule downstream assumes: namespace, pod,
+# container, app. The last rule is a two-source fallback and reads oddly on
+# purpose: it joins the already-set `app` label and `app` pod label with `@`,
+# and only matches `^@(.+)$` — i.e. it fires only when the first rule left `app`
+# empty, so `app.kubernetes.io/name` wins where it exists and the legacy `app`
+# label fills in behind it. Rule order is therefore load-bearing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alloy
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: alloy
+    targetRevision: 1.11.0
+    helm:
+      valuesObject:
+        # Only ships podlogs.monitoring.grafana.com — unused here.
+        crds:
+          create: false
+        controller:
+          # Chart default, stated so a chart bump cannot change it quietly.
+          type: daemonset
+          volumes:
+            extra:
+              - name: journal
+                hostPath:
+                  path: /var/log/journal
+                  # Not `Directory` — see the header.
+                  type: DirectoryOrCreate
+        alloy:
+          configMap:
+            create: true
+            # NESTED under `alloy:`. A top-level `configMap.content` is
+            # silently ignored — see the header.
+            content: |-
+              discovery.kubernetes "pods" {
+                role = "pod"
+              }
+
+              discovery.relabel "pod_logs" {
+                targets = discovery.kubernetes.pods.targets
+
+                rule {
+                  source_labels = ["__meta_kubernetes_namespace"]
+                  target_label  = "namespace"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_name"]
+                  target_label  = "pod"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_container_name"]
+                  target_label  = "container"
+                }
+                rule {
+                  source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+                  target_label  = "app"
+                }
+                rule {
+                  source_labels = ["app", "__meta_kubernetes_pod_label_app"]
+                  separator     = "@"
+                  regex         = "@(.+)"
+                  target_label  = "app"
+                  replacement   = "$1"
+                }
+              }
+
+              loki.source.kubernetes "pods" {
+                targets    = discovery.relabel.pod_logs.output
+                forward_to = [loki.write.default.receiver]
+              }
+
+              loki.source.journal "host" {
+                path       = "/var/log/journal"
+                labels     = {job = "systemd-journal", host = "k3s-node"}
+                max_age    = "12h"
+                forward_to = [loki.write.default.receiver]
+              }
+
+              loki.write "default" {
+                endpoint {
+                  url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+                }
+              }
+          mounts:
+            # Pairs with controller.volumes.extra above; both are needed.
+            extra:
+              - name: journal
+                mountPath: /var/log/journal
+                readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        serviceMonitor:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

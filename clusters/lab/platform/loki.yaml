@@ -1,0 +1,208 @@
+# Loki — the log half of the monitoring component. Grafana Alloy (alloy.yaml,
+# wave 5) ships pod logs and the host journal in here; kube-prometheus-stack's
+# Grafana reads them back out through the Loki datasource declared in
+# kube-prometheus-stack.yaml. Wave 4 alongside kube-prometheus-stack, and
+# deliberately WITHOUT CreateNamespace: that flag belongs to
+# kube-prometheus-stack.yaml alone, which is the Application that gets to the
+# `monitoring` namespace first.
+#
+# THIS VALUES BLOCK IS WRITTEN AGAINST grafana/loki CHART MAJOR 7 (7.2.0,
+# appVersion 3.6.11). That is not decoration. The 6.x → 7.x bump moves and
+# re-means keys, and a values block is not a schema — Helm accepts unknown keys
+# in silence. Anyone bumping targetRevision across a major here must re-verify
+# every key below by rendering, not by reading a diff, and must update this
+# line. The specific keys most likely to bite are `deploymentMode`, the
+# read/write/backend zeroing, and `loki.rulerConfig`.
+#
+# `deploymentMode: SingleBinary` is exact, CamelCase, load-bearing. Spell it
+# `single-binary` and the chart does not error — it renders no StatefulSet and
+# no `loki` Service at all, leaving an Application that syncs green and stores
+# nothing. One node, one replica, filesystem storage: this lab has a single k3s
+# VM and roughly a gigabyte a day of logs, so the SimpleScalable default (three
+# separate read/write/backend StatefulSets plus two memcached Deployments) buys
+# nothing and costs several gigabytes of RAM.
+#
+# The three `replicas: 0` blocks for read/write/backend are REQUIRED, not
+# tidiness. The chart's validate.yaml refuses to render when both the single
+# binary and the simple-scalable targets have replicas: "You have more than zero
+# replicas configured for both the single binary and simple scalable targets".
+# Deleting any one of the three breaks the sync outright.
+#
+# The five `enabled: false` toggles switch off what SimpleScalable assumes and
+# SingleBinary does not need: chunksCache and resultsCache are TOP-LEVEL keys
+# (not under `memcached:`, which only holds the image those two share) and
+# default to multi-gigabyte memcached Deployments; gateway is an nginx front
+# door pointless in front of one pod; lokiCanary and test are CI fixtures.
+#
+# `sidecar.rules.enabled: false` is the subtle one. It defaults to TRUE, and
+# left alone the chart injects a kiwigrid/k8s-sidecar container into the Loki
+# pod plus an emptyDir mounted at `/rules` — which is exactly where the ruler
+# below reads from. The mount would shadow, or at best race with, the real rules
+# volume, and the symptom would be "the alert rules are in the ConfigMap but
+# Loki never fires", with no error to grep for.
+#
+# The ruler is why this file is more than a log bucket: it makes logs act rather
+# than only display. It evaluates LogQL alert rules in-process (top-level
+# `ruler.enabled` defaults true with `ruler.replicas: 0`, so no separate
+# workload appears in SingleBinary mode) and posts to the same Alertmanager the
+# metric alerts use — `alertmanager-operated` is the headless Service the
+# prometheus-operator creates for the Alertmanager CR, so this works without
+# kube-prometheus-stack having to expose anything extra. `ring.kvstore.store:
+# inmemory` because there is exactly one replica to coordinate.
+#
+# `/rules/fake` is the mount path and the `fake` is not a placeholder. Loki's
+# local ruler storage lays rules out as `<directory>/<tenant>/<file>`, and when
+# `auth_enabled: false` every request is attributed to the synthetic tenant
+# literally named `fake`. Mount the ConfigMap at `/rules` instead and the ruler
+# finds a directory where it expects a tenant folder and silently loads zero
+# rules.
+#
+# `rule_path` is the other half of that, and leaving it at its default is the
+# quietest failure in this file. Loki keeps two ruler paths, not one: the rule
+# STORE (`storage.local.directory`, read-only — the local rulestore's
+# Set/Delete/GetRuleGroup are all "unsupported in rule local store") and a
+# writable SCRATCH directory the rule mapper copies every group into before the
+# Prometheus rule manager is allowed to load it. `ruler.rule-path` defaults to
+# `/rules`, so with the default the mapper would try to write
+# `/rules/fake/<group>` — into a read-only ConfigMap projection, on a container
+# whose rootfs is `readOnlyRootFilesystem: true`. MapRules returns an error, the
+# manager logs `unable to map rule files` once and returns, and the ruler
+# evaluates nothing at all. The chart's own default is coherent because
+# `sidecar.rules` mounts a writable emptyDir at `/rules`; disabling the sidecar
+# above (correctly) took that emptyDir away, so the scratch path has to be
+# pointed somewhere writable by hand. `/var/loki/rules-tmp` is on the storage
+# PVC, which is where the ruler's other writable state (`wal.dir:
+# /var/loki/ruler-wal`) already lives, and the pod's fsGroup 10001 makes it
+# group-writable. It must not be `/rules`, `/rules/fake`, or any parent of the
+# ConfigMap mount.
+#
+# The `loki-rules` ConfigMap itself arrives in a later PR, so at merge time this
+# volume points at an object that does not exist. `optional: true` is the answer
+# rather than shipping a placeholder ConfigMap here: a non-optional missing
+# ConfigMap parks the pod in ContainerCreating forever, which would leave this
+# Application un-Healthy and block the rest of the stack, while a placeholder
+# would have to be deleted from here the moment the real one lands and would
+# spend the interval as an object two Applications both believe they own.
+# Optional means kubelet mounts an empty directory now and repopulates it in
+# place once the ConfigMap exists; the ruler re-polls its directory on its own
+# and picks the rules up.
+#
+# Storage: a 10Gi PVC with no storageClassName, so the cluster default
+# (local-path) applies and this manifest is not pinned to today's storage layer.
+# 720h (30 days) of retention with the compactor actually enforcing it —
+# `retention_period` on its own only marks data expired; without
+# `compactor.retention_enabled` nothing ever deletes a chunk and the PVC fills.
+# Note the compactor block lives at `loki.compactor`; there is no top-level
+# `compactor:` key in this chart, and putting it under `limits_config` renders
+# a config Loki ignores.
+#
+# `monitoring.serviceMonitor.enabled: true` gives Prometheus Loki's own
+# metrics. Its template is gated on the ServiceMonitor CRD being present in the
+# cluster, so it does NOT appear in CI's bare `helm template` output — that is
+# the gate working as designed, not a broken value. Argo renders against the
+# live cluster, where kube-prometheus-stack (wave 4) has already established the
+# CRD, and the ServiceMonitor appears there.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki
+    targetRevision: 7.2.0
+    helm:
+      valuesObject:
+        # Exact string, CamelCase — see the header.
+        deploymentMode: SingleBinary
+        loki:
+          auth_enabled: false
+          commonConfig:
+            replication_factor: 1
+          storage:
+            type: filesystem
+          schemaConfig:
+            configs:
+              # Quoted: bare 2026-01-01 is a YAML timestamp, not a string.
+              - from: "2026-01-01"
+                store: tsdb
+                object_store: filesystem
+                schema: v13
+                index:
+                  prefix: index_
+                  period: 24h
+          limits_config:
+            retention_period: 720h
+          # `loki.compactor`, not top-level and not under limits_config.
+          compactor:
+            retention_enabled: true
+            delete_request_store: filesystem
+          rulerConfig:
+            storage:
+              type: local
+              local:
+                directory: /rules
+            # Writable scratch dir for the rule mapper — NOT the read-only
+            # store above, and never a parent of it. See the header.
+            rule_path: /var/loki/rules-tmp
+            alertmanager_url: http://alertmanager-operated.monitoring.svc:9093
+            enable_alertmanager_v2: true
+            ring:
+              kvstore:
+                store: inmemory
+        singleBinary:
+          replicas: 1
+          persistence:
+            enabled: true
+            size: 10Gi
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          extraVolumes:
+            - name: loki-rules
+              configMap:
+                name: loki-rules
+                # The ConfigMap lands in a later PR — see the header.
+                optional: true
+          extraVolumeMounts:
+            - name: loki-rules
+              # `fake` is the tenant directory, not a placeholder.
+              mountPath: /rules/fake
+        # Required by the chart's validate.yaml, not optional tidiness.
+        read:
+          replicas: 0
+        write:
+          replicas: 0
+        backend:
+          replicas: 0
+        chunksCache:
+          enabled: false
+        resultsCache:
+          enabled: false
+        gateway:
+          enabled: false
+        lokiCanary:
+          enabled: false
+        test:
+          enabled: false
+        # Defaults to true; would shadow /rules — see the header.
+        sidecar:
+          rules:
+            enabled: false
+        monitoring:
+          serviceMonitor:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
