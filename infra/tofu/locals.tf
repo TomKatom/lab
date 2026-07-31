@@ -20,9 +20,17 @@ locals {
       dport   = local.lab.ports[rule.port]
     }
   ]
+  # node_mgmt_rules is the management-plane list: firewall.tf stamps
+  # `source = "+mgmt"` onto every entry once restrict_management is true, so
+  # anything added here is reachable from the internal and WireGuard subnets
+  # only — which is exactly the exposure a metrics endpoint should have.
+  # Prometheus scrapes from the k3s VM at network.vm_ip_address, inside
+  # internal_subnet, so it is already covered by the ipset; no firewall.tf
+  # change accompanies a new entry.
   node_mgmt_rules = [
     { comment = "SSH (host)", proto = "tcp", dport = local.lab.ports.ssh },
     { comment = "Proxmox API/UI", proto = "tcp", dport = local.lab.ports.pve_api },
+    { comment = "node_exporter (host metrics)", proto = "tcp", dport = local.lab.ports.node_exporter },
   ]
   # No vm_mgmt_rules / runner_mgmt_rules: guests run without a per-VM firewall
   # (firewall=false, so host egress NAT works) — see firewall.tf "VM (guest)

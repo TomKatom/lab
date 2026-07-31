@@ -1,0 +1,99 @@
+---
+# Host metrics for the Prometheus running in k3s: node_exporter itself, the
+# packaged SMART textfile collector, and one lab-owned textfile collector for
+# the two facts neither of them can produce (see lab-node-metrics.sh.j2).
+#
+# DO NOT add --collector.textfile.directory to the rendered ARGS. Debian
+# already patches that flag's default from "" to
+# /var/lib/prometheus/node-exporter — verified against salsa at authoring
+# time: debian/patches/0001-Debian-defaults.patch on sid/trixie, and
+# 01-default-settings.patch on bookworm — and ships ARGS="" precisely
+# because nothing else needs setting. Passing the flag explicitly replaces
+# that default rather than adding to it, so the "to be safe" version of this
+# role is one typo (or one upstream-flavoured /var/lib/node_exporter copied
+# out of a blog post) away from silently dropping the packaged smartmon.prom
+# and this role's own lab.prom from every scrape, with node_exporter still
+# healthy and no error anywhere. The bind address below is the only thing
+# ARGS carries.
+
+- name: Install node_exporter, its collector scripts and smartmontools
+  ansible.builtin.apt:
+    name: "{{ node_exporter_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Render the node_exporter defaults file
+  ansible.builtin.template:
+    src: prometheus-node-exporter.default.j2
+    dest: "{{ node_exporter_defaults_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_service_name }}"
+    enabled: true
+    state: started
+
+- name: Enable and start the packaged SMART collector timer
+  # dpkg's dh_installsystemd already enables this on install, so on a fresh
+  # host this is a no-op — it is here to reconcile a host where the timer was
+  # masked or stopped by hand, which is otherwise invisible until SMART
+  # metrics quietly age out. The oneshot .service is deliberately left alone:
+  # the timer owns when it runs.
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_smartmon_timer }}"
+    enabled: true
+    state: started
+
+- name: Ensure the textfile collector directory exists
+  # Created by the prometheus-node-exporter package; asserted here because
+  # both the packaged smartmon collector and lab-node-metrics write into it,
+  # and a missing directory turns both into silent no-ops. Ownership is left
+  # to the package — node_exporter only ever reads these files.
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the lab textfile collector script
+  ansible.builtin.template:
+    src: lab-node-metrics.sh.j2
+    dest: "{{ node_exporter_textfile_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Refresh lab-node-metrics
+
+- name: Install the lab-node-metrics systemd unit
+  ansible.builtin.template:
+    src: lab-node-metrics.service.j2
+    dest: "/etc/systemd/system/{{ node_exporter_textfile_script_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-node-metrics
+
+- name: Install the lab-node-metrics systemd timer
+  ansible.builtin.template:
+    src: lab-node-metrics.timer.j2
+    dest: "/etc/systemd/system/{{ node_exporter_textfile_script_name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-node-metrics
+
+- name: Enable and start the lab-node-metrics timer
+  # The timer, never the .service: enabling a oneshot's service unit would
+  # make systemd try to "start" it at boot as a dependency and report it
+  # active-exited forever. OnBootSec has long since elapsed on a running
+  # host, so starting the timer fires the first run immediately and the
+  # .prom file exists before the next scrape.
+  ansible.builtin.systemd:
+    name: "{{ node_exporter_textfile_script_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

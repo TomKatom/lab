@@ -18,7 +18,11 @@
 # append-only, not because of an ordering dependency on zfs_tank
 # specifically; zfs_arc likewise just appends — it sets a host-wide module
 # parameter (one ARC serves every pool, rpool included), so it needs neither
-# zfs_tank nor any pool to have run first.
+# zfs_tank nor any pool to have run first; node_exporter appends last on the
+# same terms — its one soft dependency is that zfs_tank has already been
+# parsed, since it derives the host-side backups path from
+# zfs_tank_mountpoint, and being last in this list guarantees that without
+# needing a meta/ dependency.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -52,3 +56,4 @@
     - zfs_tank
     - pve_permissions
     - zfs_arc
+    - node_exporter

@@ -112,7 +112,8 @@ resource "proxmox_virtual_environment_firewall_rules" "node" {
     }
   }
 
-  # Management: SSH + Proxmox API/UI. Anti-lockout — source is unrestricted
+  # Management plane: SSH, Proxmox API/UI, host metrics — whatever
+  # local.node_mgmt_rules carries. Anti-lockout — source is unrestricted
   # until restrict_management=true (Phase 3, post-WireGuard-verification).
   dynamic "rule" {
     for_each = local.node_mgmt_rules

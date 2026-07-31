@@ -69,7 +69,7 @@ image checksum) stay declared in that layer, alongside its secrets.
 ```
 OVH dedicated (Proxmox 9.2) — SINGLE public IP
 │  Public inbound: 443 · 32400 · torrent-port  (DNAT → VM)  ·  51820/udp (WireGuard, host)
-│  Management (SSH/8006/6443): WireGuard-only, never public
+│  Management (SSH/8006/6443/9100): WireGuard-only, never public
 │  Egress: VM → internet via host masquerade (appears as the OVH IP)
 │
 ├─ rpool (ZFS mirror, 2×500GB NVMe)  ── Proxmox root + VM system disks + app CONFIG (fast)
@@ -142,9 +142,10 @@ dependency.
 
 ### Management plane
 
-WireGuard listens on public `51820/udp`. SSH(22), Proxmox UI/API(8006), and
-the k8s API(6443) are **not** in the public accept list — reachable only
-over the WG interface. WG peers are routed into `vmbr1`, so a laptop peer
+WireGuard listens on public `51820/udp`. SSH(22), Proxmox UI/API(8006), the
+k8s API(6443), and the host node_exporter(9100) are **not** in the public
+accept list — reachable only over the WG interface or from the internal
+subnet, which is what lets Prometheus in the k3s VM scrape the host. WG peers are routed into `vmbr1`, so a laptop peer
 reaches both host and VM management over the tunnel. Each peer is scoped to
 its own `/32` on the host side (that field is the anti-spoof source filter,
 not the peer's route list — see
