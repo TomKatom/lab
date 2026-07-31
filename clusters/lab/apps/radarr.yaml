@@ -55,7 +55,7 @@ spec:
                 image:
                   repository: ghcr.io/home-operations/radarr
                   # renovate: datasource=docker depName=ghcr.io/home-operations/radarr
-                  tag: "6.0.0.10217@sha256:176205e666410114cccbdcd69e38b748b24ee4a2fa83a2ba5d0d49559a496d68"
+                  tag: "6.4.0.10523@sha256:c82ca292d70ac798bc993421fa7467b0c760238db646a1abc7789115d4359d5c"
                 securityContext:
                   capabilities:
                     drop: ["ALL"]
