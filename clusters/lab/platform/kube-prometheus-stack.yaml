@@ -1,0 +1,254 @@
+# kube-prometheus-stack — the chart half of the monitoring component (see
+# README.md "Component layout"): Prometheus + the prometheus-operator CRDs,
+# Alertmanager, kube-state-metrics, node-exporter and Grafana. Its config half
+# is the sibling monitoring-config.yaml → ./monitoring/, which carries the
+# Alertmanager routing Secret and, from later PRs, the hand-written CRs.
+#
+# Wave 4, strictly after apps.yaml (wave 3), and this is the first Application
+# to touch the `monitoring` namespace — so CreateNamespace=true lives here and
+# nowhere else. Anything else landing in `monitoring` later (loki, alloy,
+# monitoring-config) must NOT repeat it, or two Applications end up claiming
+# the same namespace object.
+#
+# ServerSideApply is not a style preference. The chart ships 10 CRDs totalling
+# 4,483,169 bytes, and six of them are individually past the 262,144-byte
+# ceiling on the `kubectl.kubernetes.io/last-applied-configuration` annotation
+# that a client-side apply writes: prometheuses 830,666 B, alertmanagerconfigs
+# 798,136 B, scrapeconfigs 716,542 B, prometheusagents 702,890 B, alertmanagers
+# 620,448 B, thanosrulers 599,994 B. Client-side, the API server rejects the
+# apply outright and the whole sync fails on the CRDs before a single workload
+# is created. If SSA is ever not enough on its own — a CRD needing to be owned
+# and versioned separately from the workloads, say — the escape hatch is
+# `helm.skipCrds: true` here plus a dedicated `prometheus-operator-crds`
+# Application at a lower wave. Deliberately not done today: one Application is
+# simpler to reason about and SSA handles it.
+#
+# The five *SelectorNilUsesHelmValues flags below are the single most
+# load-bearing block in this file. Left at their chart default (true) the
+# operator writes `<x>Selector: {matchLabels: {release: kube-prometheus-stack}}`
+# into the Prometheus CR, and every ServiceMonitor/PodMonitor/Probe/
+# PrometheusRule/ScrapeConfig in the cluster that does not carry that Helm
+# release label is silently ignored — no error anywhere, just no data and no
+# alerts. Since the monitors this lab cares about are rendered by app-template
+# (media apps) or hand-written under ./monitoring/, they would all be invisible.
+# Set to false the CR gets `<x>Selector: {}`, i.e. match everything, and
+# selection is by namespace-scoped intent rather than by chart bookkeeping.
+#
+# k3s has no etcd (sqlite), and folds the scheduler, controller-manager and
+# kube-proxy into the single server process with no separately scrapeable
+# :10259/:10257/:10249 endpoints. Both halves have to be switched off: the
+# `kubeX.enabled` toggles drop the Services and ServiceMonitors that would
+# scrape nothing, and the matching `defaultRules.rules` entries drop the alert
+# rules that would otherwise page "KubeControllerManagerDown" forever. Note
+# there is no `kubeScheduler` rules key — upstream splits it into
+# `kubeSchedulerAlerting` and `kubeSchedulerRecording`, and disabling only one
+# leaves half the rules live.
+#
+# Alertmanager's routing lives in a SOPS Secret (./monitoring/), not in
+# `alertmanager.config`, because it holds the Telegram bot token, and because
+# `chat_id` is an integer — the "SOPS values must be quoted strings" rule binds
+# the outer stringData value, not the YAML nested inside it. Pointing the CR at
+# that Secret takes TWO values, not one: `configSecret` only sets
+# `Alertmanager.spec.configSecret`, while the chart independently keeps
+# rendering its own `alertmanager-kube-prometheus-stack-alertmanager` Secret
+# from the default config — Argo would own, apply and self-heal a Secret that
+# nothing ever reads. `useExistingSecret: true` is the positive form that stops
+# it (`alertmanager.config: null` is not: Argo strips nulls from valuesObject
+# before Helm sees them, so it renders clean in CI and does nothing live).
+#
+# Grafana has no local authentication at all: the login form is off, basic auth
+# is off, and auth.proxy trusts the `Remote-User` header. For traffic arriving
+# through the Ingress that is safe, because the annotation routes every request
+# through Authelia's forwardauth Middleware first
+# (./authelia/middleware-forwardauth.yaml already lists Remote-User in
+# authResponseHeaders — nothing new is needed there) and Traefik overwrites the
+# header on the forwarded request from Authelia's reply, discarding whatever
+# the client sent. Dropping the annotation would leave Grafana trusting a
+# header any caller can set.
+#
+# The annotation cannot say anything about traffic that never reaches Traefik,
+# though, and the Grafana Service is a plain ClusterIP: any pod in the cluster
+# could otherwise curl it with a `Remote-User` of its choosing and — auto_sign_up
+# plus auto_assign_org_role: Admin — be minted an Org Admin. That half is closed
+# by ./monitoring/networkpolicy-grafana.yaml, which is load-bearing rather than
+# defence in depth. Grafana's own `auth.proxy.whitelist` is not the tool for it:
+# it matches source IPs, and Traefik shares the flannel pod CIDR with every
+# media pod.
+#
+# GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION is churn control, not hardening.
+# Without it the Grafana subchart mints a fresh `randAlphaNum` admin password on
+# every render; Argo re-renders on every refresh, so the admin Secret is
+# permanently OutOfSync and — because the pod template carries a
+# `checksum/secret` annotation over it — Grafana restarts on every sync. The
+# account is unusable anyway with the login form disabled. The cost is that no
+# Grafana *server* admin exists; the first Authelia user through the door is
+# auto-created as an Org Admin (auto_sign_up + auto_assign_org_role). To get a
+# real server admin back, point `grafana.admin.existingSecret` at a ksops Secret
+# rather than un-setting this.
+#
+# Sizing: Prometheus gets a 15Gi PVC with no storageClassName, because
+# local-path is the cluster default StorageClass and naming it here would pin
+# this manifest to today's storage layer. Retention is whichever bound hits
+# first — 15 days, or 13GiB of blocks, the head-room being for the WAL and for
+# compaction's transient double-write. Grafana keeps no PVC at all: its
+# dashboards are provisioned from git, so the only thing a restart loses is an
+# unsaved ad-hoc panel.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 87.21.0
+    helm:
+      valuesObject:
+        # Control-plane components k3s does not expose separately — see the
+        # header. Kubelet, kube-apiserver and CoreDNS stay at their chart
+        # defaults (enabled): those k3s does serve.
+        kubeEtcd:
+          enabled: false
+        kubeScheduler:
+          enabled: false
+        kubeControllerManager:
+          enabled: false
+        kubeProxy:
+          enabled: false
+        defaultRules:
+          rules:
+            etcd: false
+            kubeControllerManager: false
+            kubeProxy: false
+            kubeSchedulerAlerting: false
+            kubeSchedulerRecording: false
+        prometheus:
+          prometheusSpec:
+            retention: 15d
+            retentionSize: 13GiB
+            # See the header: false → `<x>Selector: {}` in the Prometheus CR.
+            # Dropping any one of these makes that class of CR invisible.
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            probeSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            scrapeConfigSelectorNilUsesHelmValues: false
+            resources:
+              requests:
+                cpu: 200m
+                memory: 1Gi
+              limits:
+                cpu: "1"
+                memory: 2Gi
+            # `storageSpec` here renders as `spec.storage` on the CR; the
+            # Alertmanager block below spells the same idea `storage`.
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  resources:
+                    requests:
+                      storage: 15Gi
+        alertmanager:
+          alertmanagerSpec:
+            # Both lines are required — see the header.
+            useExistingSecret: true
+            configSecret: alertmanager-config
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+            storage:
+              volumeClaimTemplate:
+                spec:
+                  accessModes:
+                    - ReadWriteOnce
+                  resources:
+                    requests:
+                      storage: 1Gi
+        prometheusOperator:
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        # Subchart values, so these two keys are the hyphenated dependency
+        # names from Chart.yaml — not the camelCase `kubeStateMetrics.enabled`
+        # / `nodeExporter.enabled` toggles that live at the top level of this
+        # chart's own values.
+        kube-state-metrics:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+        prometheus-node-exporter:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+        grafana:
+          env:
+            GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+          persistence:
+            enabled: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          # A literal dotted key, not nesting: the subchart renders this whole
+          # subtree into the grafana.ini ConfigMap, one INI section per
+          # sub-key. `server.domain` is not set here — the subchart templates
+          # it from ingress.hosts[0] below.
+          grafana.ini:
+            server:
+              root_url: https://grafana.tomkatom.com
+            auth:
+              disable_login_form: true
+            auth.basic:
+              enabled: false
+            auth.proxy:
+              enabled: true
+              header_name: Remote-User
+              header_property: username
+              auto_sign_up: true
+              # The other three headers the forwardauth Middleware returns,
+              # so an auto-created user gets a real name and e-mail rather
+              # than just a login.
+              headers: Name:Remote-Name Email:Remote-Email Groups:Remote-Groups
+            users:
+              auto_assign_org_role: Admin
+          ingress:
+            enabled: true
+            # No ingressClassName and no tls: Traefik's IngressClass is the
+            # cluster default and its default TLSStore already serves the
+            # wildcard certificate (./traefik/wildcard-certificate.yaml).
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - grafana.tomkatom.com
+            path: /
+            pathType: Prefix
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

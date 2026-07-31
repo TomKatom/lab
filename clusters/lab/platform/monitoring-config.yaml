@@ -1,0 +1,39 @@
+# monitoring — the config half of the component (see README.md "Component
+# layout"): everything that is a plain Kubernetes object rather than chart
+# output. Today that is the ksops-decrypted `alertmanager-config` Secret and
+# the NetworkPolicy that keeps header-authenticated Grafana off-limits to the
+# rest of the cluster; later PRs grow ./monitoring/ with the CRs that scrape
+# and alert on things no chart knows about.
+#
+# Wave 5, one after kube-prometheus-stack.yaml, and no CreateNamespace=true:
+# the chart half owns the `monitoring` namespace and is the only Application
+# allowed to declare it.
+#
+# Bootstrap ordering quirk, so it does not look like a failure the first time:
+# between wave 4 and wave 5 the Alertmanager Pod is scheduled against a Secret
+# that does not exist yet, so it sits in ContainerCreating with a
+# "secret alertmanager-config not found" event and kube-prometheus-stack reports
+# Progressing. Nothing needs doing — kubelet retries the mount every few
+# seconds, and the Pod starts on its own once this Application syncs. Reversing
+# the waves would only move the problem, since the Secret's namespace is created
+# by the chart half.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

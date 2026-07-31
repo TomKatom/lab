@@ -1,0 +1,112 @@
+# TEMPLATE — not applied, not encrypted, not read by anything. It exists so the
+# shape of the real file is reviewable in git while the real file is opaque
+# ciphertext. Copy it to `alertmanager-config.sops.yaml`, fill the two
+# placeholders, encrypt with `sops -e -i`, and commit the encrypted result
+# alongside this template (which stays, as the diffable reference).
+#
+# The whole Alertmanager configuration lives inside one Secret value rather
+# than in the chart's `alertmanager.config` values block for two reasons. The
+# bot token is a credential, so it cannot sit in a committed valuesObject. And
+# `chat_id` has to be a bare integer: Telegram group ids are negative all-digit
+# numbers, Alertmanager's parser is strict and rejects a quoted one, while this
+# repo's rule that every SOPS value must be a quoted string binds the *outer*
+# `alertmanager.yaml` value — a block scalar, which is a string — and says
+# nothing about the YAML nested inside it. Keeping the config in the Secret is
+# what lets both rules hold at once.
+#
+# ⚠ When editing the real file with `sops`, the value under `alertmanager.yaml`
+# must stay a block scalar (`|`). If it ever gets re-typed as a plain flow
+# scalar the Secret still encrypts and still applies, and Alertmanager then
+# fails to parse it at startup.
+#
+# Hand-writing this config means opting out of the chart's default one, and
+# the chart's default is not just a route to `null` — it also carries four
+# inhibit rules that exist to tame the rules the chart itself ships. Two of
+# them are about `InfoInhibitor`, a synthetic alert in the `general.rules`
+# group whose own description reads "This alert should be routed to a null
+# receiver and configured to inhibit alerts with severity=info". It fires
+# whenever any `severity: info` alert is firing in a namespace with no
+# warning/critical alongside it, and 87.21.0 ships seven info-level alerts
+# that a home lab trips routinely — CPUThrottlingHigh, KubeletTooManyPods,
+# NodeCPUHighUsage, KubeNodePressure, KubeNodeEviction, KubeQuotaAlmostFull,
+# KubeQuotaFullyUsed. Miss it and Telegram gets a meaningless "Info-level
+# alert inhibition" message every 12h forever. Note it carries
+# `severity: none`, not `info`, so no severity-based rule or route catches it
+# by accident — it has to be named. It is named twice below: matched onto the
+# `null` route (unconditional, and the reason the chart's fourth default rule
+# — an inhibit rule with an empty source, relying on the always-firing
+# Watchdog to suppress it — is not reproduced here), and kept as an inhibit
+# *source* so the info alerts it stands in for are suppressed too.
+#
+# Validated against Alertmanager v0.33.1 (the version kube-prometheus-stack
+# 87.21.0 deploys) with `amtool check-config`. Alertmanager unmarshals its
+# config strictly — an unknown or misspelled key is a hard startup failure, not
+# a warning — so any edit here should be re-checked the same way. Note that
+# `check-config` validates syntax only: it accepted the earlier version of
+# this file that had none of the InfoInhibitor handling at all.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: telegram
+      # Grouped by alert and namespace so one broken namespace is one thread,
+      # not one message per firing series. 12h repeat: long enough that a
+      # known-unfixed alert is not noise, short enough to still nag.
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        # Two synthetic alerts the chart ships that must never reach Telegram.
+        # Watchdog is the always-firing heartbeat, so you can tell "no alerts"
+        # from "alerting is dead". InfoInhibitor is the info-suppression
+        # sentinel described in the header. Both would otherwise page every
+        # 12h forever — the root route's receiver is `telegram`, so anything
+        # not caught here is delivered.
+        - receiver: "null"
+          matchers:
+            - alertname =~ "Watchdog|InfoInhibitor"
+    receivers:
+      - name: "null"
+      - name: telegram
+        telegram_configs:
+          # api_url defaults to https://api.telegram.org — not set on purpose.
+          # bot_token_file is the alternative to bot_token; it is not used here
+          # because the token is already delivered as a Secret.
+          - bot_token: <paste-bot-token-here>
+            # Bare integer, unquoted, negative for a group — e.g. -1001234567890
+            chat_id: <paste-chat-id-here>
+            parse_mode: HTML
+            send_resolved: true
+    # The chart's own defaults, restated because hand-writing this config
+    # replaces them wholesale. Dropping any one of them is a silent noise
+    # regression, not an error.
+    inhibit_rules:
+      # While a critical is firing for some alertname+namespace, suppress the
+      # quieter twins rather than sending all three.
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity =~ "warning|info"
+        equal: [alertname, namespace]
+      - source_matchers:
+          - severity = "warning"
+        target_matchers:
+          - severity = "info"
+        equal: [alertname, namespace]
+      # The point of InfoInhibitor: it fires exactly when a namespace has
+      # info-level alerts and nothing more serious, so using it as a source
+      # holds back the info alerts until something real joins them. Equal on
+      # namespace only — the whole point is to inhibit *other* alertnames.
+      - source_matchers:
+          - alertname = "InfoInhibitor"
+        target_matchers:
+          - severity = "info"
+        equal: [namespace]
