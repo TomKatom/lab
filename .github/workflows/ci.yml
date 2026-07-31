@@ -148,6 +148,17 @@ jobs:
       # CustomResourceDefinition objects: kubeconform ships no schema for
       # them and the catalog carries none either. Chart-generated, never
       # hand-written here - not a gap worth chasing.
+      #
+      # Re-verified 2026-07-31 for Phase 7, which is the first phase to
+      # hand-write monitoring.coreos.com CRs. The commit below was HEAD of
+      # `main` on that date and already serves every kind Phase 7 needs -
+      # servicemonitor_v1, podmonitor_v1, prometheusrule_v1,
+      # scrapeconfig_v1alpha1 and alertmanagerconfig_v1alpha1 all return a
+      # valid schema at this SHA. No bump was required, which is worth
+      # recording: the obvious reflex on seeing a new CR kind fail the
+      # strict lint below is to move this pin, and moving it re-validates
+      # every existing manifest against schemas nobody reviewed. Check the
+      # kind is genuinely absent at this SHA first.
       CRDS_CATALOG_REF: "dcaa31aa03082906c0325a7a0ee7d5191e9cbe24"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
