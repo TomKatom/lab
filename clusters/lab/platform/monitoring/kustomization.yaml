@@ -12,11 +12,20 @@ kind: Kustomization
 generators:
   - secret-generator.yaml
 
-# The later monitoring PRs land their ServiceMonitors, ScrapeConfigs and
-# PrometheusRules alongside this one.
+# Everything this overlay applies that is not a Secret. The two PrometheusRules
+# and the two ConfigMaps are plain objects with no kustomize transformation of
+# any kind — `loki-rules` and `dashboard-node-exporter-full` in particular must
+# keep their exact names and labels, because ../loki.yaml mounts the first by
+# name and Grafana's sidecar selects the second by its `grafana_dashboard: "1"`
+# label. A `configMapGenerator` would rename both with a content hash and break
+# both couplings, which is why they are listed here as resources instead.
 resources:
   - networkpolicy-grafana.yaml
   - pve-exporter-deployment.yaml
   - pve-exporter-service.yaml
   - pve-exporter-servicemonitor.yaml
   - scrapeconfig-pve-node.yaml
+  - rules-pve-host.yaml
+  - rules-cluster.yaml
+  - loki-rules.yaml
+  - dashboard-node-exporter-full.yaml

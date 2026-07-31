@@ -6,6 +6,23 @@
 # ServerSideApply because the cert-manager CRDs carry structural schemas far
 # past the 262kB last-applied-configuration annotation limit that client-side
 # apply would try to write.
+#
+# The `prometheus.servicemonitor` block is what exposes
+# certmanager_certificate_expiration_timestamp_seconds and
+# certmanager_certificate_ready_status, which monitoring/rules-cluster.yaml
+# alerts on. Three things about that key are easy to get wrong. It is
+# lowercase `servicemonitor` — the chart's own values.yaml spells it that way,
+# and `serviceMonitor` is accepted by Helm as an unrecognised value with no
+# error while nothing is rendered. `podmonitor` is its mutually exclusive
+# twin: enabling both is a hard chart error, so only one may ever be true
+# here. And `prometheus.enabled` (true by default, hence not restated) gates
+# the whole block — with it false the ServiceMonitor is skipped regardless.
+#
+# The ServiceMonitor lands in the cert-manager namespace, not monitoring, and
+# is still picked up because kube-prometheus-stack.yaml's
+# serviceMonitorNamespaceSelector renders as `{}` — an empty label selector,
+# which in Kubernetes terms matches every namespace. No selector label is
+# needed either: serviceMonitorSelector is `{}` too.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -27,6 +44,10 @@ spec:
         # Application can't garbage-collect every Certificate in the cluster.
         crds:
           enabled: true
+        prometheus:
+          # Lowercase, and mutually exclusive with `podmonitor` — see header.
+          servicemonitor:
+            enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager

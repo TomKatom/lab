@@ -1,0 +1,160 @@
+# The object ../loki.yaml's ruler has been waiting for. That Application
+# mounts a ConfigMap named exactly `loki-rules` at /rules/fake with
+# `optional: true`, so until this file merged the mount was an empty directory
+# and the ruler evaluated nothing. The name and the namespace are the contract:
+# rename either and the mount silently goes back to empty.
+#
+# `fake` is the tenant directory, not a placeholder — Loki's local rule store
+# lays rules out as <directory>/<tenant>/<file>, and with auth_enabled: false
+# every request is attributed to the synthetic tenant literally named `fake`.
+# Each key in `data` below therefore becomes one rule *file* under that tenant.
+# Two consequences worth stating, both from Loki's local store implementation
+# (pkg/ruler/rulestore/local/local.go, loadAllRulesGroupsForUser):
+#
+#   - Every non-directory entry in the tenant directory is loaded as a rule
+#     file, and a single unparseable one aborts the whole load with
+#     "error parsing ..." — not just its own group. So this ConfigMap must
+#     never grow a README key, a checksum, or anything else that is not a rule
+#     file.
+#   - The Kubernetes ConfigMap projection is symlink-based (`..data`, plus a
+#     timestamped directory), and the store handles that correctly: it
+#     os.Stat()s each symlink and skips the ones that resolve to directories.
+#     That is why a ConfigMap mount works here at all.
+#
+# The file format is Prometheus-shaped and LogQL-valued. Loki's ruler runs the
+# Prometheus rule manager, so `groups: -> rules: -> alert/expr/for/labels/
+# annotations` is exactly the Prometheus alerting-rule schema, and only `expr`
+# differs: it is LogQL, and it must be a *metric* query (count_over_time,
+# rate, ...) reduced to a number, never a bare log selector. A log-stream
+# expression is rejected at load time. Confirmed against the Loki 3.6.11 docs
+# (docs/sources/alert/_index.md, "Alerting rule example" and "Ruler storage").
+#
+# ⚠ THE THRESHOLDS BELOW ARE GUESSES. Nothing in this repo has a week of log
+# baseline to calibrate against, so 10 / 0 / 50 are starting points chosen to
+# be quiet rather than correct. Each expression should be pasted into Grafana
+# Explore against the Loki datasource and watched over real traffic before it
+# is trusted; expect to move MediaAppErrorBurst in particular, since "error"
+# means something different in every application in that namespace.
+#
+# The stream selectors are the part that fails silently rather than loudly. A
+# LogQL selector naming a label nothing sets matches zero streams forever, with
+# no error and no empty-result warning — the alert simply never fires. The
+# label set available here is defined entirely by ../alloy.yaml's relabel
+# rules, and is:
+#
+#   pod logs      namespace, pod, container, app
+#                 (app from app.kubernetes.io/name, falling back to the legacy
+#                 `app` pod label; there is NO `job` label on pod logs)
+#   journal logs  job="systemd-journal", host="k3s-node"
+#                 (no namespace, no pod — it is the node's own journal)
+#
+# So `{job="media"}` or `{namespace="systemd-journal"}` would both be valid
+# LogQL and both match nothing. Every selector below is drawn from that list.
+#
+# KernelOOMKill is the reason the journal is collected at all. A process killed
+# by the OOM killer leaves no trace in its own logs — it stops mid-line — and
+# no metric records the event; the kernel ring buffer is the only witness. The
+# filter is two stages rather than the one literal you would expect, because
+# the kernel prints three different prefixes ahead of the same suffix
+# (mm/oom_kill.c: "Out of memory", "Out of memory (oom_kill_allocating_task)"
+# and "Memory cgroup out of memory", all followed by ": Killed process %d").
+# A single |= "Out of memory: Killed process" therefore misses both the
+# allocating-task form and — much more importantly here — every cgroup OOM
+# kill, which is exactly how a container that exceeds its memory limit dies.
+# The cheap literal runs first so the regex only sees the handful of lines that
+# already contain "Killed process".
+#
+# It has no `for:` on purpose. An OOM kill is an event, not a state: by the
+# time a five-minute `for` elapsed the count_over_time window would still hold
+# it, but the notification would arrive five minutes after the process died
+# for no benefit. The 10m window is what bounds how long the alert stays
+# firing afterwards.
+#
+# AutheliaAuthFailureSpike matches on the message text rather than a level,
+# because Alloy ships raw lines with no parsing stage — there is no `level`
+# label to select on. "Unsuccessful ... authentication attempt by user" is
+# Authelia's wording for every failed factor (verified in Authelia 4.39.20,
+# the appVersion of the pinned chart: handler_firstfactor_password.go:69 and
+# response.go:492-496 all format "Unsuccessful %s authentication attempt by
+# user '%s'", and nothing else in the source uses that phrase — there is no
+# "Successful ... attempt by user" line to accidentally match). Matching the
+# substring rather than the whole message also makes it independent of whether
+# Authelia is logging text or JSON.
+#
+# One thing this rule is not: a lockout mechanism. Authelia's own regulation
+# already bans an attacker after a handful of failures. This exists so a
+# sustained attempt is visible in Telegram rather than only in a log nobody
+# reads.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki-rules
+data:
+  lab-logs.yaml: |
+    groups:
+      - name: lab-logs
+        rules:
+          - alert: AutheliaAuthFailureSpike
+            expr: |
+              sum by (namespace, pod) (
+                count_over_time(
+                  {namespace="authelia"}
+                    |= "Unsuccessful"
+                    |= "authentication attempt by user"
+                  [15m]
+                )
+              ) > 10
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: Burst of failed Authelia logins
+              description: >-
+                {{ $value }} unsuccessful authentication attempts were logged
+                by {{ $labels.pod }} in the last 15 minutes. Authelia's own
+                regulation bans repeat offenders, so this is a visibility
+                signal rather than an action item — but a sustained rate means
+                the login page is being worked on from outside.
+
+          - alert: KernelOOMKill
+            expr: |
+              sum by (host) (
+                count_over_time(
+                  {job="systemd-journal"}
+                    |= "Killed process"
+                    |~ `(?i)out of memory`
+                  [10m]
+                )
+              ) > 0
+            labels:
+              severity: critical
+            annotations:
+              summary: The kernel OOM-killed a process on {{ $labels.host }}
+              description: >-
+                {{ $value }} out-of-memory kills in the last 10 minutes. This
+                covers both a host-wide OOM and a container exceeding its
+                cgroup memory limit. Query
+                '{job="systemd-journal"} |= "Killed process"' in Grafana
+                Explore for the process name and its RSS at the time.
+
+          - alert: MediaAppErrorBurst
+            expr: |
+              sum by (app) (
+                count_over_time(
+                  {namespace="media"} |~ `(?i)\[\s*(error|fatal)\s*\]` [15m]
+                )
+              ) > 50
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: Error burst in media app {{ $labels.app }}
+              description: >-
+                {{ $labels.app }} logged {{ $value }} error or fatal lines in
+                the last 15 minutes. The bracketed level pattern matches the
+                *arrs and Deluge; applications in this namespace that format
+                levels differently are invisible to this rule, so treat it as
+                a floor and not a guarantee.

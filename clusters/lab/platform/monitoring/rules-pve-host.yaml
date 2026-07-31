@@ -1,0 +1,240 @@
+# Alert rules for the layer below Kubernetes: the Proxmox host itself, its
+# ZFS pools, its disks, and the guests it runs. kube-prometheus-stack ships a
+# large default rule set and none of it applies here, for one reason that is
+# easy to miss — every upstream node-exporter rule is scoped `job="node-exporter"`
+# (verified in the rendered chart output: NodeFilesystemSpaceFillingUp,
+# NodeFilesystemAlmostOutOfSpace, NodeTextFileCollectorScrapeError all carry
+# that matcher). The hypervisor's node_exporter is scraped by
+# ./scrapeconfig-pve-node.yaml under `job="pve-node"`, so it matches none of
+# them. Without this file the host is scraped and graphed and never alerts.
+#
+# That `job="pve-node"` matcher is load-bearing on every rule below and is not
+# defensive tidiness. The prometheus-operator turns a ScrapeConfig's `jobName`
+# into a relabeling that sets the `job` *label* (promcfg.go: target_label "job",
+# replacement sc.Spec.JobName), so the label is a contract this file and that
+# one share. Drop it and `node_filesystem_avail_bytes` also matches the
+# in-cluster node_exporter DaemonSet, and a container-level condition fires a
+# hypervisor alert — or worse, the reverse goes unnoticed because the two sets
+# of series are indistinguishable by name.
+#
+# No `release: kube-prometheus-stack` label anywhere. ../kube-prometheus-stack.yaml
+# sets all five *SelectorNilUsesHelmValues to false and the rendered Prometheus
+# CR carries `ruleSelector: {}` and `ruleNamespaceSelector: {}` — every
+# PrometheusRule in every namespace is picked up, and a label here would imply
+# a coupling that does not exist. Same reasoning as
+# ./pve-exporter-servicemonitor.yaml.
+#
+# Four of these rules depend on metrics that exist nowhere upstream and are
+# emitted by roles/node_exporter's own textfile collector
+# (templates/lab-node-metrics.sh.j2). Their names and labels are copied from
+# that script by hand and nothing checks the two agree:
+#   zfs_pool_capacity_ratio{pool}            — label is `pool`, NOT `zpool`
+#                                              (node_zfs_zpool_state's label)
+#                                              and NOT `zpool_name` (the label
+#                                              Debian's own zfs_zpool.sh uses).
+#   media_backup_newest_mtime_seconds{app}   — `app` is one of the role's
+#                                              node_exporter_backup_apps.
+# If that script's label names ever change, these rules keep evaluating and
+# keep matching nothing. There is no error anywhere; the alert simply stops
+# being able to fire.
+#
+# MediaBackupStale is the one rule whose *absence* handling is the whole point.
+# The script deliberately emits no series at all when an app has zero backups,
+# because a 0 sentinel makes `time() - metric` evaluate to the entire Unix epoch
+# and pins the alert firing forever. Absence is the honest encoding, but a
+# comparison against an absent series produces an empty vector, so on its own
+# the rule would be silent in precisely the case it exists for: "the backups
+# never started". Hence the two `absent()` clauses, one per app, hard-coded to
+# match the role's default backup list. Adding an app there means adding a
+# clause here. The trailing `and on() up{job="pve-node"} == 1` keeps a
+# node_exporter outage from being reported as a backup failure — during an
+# outage every series is absent, PveNodeExporterDown already says so, and this
+# alert has nothing to add.
+#
+# ZfsPoolCapacityHigh appears twice under one name with two severities, which
+# is the upstream convention (NodeFilesystemAlmostOutOfSpace does the same at
+# 5% and 3%) and is safe here only because ./alertmanager-config.sops.yaml
+# restates the chart's inhibit rules: critical suppresses warning when
+# `alertname` and `namespace` are equal. Neither of these rules carries a
+# `namespace` label at all, and Alertmanager compares a missing label as the
+# empty string, so the two sides are equal and inhibition works. Drop that
+# inhibit rule from the Alertmanager config and a full pool sends two messages.
+#
+# PveGuestNotRunning cannot be written the obvious way. `pve_up` has exactly
+# one label, `id` (cluster.py:32 — `labels=['id']`), whose values look like
+# `qemu/100` or `lxc/101`; there is no `name`, `node` or `type` on it. A rule
+# written as pve_up{name="k3s-node"} == 0 matches nothing and never fires. The
+# human-readable identity lives on `pve_guest_info{id,node,name,type,template,tags}`
+# with a constant value of 1, so the join below multiplies by it purely to
+# carry those labels across — the resulting value is 0 and means nothing, which
+# is why no annotation references $value. `template="0"` drops VM templates,
+# which are stopped by definition and would alert permanently.
+#
+# PveZpoolNotOnline reads the `online` series and asserts it is 1 rather than
+# reading `state!="online"`, because node_exporter emits one series per possible
+# state with a 1 on the current one — so the not-online form is equally valid
+# but its label set changes as the pool degrades, which makes the alert flap
+# between series rather than staying on one. The state values are lowercase
+# (zfs_linux.go:48); `state="ONLINE"` matches nothing. Note the whole family
+# vanishes if /proc/spl/kstat/zfs/<pool>/state does not exist (OpenZFS < 0.8);
+# on that kernel this alert is silent, which is why the pool-capacity rules
+# above come from the textfile script and not from here.
+#
+# Annotations avoid angle brackets on purpose: the Telegram receiver runs with
+# parse_mode HTML and Alertmanager's default template prints every annotation
+# verbatim, so a stray "<" makes the whole notification fail to send.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pve-host
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: pve-host
+spec:
+  groups:
+    - name: pve-host
+      rules:
+        # TargetDown (shipped by the chart) also catches this at warning after
+        # 10m, since it fires at over 10% of a job's targets down and this job
+        # has one target. This rule exists to make it critical and to name the
+        # host: a hypervisor that has stopped answering is not the same event
+        # as one of forty in-cluster targets flapping.
+        - alert: PveNodeExporterDown
+          expr: up{job="pve-node"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: node_exporter on the Proxmox host is not answering
+            description: >-
+              Prometheus has failed to scrape {{ $labels.instance }} for 5
+              minutes. Every host-level alert in this group — ZFS capacity and
+              health, SMART, filesystems, backup freshness — is blind until it
+              returns.
+
+        - alert: PveZpoolNotOnline
+          expr: node_zfs_zpool_state{job="pve-node", state="online"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: zpool {{ $labels.zpool }} is not ONLINE
+            description: >-
+              The kstat for zpool {{ $labels.zpool }} on {{ $labels.instance }}
+              reports a state other than online. Run "zpool status -v
+              {{ $labels.zpool }}" on the host for the failing vdev.
+
+        - alert: ZfsPoolCapacityHigh
+          expr: zfs_pool_capacity_ratio{job="pve-node"} > 0.80
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: zpool {{ $labels.pool }} is over 80 percent full
+            description: >-
+              zpool {{ $labels.pool }} is at {{ $value | humanizePercentage }}.
+              ZFS write performance degrades well before a pool is full and
+              free space cannot be reclaimed by deleting files once snapshots
+              hold them.
+
+        - alert: ZfsPoolCapacityHigh
+          expr: zfs_pool_capacity_ratio{job="pve-node"} > 0.90
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: zpool {{ $labels.pool }} is over 90 percent full
+            description: >-
+              zpool {{ $labels.pool }} is at {{ $value | humanizePercentage }}.
+              Past roughly 90 percent ZFS switches to a slower allocator and a
+              pool that reaches 100 percent can refuse writes that a delete
+              would need to succeed.
+
+        # fstype rather than mountpoint: Debian patches node_exporter's
+        # default mount-point exclusion to cover /dev /proc /run /sys /mnt
+        # /media, so anything under /mnt is already absent from the series and
+        # excluding by path here would exclude nothing twice. The readonly
+        # clause suppresses the permanent alert a read-only bind mount would
+        # otherwise produce, and matches on the full label set because both
+        # sides of the `and` carry identical labels.
+        - alert: PveHostFilesystemFillingUp
+          expr: |-
+            (
+              node_filesystem_avail_bytes{job="pve-node", fstype!~"tmpfs|devtmpfs|squashfs|overlay|ramfs|fuse.*"}
+              /
+              node_filesystem_size_bytes{job="pve-node", fstype!~"tmpfs|devtmpfs|squashfs|overlay|ramfs|fuse.*"}
+            ) < 0.15
+            and
+            node_filesystem_readonly{job="pve-node"} == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: Proxmox host filesystem {{ $labels.mountpoint }} is filling up
+            description: >-
+              {{ $labels.device }} mounted at {{ $labels.mountpoint }} on
+              {{ $labels.instance }} has {{ $value | humanizePercentage }} of
+              its space left.
+
+        # smartmon_device_smart_healthy comes from the packaged
+        # prometheus-node-exporter-collectors smartmon.sh on its 15-minute
+        # timer. It is 1 on PASSED/OK, 0 otherwise, and is NOT EMITTED AT ALL
+        # when smartctl cannot determine health — so a drive that has stopped
+        # answering SMART goes quiet rather than failing here. The chart's own
+        # NodeTextFileCollectorScrapeError covers a broken collector, but only
+        # for job="node-exporter", so it does not cover this host either; the
+        # freshness of the whole textfile directory is worth a rule of its own
+        # once there is a week of baseline to pick a threshold from.
+        - alert: SmartDeviceUnhealthy
+          expr: smartmon_device_smart_healthy{job="pve-node"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: SMART health check FAILED on {{ $labels.disk }}
+            description: >-
+              smartctl reports overall health failure for {{ $labels.disk }}
+              (type {{ $labels.type }}) on {{ $labels.instance }}. Treat the
+              drive as failing and check the pool it belongs to.
+
+        # 8 days: the *arrs' backup schedule is weekly, so seven days is the
+        # expected age of a healthy newest backup and the eighth is the grace
+        # day. See the header for why the absent() clauses are not optional.
+        - alert: MediaBackupStale
+          expr: |-
+            (
+              time() - media_backup_newest_mtime_seconds{job="pve-node"} > 8 * 86400
+              or
+              absent(media_backup_newest_mtime_seconds{job="pve-node", app="sonarr"})
+              or
+              absent(media_backup_newest_mtime_seconds{job="pve-node", app="radarr"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: No recent {{ $labels.app }} backup on the Proxmox host
+            description: >-
+              The newest {{ $labels.app }} backup archive under the host's
+              backups directory is more than 8 days old, or there is none at
+              all. The *arr's scheduled backup task has stopped producing
+              files, or is writing them somewhere this host does not see.
+
+        - alert: PveGuestNotRunning
+          expr: |-
+            (
+              pve_up{job="pve-exporter", id=~"(qemu|lxc)/.+"} == 0
+            )
+            * on(id) group_left(name, node, type)
+            pve_guest_info{job="pve-exporter", template="0"}
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Proxmox guest {{ $labels.name }} is not running
+            description: >-
+              Guest {{ $labels.name }} ({{ $labels.id }}, type
+              {{ $labels.type }}) on node {{ $labels.node }} has been in a
+              state other than running for 10 minutes. Everything this lab
+              serves runs inside one of these.

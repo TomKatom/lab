@@ -1,0 +1,104 @@
+# The in-cluster gaps kube-prometheus-stack's own rules leave, and only those.
+# The chart ships 30 PrometheusRule objects covering crash loops
+# (KubePodCrashLooping), PVCs filling (KubePersistentVolumeFillingUp, at 3%
+# and 15% with a 4-day linear prediction), node filesystems
+# (NodeFilesystemSpaceFillingUp / NodeFilesystemAlmostOutOfSpace), unreachable
+# targets (TargetDown), and the alerting heartbeat (Watchdog) — all verified
+# against the rendered chart rather than assumed. Restating any of them here
+# would produce two alerts per event with slightly different thresholds and no
+# way to tell which one is authoritative, so this group holds exactly what the
+# chart has no opinion about.
+#
+# What the chart has no opinion about is cert-manager, because cert-manager is
+# not part of it. Its certificate metrics only exist at all once
+# ../cert-manager.yaml sets `prometheus.servicemonitor.enabled: true` — and
+# that key is lowercase `servicemonitor`, not `serviceMonitor`, which Helm
+# accepts silently as an unknown value while the ServiceMonitor is never
+# rendered and both rules below quietly match nothing forever.
+#
+# The label trap on these two rules is `exported_namespace`. Both metrics carry
+# the *Certificate's* namespace in a label named `namespace`, but the
+# prometheus-operator's ServiceMonitor relabeling unconditionally sets
+# `namespace` from the scraped pod's namespace (promcfg.go: source
+# __meta_kubernetes_namespace, target_label namespace), and with the default
+# honor_labels: false Prometheus resolves the collision by renaming the
+# scraped one. So on every one of these series `namespace` is "cert-manager"
+# and `exported_namespace` is where the Certificate actually lives. Nothing in
+# the expressions depends on this — the annotations do.
+#
+# CertificateExpiringSoon is deliberately not an expiry alert. Let's Encrypt
+# certificates are issued for 90 days and cert-manager's default renewBefore
+# is a third of the duration, so ../traefik/wildcard-certificate.yaml starts
+# renewing at 30 days remaining and normally succeeds within minutes. Reaching
+# 21 days means renewal has been failing for over a week — which is the event
+# worth knowing about, roughly three weeks before anything actually breaks.
+# Alerting at, say, 7 days would be technically an outage warning and
+# practically an outage.
+#
+# The `> 0` guard is not defensive noise. cert-manager emits
+# certmanager_certificate_expiration_timestamp_seconds as a literal 0 when the
+# Certificate has no NotAfter yet — a cert that has never been issued
+# (certificate_collector.go: expiryTime stays 0.0 when Status.NotAfter is nil).
+# Without the guard, 0 - time() is about minus fifty-six years, the comparison
+# is trivially true, and a never-issued certificate reports as "expiring soon"
+# with a nonsensical remaining time. CertificateNotReady is the rule that
+# covers that case honestly.
+#
+# CertificateNotReady reads the Ready condition through a metric that emits one
+# series per possible condition value with a 1 on the current one, so
+# {condition="False"} == 1 is "Ready is False" and not "Ready is missing". The
+# values are Kubernetes condition strings and therefore capitalised —
+# `condition="false"` matches nothing (certificate_collector.go:29,
+# certReadyConditionStatuses = {True, False, Unknown}). A Certificate stuck in
+# Unknown is not covered here on purpose: it is the normal transient state
+# during first issuance, and one hour of it is not yet a problem.
+#
+# No `release: kube-prometheus-stack` label, for the reason in
+# ./rules-pve-host.yaml's header: the rendered Prometheus CR has
+# `ruleSelector: {}`.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-extra
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cluster-extra
+spec:
+  groups:
+    - name: cluster-extra
+      rules:
+        - alert: CertificateExpiringSoon
+          expr: |-
+            (
+              certmanager_certificate_expiration_timestamp_seconds - time() < 21 * 86400
+            )
+            and
+            certmanager_certificate_expiration_timestamp_seconds > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: Certificate {{ $labels.name }} expires in under 21 days
+            description: >-
+              Certificate {{ $labels.name }} in namespace
+              {{ $labels.exported_namespace }}, issued by
+              {{ $labels.issuer_name }}, expires in
+              {{ $value | humanizeDuration }}. cert-manager renews at 30 days
+              remaining, so renewal has been failing for over a week. Check
+              the Certificate's status conditions and the ACME Order and
+              Challenge objects beside it.
+
+        - alert: CertificateNotReady
+          expr: certmanager_certificate_ready_status{condition="False"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: Certificate {{ $labels.name }} is not Ready
+            description: >-
+              Certificate {{ $labels.name }} in namespace
+              {{ $labels.exported_namespace }} has had a Ready condition of
+              False for an hour. Issuance or renewal against
+              {{ $labels.issuer_name }} is failing; the existing secret may
+              still be valid, so this is a warning until
+              CertificateExpiringSoon joins it.
