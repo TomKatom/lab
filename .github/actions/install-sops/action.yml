@@ -25,7 +25,7 @@ runs:
       run: |
         set -euo pipefail
         # renovate: datasource=github-releases depName=getsops/sops
-        SOPS_VERSION="3.13.2"
+        SOPS_VERSION="3.13.3"
         SOPS_SHA256="154dfe4cd70554bdd82b98e4cd4acf191d43d01ead6f00a73477aa44c4ac42ef"
         mkdir -p "$HOME/.local/bin"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
