@@ -573,9 +573,15 @@ Then, for `<app>` being restored:
    ```sh
    kubectl -n media get pvc <app>              # confirm STATUS: Bound
    PV=$(kubectl -n media get pvc <app> -o jsonpath='{.spec.volumeName}')
-   kubectl get pv "$PV" -o jsonpath='{.spec.hostPath.path}{"\n"}'
+   kubectl get pv "$PV" -o jsonpath='{.spec.local.path}{"\n"}'
    # e.g. /var/lib/rancher/k3s/storage/pvc-<uid>_media_<app>
    ```
+
+   The field is `.spec.local.path`, **not** `.spec.hostPath.path`:
+   local-path-provisioner provisions `local` volumes (a node-affine volume
+   source), not `hostPath` ones. Asking for `.spec.hostPath.path` is not an
+   error — jsonpath prints an empty line for a path that does not exist —
+   so the mistake reads as "the PV has no directory" rather than as a typo.
 
 4. Copy the old app's config into that directory — **relayed through your
    own machine**, not pulled from the VM. The obvious one-liner
@@ -1217,6 +1223,24 @@ restore is not independent of the cutover sequence.
    **Move Storage** action (WebUI or console, per-torrent or in bulk) do the
    relocation, since Deluge already knows how to update its own fastresume
    state consistently.
+
+   ⚠ **`deluge-console` inside the pod always needs `-c /config`**, on every
+   single invocation:
+
+   ```sh
+   kubectl -n media exec deploy/deluge -- deluge-console -c /config "info -v"
+   kubectl -n media exec deploy/deluge -- \
+     deluge-console -c /config "move <torrent-id> /data/torrents/<label>"
+   ```
+
+   Without it the CLI reads the *invoking user's* `~/.config/deluge`, not the
+   PVC, finds a different (or empty) `auth` file, and fails with **`Password
+   does not match`**. On a machine you have just restored a config onto, that
+   error reads exactly like a broken restore — a wrong `auth` file, a bad
+   `chown`, a half-copied `state/` — and sends you looking for a data
+   problem that does not exist. `-c /config` points it at the same config
+   directory deluged itself is running from. Same flag, same reason, as in
+   [`deluge-arr-path-contract.md`](deluge-arr-path-contract.md).
 5. `chown -R 1000:1000` the Deluge config PVC directory.
 6. Scale Deluge up, verify the WebUI is reachable and the old password
    still authenticates.
@@ -1308,13 +1332,19 @@ restore is not independent of the cutover sequence.
    `--auto-prune` acting on a removed Application) destroys the app's
    config with it. Enumerate and patch:
 
+   Run this on `k3s-node` — hence `sudo`, which is what lets `kubectl` read
+   `/etc/rancher/k3s/k3s.yaml`. **`jq` is not installed there** (same Debian
+   trixie base image that has no `rsync`, §4 step 4), so the selection is
+   done with jsonpath's own filter expression instead of piping JSON through
+   a tool that is not present:
+
    ```sh
-   kubectl get pv -o json \
-     | jq -r '.items[] | select(.spec.claimRef.namespace=="media") | .metadata.name' \
+   sudo kubectl get pv \
+     -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="media")]}{.metadata.name}{"\n"}{end}' \
      | while read -r pv; do
-         kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+         sudo kubectl patch pv "$pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
        done
-   kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy,NS:.spec.claimRef.namespace \
+   sudo kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy,NS:.spec.claimRef.namespace \
      | grep media   # every row should now read Retain
    ```
 
@@ -1350,8 +1380,16 @@ restore is not independent of the cutover sequence.
    the main controls, but verify them):
 
    ```sh
-   ssh debian@k3s.lab.tomkatom.com 'du -sh /var/lib/rancher/k3s/storage/*'
+   ssh debian@k3s.lab.tomkatom.com 'sudo sh -c "du -sh /var/lib/rancher/k3s/storage/*"'
    ```
+
+   The `sudo sh -c` wrapper is the whole point, and the naive form is the
+   trap: with a bare `sudo du -sh /var/lib/rancher/k3s/storage/*` the glob is
+   expanded by the *unprivileged* login shell before `sudo` ever runs, and
+   that shell cannot traverse the directory — so it never matches, the
+   literal `*` is passed straight through, and the command reports one
+   missing path instead of the per-PV sizes it looks like it printed
+   nothing for. Wrapping the whole command means root does the expansion.
 
 ---
 
@@ -1362,7 +1400,7 @@ across:
 
 | App | Assert |
 |---|---|
-| Deluge | Tracker on an active private-tracker torrent reports the client's announced address as **`145.239.3.55`** (the new server's public IP, via egress masquerade); `ss -lntu \| grep 51413` on the k3s VM shows both `tcp` and `udp` bound |
+| Deluge | Tracker on an active private-tracker torrent reports the client's announced address as **`145.239.3.55`** (the new server's public IP, via egress masquerade); inbound `51413` proven with the three-step chain below this table — **not** with `ss` on the k3s VM |
 | Sonarr / Radarr | `stat -c %h` on a file already imported into the library is **≥ 2** for the same file under `/data/torrents/...` and `/data/media/...` — the hardlink survived the migration |
 | Prowlarr | Settings → Indexers → **Test All** green; Apps → Sonarr/Radarr sync succeeds |
 | Bazarr | A subtitle search/download succeeds for a title already in the library; Sonarr/Radarr connections show green |
@@ -1371,3 +1409,52 @@ across:
 | Tautulli | Settings → Plex Media Server shows the server name without any wizard having been run, and the Libraries page lists the real libraries; the recently-added digest posts to the same Telegram group on its configured schedule. History starts empty and accumulates from the cluster's first stream — there is none to carry over |
 | Maintainerr | At least one rule executes against a test item without error, and its YAML export is committed under `docs/maintainerr-rules/` |
 | Unpackerr | A multi-part archive downloaded by Deluge is auto-extracted and picked up by Sonarr/Radarr with no manual intervention |
+
+### Verifying Deluge's inbound torrent port
+
+The obvious assertion — a listening socket on the node — is the wrong one,
+and this table used to ask for it. **`ss -lntu | grep 51413` on the k3s VM
+greps empty even when inbound works perfectly.** Both torrent Services are
+`type: LoadBalancer` (`clusters/lab/apps/deluge.yaml`, split TCP/UDP because
+klipper cannot carry both protocols on one Service), and k3s's klipper
+servicelb publishes a LoadBalancer through a **hostPort** on its `svclb-*`
+DaemonSet pod. A hostPort is programmed as an iptables DNAT rule by the CNI
+portmap plugin; nothing in the node's own network namespace ever `bind()`s
+51413. `ss` lists sockets, so it truthfully reports none — and reading that
+as "the port is closed" sends you rebuilding a NAT path that was never
+broken.
+
+Verify the three links of the chain instead:
+
+1. **The DNAT rule exists on the node** — the hostPort is programmed:
+
+   ```sh
+   ssh debian@k3s.lab.tomkatom.com 'sudo iptables -t nat -S | grep 51413'
+   # DNAT rules for tcp and udp dpt 51413, in the CNI-HOSTPORT-DNAT chain,
+   # targeting the svclb pod
+   ```
+
+2. **Deluge is actually listening, inside the pod.** The LSIO image ships no
+   `ss` and no `netstat`, so read the kernel's tables directly — the
+   `local_address` column is hex, and 51413 is `C8D5`:
+
+   ```sh
+   kubectl -n media exec deploy/deluge -- \
+     grep -i ':C8D5' /proc/net/tcp /proc/net/udp
+   # one line from each file; the tcp one is state 0A (LISTEN)
+   ```
+
+3. **The port is reachable from off-site**, from a machine that is *not* on
+   the WireGuard tunnel, so the packet takes the real public path (OVH IP →
+   host DNAT → node → svclb → pod):
+
+   ```sh
+   nc -vz  145.239.3.55 51413   # TCP → succeeded
+   nc -vzu 145.239.3.55 51413   # UDP → weak evidence, see below
+   ```
+
+   `nc -vzu` calls any UDP port open that does not answer with an ICMP
+   port-unreachable, so it is a negative test only: *refused* is real
+   evidence, *succeeded* proves only that nothing rejected the datagram. The
+   positive proof for UDP is the tracker-announced address in the Deluge row
+   above, plus peers actually connecting inbound on active torrents.
