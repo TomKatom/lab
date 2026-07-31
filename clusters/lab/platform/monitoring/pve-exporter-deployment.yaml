@@ -1,0 +1,136 @@
+# prometheus-pve-exporter — the only way Prometheus learns anything about the
+# hypervisor underneath it. node_exporter on the PVE host (see
+# ansible/roles/node_exporter) reports the machine; this reports Proxmox's own
+# view of it: which guests are running, which storages are available, cluster
+# quorum, per-guest cpu/memory/disk/network, and which guests no backup job
+# covers. Nothing else in the stack can see any of that, because it lives
+# behind the PVE API rather than in /proc.
+#
+# Written out as three plain objects rather than an Application because
+# upstream publishes no Helm chart, and the whole component is one Deployment,
+# one Service and one ServiceMonitor. It lands in the shared monitoring overlay
+# (../monitoring-config.yaml, wave 5) alongside the other hand-written pieces.
+#
+# There is no config file and no ConfigMap on purpose. The exporter reads
+# /etc/prometheus/pve.yml *only* when PVE_USER is unset; setting it switches
+# configuration to environment variables wholesale, which is what lets the one
+# secret arrive as a secretKeyRef instead of being baked into a mounted file.
+# The consequence to remember is that PVE_USER is load-bearing beyond its own
+# value: drop it and the exporter goes looking for a file that is not there.
+#
+# PVE_VERIFY_SSL=false is not laziness. The Proxmox API on the vmbr1 host
+# address serves the self-signed certificate Proxmox generates at install time,
+# and nothing in this repo issues it a real one — cert-manager terminates TLS
+# for Ingresses inside the cluster, not for the hypervisor's own management
+# port. Verification defaults to *true*, so omitting this line does not fall
+# back to anything: every scrape fails the handshake, the exporter answers 500,
+# and the symptom is `up{job="pve-exporter"} == 0` with an SSL error buried in
+# the pod log rather than anything that looks like a configuration problem. The
+# connection never leaves the vmbr1 bridge between this VM and its own
+# hypervisor, and the credential it carries is read-only.
+#
+# runAsUser: 101 is load-bearing too, and this is the trap that costs an
+# afternoon. The image already declares a non-root user, but it declares it by
+# *name* (`USER prometheus`, uid 101 per its Dockerfile). The kubelet cannot
+# resolve a username to a uid — it has no view inside the image's /etc/passwd —
+# so `runAsNonRoot: true` against a name-based image user is refused outright
+# with CreateContainerConfigError: "container has runAsNonRoot and image has
+# non-numeric user (prometheus), cannot verify user is non-root". Stating the
+# uid numerically is what makes the two compatible. It must stay in step with
+# the image: check the Dockerfile's adduser line when bumping the tag.
+#
+# Renovate keeps this pin current through its `kubernetes` manager, which
+# renovate.json enables over `clusters/lab/.*\.ya?ml$` and which parses the
+# combined `image: repo:tag@digest` form natively. The `# renovate:` comment
+# below is the same annotation clusters/lab/apps/*.yaml carry, kept for a
+# uniform reading of every pin in the repo — but note it is documentation
+# here, not a second manager: the customManagers regex in renovate.json is
+# scoped to `clusters/lab/apps/[^/]+\.ya?ml$` and does not reach this
+# directory. Widening that scope would be a mistake, since its matchStrings
+# expect the split repository:/tag: shape and would capture
+# `ghcr.io/prometheus-pve/prometheus-pve-exporter:3.9.0` as a version string.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pve-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: pve-exporter
+spec:
+  # One replica, and not because two would be expensive: every scrape is a
+  # fan-out of PVE API calls against a single-node hypervisor, and a second
+  # replica behind the same Service would double that load to produce the
+  # identical series twice.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pve-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pve-exporter
+    spec:
+      securityContext:
+        runAsUser: 101
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pve-exporter
+          # renovate: datasource=docker depName=ghcr.io/prometheus-pve/prometheus-pve-exporter
+          image: ghcr.io/prometheus-pve/prometheus-pve-exporter:3.9.0@sha256:78a58df7a31c9fbee94962cd06422672668529de6421892df9aed4b6cee0757f
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 9221
+              protocol: TCP
+          env:
+            # Its presence is what selects env-var configuration over
+            # /etc/prometheus/pve.yml — see the header.
+            - name: PVE_USER
+              value: monitoring@pve
+            - name: PVE_TOKEN_NAME
+              value: prometheus
+            - name: PVE_TOKEN_VALUE
+              valueFrom:
+                secretKeyRef:
+                  name: pve-exporter-token
+                  key: PVE_TOKEN_VALUE
+            - name: PVE_VERIFY_SSL
+              value: "false"
+          # /pve is the scrape endpoint and takes a `target` parameter, so it
+          # is not a health check — hitting it here would authenticate against
+          # PVE on every probe. The bare / is a static HTML index served by the
+          # same werkzeug app with no credentials involved (verified in the
+          # exporter's http.py at v3.9.0: view_registry maps 'index' to a
+          # handler returning 200), which makes it the right liveness signal.
+          # It proves the process is up without conflating "exporter running"
+          # with "PVE reachable" — the latter is what `up` and `pve_up` are
+          # for, and probing /pve instead would restart the pod every time
+          # Proxmox hiccupped.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              # Generous on memory relative to the 64Mi request because the
+              # collectors hold the whole /cluster/resources response in
+              # memory while building series, and an OOMKilled monitoring
+              # component is the failure that hides every other failure.
+              # No CPU limit on purpose: throttling a scrape target does not
+              # make it cheaper, it makes it time out and look down.
+              memory: 256Mi

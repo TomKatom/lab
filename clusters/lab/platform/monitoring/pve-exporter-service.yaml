@@ -1,0 +1,32 @@
+# ClusterIP in front of ./pve-exporter-deployment.yaml. It exists for one
+# consumer — the ServiceMonitor next to it — because prometheus-operator's
+# ServiceMonitor discovers Endpoints, not Pods; a PodMonitor would skip this
+# object entirely, but then the `job` label would have to come from a pod label
+# instead and the ServiceMonitor form is what the rest of the stack uses.
+#
+# The `app.kubernetes.io/name` label here is not decoration: ./
+# pve-exporter-servicemonitor.yaml sets `jobLabel: app.kubernetes.io/name` and
+# reads it off *this* object, so removing or renaming it silently changes every
+# scraped series' `job` label to the Service name and quietly breaks any alert
+# rule that matched on the old one.
+#
+# Port 9221 is the exporter's own default (EXPOSE 9221), kept identical on the
+# Service so there is one number to remember rather than two. The endpoint is
+# referenced by the port *name* `http` throughout, which is what lets the
+# number move without touching the ServiceMonitor.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pve-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: pve-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pve-exporter
+  ports:
+    - name: http
+      port: 9221
+      targetPort: http
+      protocol: TCP

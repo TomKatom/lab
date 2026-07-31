@@ -1,0 +1,55 @@
+# TEMPLATE — not applied, not encrypted, not read by anything. It exists so the
+# shape of the real file is reviewable in git while the real file is opaque
+# ciphertext. Copy it to `pve-token.sops.yaml`, fill the one placeholder,
+# encrypt with `sops -e -i`, and commit the encrypted result alongside this
+# template (which stays, as the diffable reference).
+#
+# The value is the secret half of the PVE API token minted by
+# scripts/mint-pve-monitoring-token.sh — a bare UUID, e.g.
+# 8f4c1d2e-3a5b-4c6d-9e0f-1a2b3c4d5e6f. The other two halves of the credential,
+# PVE_USER (monitoring@pve) and PVE_TOKEN_NAME (prometheus), are not secrets and
+# are set in plaintext in ./pve-exporter-deployment.yaml.
+#
+# ⚠ Keep the quotes. A UUID happens to survive unquoted because it contains
+# letters and dashes, but the rule this repo enforces is unconditional: a SOPS
+# value entered without quotes re-encrypts with `type:int` (or `type:bool`) in
+# the ciphertext envelope, and a Kubernetes Secret's stringData is
+# map[string]string. Nothing in the pipeline notices — the file is valid YAML,
+# kustomize builds it, kubeconform validates the Secret — and it fails only at
+# Argo sync time with "cannot unmarshal number into Go struct field
+# Secret.stringData of type string", leaving every *other* resource in the
+# overlay applied and just this one Secret missing. CI greps for the type tag.
+#
+# ⚠ This file's name matters twice over. ../../../../.sops.yaml matches
+# `clusters/.*\.sops\.ya?ml$` with `encrypted_regex: ^(data|stringData)$`, so
+# only the payload is encrypted and metadata stays diffable — a differently
+# named file would encrypt whole and stop being reviewable. And
+# ./secret-generator.yaml lists `pve-token.sops.yaml` by that exact name: until
+# the encrypted file exists at that path the ksops generator cannot resolve it
+# and the whole monitoring overlay fails to render in the repo-server. The
+# `.example` suffix is what keeps *this* file out of both CI's sops type check
+# (`find clusters -name '*.sops.yaml'`) and its direct-CR kubeconform lint
+# (`find clusters -name '*.yaml'`); neither pattern matches it.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: pve-exporter-token
+    namespace: monitoring
+type: Opaque
+stringData:
+    PVE_TOKEN_VALUE: ENC[AES256_GCM,data:75v6kIecbupQPcjZwUQaVPWHjhHSOkmKVbUx7IEBVDCuanjH,iv:MGEuYLCQLhoF0f4KAbJhnNuYVLNBQy/XB3xLKiBX8pQ=,tag:VgnkGzFZJ/uC16nxigX8sA==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBxVFg4VFhtZ3A1bTFzdG1B
+            T2NSY25tVEpxbUJqcWEzVnFTY3ZhSkxacWpJCnNuVXdlUWIxc3NKbkExYTlYckwr
+            bzFzNnhHVHB6Z1hxL3Z2a2pvblcwUU0KLS0tIHFuMHlvRzgzMXJDMUNtdzNOQytH
+            alQrTU9DcERyeUNxbkFzVHVGcEdLNWcKlRABRwDz6S4fel3Gr5O3hs6VQuX2dO3y
+            O7Wz1sFaUkCtrydKA8mdh4EXwawifI5H9iWpr5upaoM5GrT07sIhQA==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-07-31T23:35:12Z"
+    mac: ENC[AES256_GCM,data:h4U314BRdZsr23TJTnHGMbYB8RvLAVg/mTejQKsbXBKsBH3SrP3qOYF+sJMp46hSUyxkg+yZQkX4M2BCUabj4Rc2LYwJEetCcIwfHuZICM3qEzXgBzisoCTNMOSJ0ixUrmxofDK9PfDtT9OidISg0ZbkkG4UDicnhmIPttT80KA=,iv:q9j7lZMG3MdDYb9USb7kA1a40nNR8Z3pS70DeTfGdY4=,tag:qi3GtTFl37V7Ywvwy3xP/w==,type:str]
+    version: 3.13.2

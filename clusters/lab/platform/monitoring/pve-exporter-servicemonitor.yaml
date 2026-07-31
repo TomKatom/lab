@@ -1,0 +1,76 @@
+# Tells Prometheus to scrape ./pve-exporter-service.yaml. First hand-written
+# monitoring.coreos.com CR in the repo, so two things about how it is picked up
+# are worth stating rather than leaving to be rediscovered.
+#
+# There is no `release: kube-prometheus-stack` label on it, and that is
+# deliberate. The chart's default has the operator write
+# `matchLabels: {release: <release>}` into the Prometheus CR's
+# serviceMonitorSelector, which would ignore this file with no error anywhere —
+# it simply would not be scraped. ../kube-prometheus-stack.yaml sets all five
+# `*SelectorNilUsesHelmValues: false`, which renders the selectors as `{}`
+# (select everything), so the label buys nothing and adding it would imply a
+# coupling that does not exist.
+#
+# The namespace does matter, though, and in the opposite direction: the chart
+# leaves `serviceMonitorNamespaceSelector` at `{}`, and an empty namespace
+# selector in operator terms means the Prometheus object's *own* namespace, not
+# all of them. This CR lives in `monitoring` for that reason. The same is true
+# of ./scrapeconfig-pve-node.yaml.
+#
+# `target` is the one value here that has to track something outside this file.
+# It is config/lab.yml's `network.vmbr1_host_address` (10.10.10.1/24) with the
+# prefix dropped — the PVE host's address on the vmbr1 bridge, which is the
+# interface this VM can reach it on. Argo renders these manifests straight from
+# git with no templating layer in between, so like external-dns.yaml's
+# `domainFilters` this is a hand-copied constant, and the comment is the only
+# thing linking the two. If vmbr1_host_address ever changes, this file and
+# ./scrapeconfig-pve-node.yaml both need editing by hand.
+#
+# The three query parameters map to collector groups, not to formatting:
+# `cluster=1` enables the status/version/node-info/cluster-info/resources/
+# backup-info collectors — that is where `pve_up`, `pve_guest_info`,
+# `pve_not_backed_up_total` and every pve_cpu_/pve_memory_/pve_disk_/
+# pve_network_ series comes from — and `node=1` adds config
+# (`pve_onboot_status`), replication and subscription. Both default to "1"
+# server-side, so they are restated here to make the metric set an explicit
+# property of this file rather than of the exporter's defaults. They are parsed
+# as `value.lower() not in ['false', '0', '']`, so the quoted "1" is a string
+# on the wire either way; ServiceMonitor params are map[string][]string and a
+# bare 1 would not even be accepted by the CRD schema.
+#
+# 60s rather than the stack's 30s default because each scrape is a fan-out of
+# authenticated PVE API calls, and hypervisor-level facts do not move faster
+# than that. scrapeTimeout is raised in step: the default 10s is comfortable
+# until a storage listing or a backup-info walk on a busy host is not, and a
+# timed-out scrape reads as `up == 0`, i.e. indistinguishable from the
+# hypervisor being down.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pve-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: pve-exporter
+spec:
+  # Pins the `job` label to the Service's app.kubernetes.io/name rather than
+  # letting the operator default it to the Service *name*. Both spell
+  # "pve-exporter" today; naming the label makes it a stated contract for the
+  # alert rules that select on job="pve-exporter".
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pve-exporter
+  endpoints:
+    - port: http
+      path: /pve
+      interval: 60s
+      scrapeTimeout: 30s
+      params:
+        module: ["default"]
+        cluster: ["1"]
+        node: ["1"]
+        # config/lab.yml network.vmbr1_host_address, prefix dropped.
+        target: ["10.10.10.1"]

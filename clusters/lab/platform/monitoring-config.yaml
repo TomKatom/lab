@@ -1,9 +1,12 @@
 # monitoring — the config half of the component (see README.md "Component
 # layout"): everything that is a plain Kubernetes object rather than chart
-# output. Today that is the ksops-decrypted `alertmanager-config` Secret and
-# the NetworkPolicy that keeps header-authenticated Grafana off-limits to the
-# rest of the cluster; later PRs grow ./monitoring/ with the CRs that scrape
-# and alert on things no chart knows about.
+# output. Today that is the ksops-decrypted `alertmanager-config` and
+# `pve-exporter-token` Secrets, the NetworkPolicy that keeps
+# header-authenticated Grafana off-limits to the rest of the cluster, and the
+# prometheus-pve-exporter Deployment/Service plus the two CRs that scrape what
+# lives outside the cluster — the hypervisor's API and its node_exporter; later
+# PRs grow ./monitoring/ with the rest of the CRs that scrape and alert on
+# things no chart knows about.
 #
 # Wave 5, one after kube-prometheus-stack.yaml, and no CreateNamespace=true:
 # the chart half owns the `monitoring` namespace and is the only Application
