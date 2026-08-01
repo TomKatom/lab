@@ -95,7 +95,7 @@ done
 
 [[ -n $query ]] || usage 1
 
-start=$(date -u -d "-${since}" +%Y-%m-%dT%H:%M:%SZ) ||
+start=$(lab_since_start "$since") ||
   die "could not parse --since '${since}' (try 30m, 6h, 7d)"
 end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 

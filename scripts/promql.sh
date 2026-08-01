@@ -78,8 +78,7 @@ done
 [[ -n $query ]] || usage 1
 
 if [[ -n $since ]]; then
-  # `date -d "-6h"` needs GNU date; this repo's operator machines are Linux.
-  start=$(date -u -d "-${since}" +%Y-%m-%dT%H:%M:%SZ) ||
+  start=$(lab_since_start "$since") ||
     die "could not parse --since '${since}' (try 30m, 6h, 2d)"
   end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   path="/api/v1/query_range?query=$(urlencode "$query")"

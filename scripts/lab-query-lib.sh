@@ -69,6 +69,26 @@ urlencode() {
   printf '%s' "$out"
 }
 
+# Print the UTC RFC3339 timestamp that a `--since` shorthand (30m, 6h, 7d)
+# points back to, or return 1 if the shorthand is malformed.
+#
+# GNU date does not understand the single-letter units at all: `date -d -1h` is
+# an "invalid date" error, not an hour ago. Only the spelled-out forms work, so
+# expand the unit here rather than handing the shorthand to date.
+lab_since_start() {
+  local n unit
+  [[ $1 =~ ^([0-9]+)([smhdw])$ ]] || return 1
+  n=${BASH_REMATCH[1]}
+  case ${BASH_REMATCH[2]} in
+    s) unit=seconds ;;
+    m) unit=minutes ;;
+    h) unit=hours ;;
+    d) unit=days ;;
+    w) unit=weeks ;;
+  esac
+  date -u -d "${n} ${unit} ago" +%Y-%m-%dT%H:%M:%SZ
+}
+
 # GET an API-server service-proxy path and print the response body.
 #
 # The path is built locally and passed over stdin rather than interpolated
