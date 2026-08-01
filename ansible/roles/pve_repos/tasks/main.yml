@@ -1,11 +1,21 @@
 ---
 # This host has no paid Proxmox VE subscription, so its enterprise apt
-# repos (enabled by default on every fresh install, for both PVE itself and
-# Ceph) return 401 Unauthorized on every apt update — discovered when the
+# repos (enabled by default on every fresh install, for PVE itself, Ceph,
+# and — once roles/pbs installs the package — Proxmox Backup Server too)
+# return 401 Unauthorized on every apt update — discovered when the
 # first-ever live Ansible apply failed on wireguard's very first task. This
 # role runs before every other role in playbooks/proxmox-host.yml so their
 # apt tasks see a working cache. No Ceph is used on this host, so its
 # enterprise repo is removed outright rather than repointed.
+#
+# pbs-enterprise.sources does not exist until roles/pbs's apt install has
+# run once, so this removal is a no-op on every converge up to and
+# including the one that first installs proxmox-backup-server — the
+# package's postinst drops the file in *after* this role has already run
+# that converge. It only starts mattering, and this task only starts
+# actually removing something, from the next converge onward. Skipping it
+# here is what broke #111's post-merge apply: the file existed on disk by
+# then, and nothing removed it before the cache refresh below hit it.
 
 - name: Remove the PVE enterprise apt repo
   ansible.builtin.file:
@@ -15,6 +25,11 @@
 - name: Remove the Ceph enterprise apt repo
   ansible.builtin.file:
     path: "{{ pve_repos_ceph_enterprise_sources }}"
+    state: absent
+
+- name: Remove the PBS enterprise apt repo
+  ansible.builtin.file:
+    path: "{{ pve_repos_pbs_enterprise_sources }}"
     state: absent
 
 - name: Point apt at the free PVE no-subscription repo
