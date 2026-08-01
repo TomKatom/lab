@@ -19,5 +19,5 @@ zfs_tank_pool_disks:
 # which is what roles/pbs defaults to. It must match the region the bucket
 # was actually created in — B2 puts the region in the hostname, so a
 # mismatch is a name-resolution failure, not a redirect.
-# pbs_s3_bucket: <the bucket name from the B2 console>
-# pbs_s3_region: eu-central-003
+pbs_s3_bucket: lab-pbs-d745f6
+pbs_s3_region: eu-central-003
