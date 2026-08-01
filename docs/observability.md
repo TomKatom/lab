@@ -466,6 +466,48 @@ Two things about it are load-bearing and easy to break by tidying:
   green threshold, exactly as it means adding an `absent()` clause to
   `MediaBackupStale`.
 
+## Querying from the command line
+
+Grafana is the exploratory surface, but it is behind Authelia and its session
+is a browser. For a one-shot question — triaging an alert, checking whether a
+metric exists before writing a rule against it, reading the logs of a pod that
+has already been replaced — two read-only scripts query the stores directly:
+
+```bash
+scripts/promql.sh 'zfs_pool_capacity_ratio{job="pve-node"}'
+scripts/promql.sh --since 6h --step 5m 'rate(node_cpu_seconds_total[5m])'
+scripts/promql.sh --alerts      # firing now    --targets   # scrape health
+scripts/promql.sh --rules       # rule group health
+
+scripts/logql.sh '{namespace="media", app="sonarr"} |= "error"'
+scripts/logql.sh --since 7d --limit 500 '{job="systemd-journal"} |= "oom"'
+scripts/logql.sh --labels       # discover label names
+scripts/logql.sh --values namespace
+scripts/logql.sh --rules        # Loki ruler group health
+```
+
+**Neither script holds a credential**, and that is the point: Prometheus and
+Loki have no authentication of their own, so the only problem to solve is
+reachability. Both reach the stores through the **API server's service proxy**
+(`kubectl get --raw /api/v1/namespaces/monitoring/services/<svc>/proxy/...`)
+over `ssh k3s`, which is stateless and assumes neither host-side cluster DNS
+nor host routing to a ClusterIP — the two things that make `curl` to a
+ClusterIP and `kubectl port-forward` respectively awkward from an operator
+shell. Authorization is therefore whatever the SSH user's kubeconfig already
+grants; nothing new is issued.
+
+The Service names are derived from the Helm release names, not observed live,
+so a chart bump that renames them breaks the scripts. That failure is loud —
+both print the namespace's Services and the `LAB_PROM_SVC` / `LAB_LOKI_SVC`
+override to use.
+
+`.claude/skills/lab-diagnose/` carries the same vocabulary in the form an
+agent working in this repo reads: the two hypervisor job labels, the verified
+metric names, the traps in
+["Metric alerts — the media stack"](#metric-alerts--the-media-stack), and the
+["Deliberately not monitored"](#deliberately-not-monitored) list, so a
+diagnosis does not start by guessing a metric name that has never existed.
+
 ## Adding things
 
 ### Adding a dashboard
