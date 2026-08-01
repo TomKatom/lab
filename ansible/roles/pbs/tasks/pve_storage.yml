@@ -1,0 +1,184 @@
+---
+# The PVE side: a backup-only PBS identity, the client encryption key, and
+# the storage entry that infra/tofu/backup.tf (PR 3) will point a vzdump job
+# at. See the role header for why this is Ansible and not Tofu.
+
+- name: Install the PBS client encryption key
+  # Client-side encryption: PBS encrypts before anything leaves the host, so
+  # B2 holds ciphertext and the bucket-scoped key that reaches it can never
+  # read a backup. The flip side is that this file IS the backups — without
+  # it, ciphertext in B2 is landfill. It is committed (encrypted) in
+  # inventory/group_vars/proxmox_host.sops.yml and held in the password
+  # manager, and docs/runbooks/disaster-recovery.md (PR 7) restores it before
+  # anything else.
+  #
+  # Kept on disk rather than handed to pvesm and discarded because
+  # proxmox-backup-client needs the same key for the host file-level backups
+  # in PR 4, and a restore needs it before /etc/pve exists at all.
+  ansible.builtin.copy:
+    content: "{{ pbs_encryption_key }}"
+    dest: "{{ pbs_encryption_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Read the configured PBS users
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager user list --output-format json
+  register: pbs_user_list
+  changed_when: false
+
+- name: Select the PVE backup user from the list
+  ansible.builtin.set_fact:
+    pbs_pve_user_current: >-
+      {{ (pbs_user_list.stdout | from_json
+        | selectattr('userid', 'equalto', pbs_pve_user)
+        | list | first) | default({}, true) }}
+
+- name: Create the PBS user PVE backs up as
+  # A password, not an API token, and that is the deliberate choice: PBS
+  # reveals a token's secret exactly once at creation, which is why
+  # scripts/mint-pve-token.sh exists and why #84 had an ordering knot. A
+  # password is a value the operator generates and this role can set from
+  # SOPS, so the whole thing converges in one run with no minting step and
+  # no secret that exists only in a terminal scrollback.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager user create {{ pbs_pve_user }}
+      --password {{ pbs_pve_storage_password | quote }}
+      --comment {{ 'PVE vzdump target (backup-only)' | quote }}
+  when: not pbs_pve_user_current
+  changed_when: true
+  no_log: true
+
+- name: Rotate the PBS user's password
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager user update {{ pbs_pve_user }}
+      --password {{ pbs_pve_storage_password | quote }}
+  when:
+    - pbs_pve_user_current | length > 0
+    - pbs_rotate_secrets | bool
+  changed_when: true
+  no_log: true
+
+- name: Read the configured PBS ACLs
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager acl list --output-format json
+  register: pbs_acl_list
+  changed_when: false
+
+- name: Grant the backup role on this datastore only
+  # Scoped to /datastore/<name>, not /: this credential sits in cleartext in
+  # /etc/pve/priv/storage/ and its whole job is to write one VM's backups.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager acl update /datastore/{{ pbs_datastore }}
+      {{ pbs_pve_acl_role }} --auth-id {{ pbs_pve_user }}
+  when: >-
+    (pbs_acl_list.stdout | from_json
+      | selectattr('path', 'equalto', '/datastore/' + pbs_datastore)
+      | selectattr('roleid', 'equalto', pbs_pve_acl_role)
+      | selectattr('ugid', 'equalto', pbs_pve_user)
+      | list | length) == 0
+  changed_when: true
+
+- name: Read the PBS API certificate fingerprint
+  # PBS generates a self-signed certificate at install time, so PVE cannot
+  # validate it against a CA and pins this fingerprint instead. Reading it
+  # here, in the same run that installed PBS, is what removes the ordering
+  # problem that would exist if Tofu owned the storage entry.
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager cert info
+  register: pbs_cert_info
+  changed_when: false
+
+- name: Extract the SHA-256 fingerprint
+  # Matched by shape (32 colon-separated hex octets) rather than by the label
+  # in front of it, so a reworded output line does not silently yield an
+  # empty fingerprint.
+  ansible.builtin.set_fact:
+    pbs_cert_fingerprint: >-
+      {{ pbs_cert_info.stdout | regex_search('([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}') }}
+
+- name: Assert a fingerprint was found
+  ansible.builtin.assert:
+    that:
+      - pbs_cert_fingerprint | default('') | length == 95
+    fail_msg: >-
+      Could not read a SHA-256 fingerprint out of `proxmox-backup-manager
+      cert info`. Without it PVE cannot verify the PBS certificate, and
+      adding the storage without one would either fail or trust anything.
+    success_msg: PBS certificate fingerprint read.
+
+- name: Read the PVE storage configuration
+  ansible.builtin.command:
+    cmd: pvesh get /storage --output-format json
+  register: pbs_pve_storage_list
+  changed_when: false
+
+- name: Select the PBS storage entry from the list
+  ansible.builtin.set_fact:
+    pbs_pve_storage_current: >-
+      {{ (pbs_pve_storage_list.stdout | from_json
+        | selectattr('storage', 'equalto', pbs_pve_storage_id)
+        | list | first) | default({}, true) }}
+
+- name: Register the PBS datastore as PVE storage
+  # content=backup only. A PBS storage cannot hold disk images anyway, but
+  # saying so keeps it from ever appearing in a VM's disk-target dropdown.
+  ansible.builtin.command:
+    cmd: >-
+      pvesm add pbs {{ pbs_pve_storage_id }}
+      --server {{ pbs_pve_storage_server }}
+      --port {{ ports.pbs_api }}
+      --datastore {{ pbs_datastore }}
+      --username {{ pbs_pve_user }}
+      --password {{ pbs_pve_storage_password | quote }}
+      --fingerprint {{ pbs_cert_fingerprint }}
+      --encryption-key {{ pbs_encryption_key_path }}
+      --content backup
+  when: not pbs_pve_storage_current
+  changed_when: true
+  no_log: true
+
+- name: Update the stored fingerprint if the PBS certificate changed
+  # A renewed or regenerated PBS certificate otherwise breaks every backup
+  # with a TLS error, at 04:00, silently until something notices.
+  ansible.builtin.command:
+    cmd: >-
+      pvesm set {{ pbs_pve_storage_id }} --fingerprint {{ pbs_cert_fingerprint }}
+  when:
+    - pbs_pve_storage_current | length > 0
+    - pbs_pve_storage_current.fingerprint | default('') != pbs_cert_fingerprint
+  changed_when: true
+
+- name: Rotate the stored PBS password
+  ansible.builtin.command:
+    cmd: >-
+      pvesm set {{ pbs_pve_storage_id }} --password {{ pbs_pve_storage_password | quote }}
+  when:
+    - pbs_pve_storage_current | length > 0
+    - pbs_rotate_secrets | bool
+  changed_when: true
+  no_log: true
+
+- name: Read back the PBS storage status
+  # `pvesm status` is the one check that exercises the whole chain — TLS,
+  # fingerprint, credential, ACL and the S3 backend behind it — rather than
+  # just proving a config file has the right words in it.
+  ansible.builtin.command:
+    cmd: pvesm status --storage {{ pbs_pve_storage_id }}
+  register: pbs_pve_storage_status
+  changed_when: false
+
+- name: Assert the PBS storage is active
+  ansible.builtin.assert:
+    that:
+      - "'active' in pbs_pve_storage_status.stdout"
+    fail_msg: >-
+      PVE cannot reach the {{ pbs_pve_storage_id }} storage:
+      {{ pbs_pve_storage_status.stdout }}. The datastore exists but nothing
+      can back up to it — check the PBS user's ACL and the fingerprint.
+    success_msg: PVE reports the {{ pbs_pve_storage_id }} storage active.

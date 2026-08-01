@@ -1,0 +1,97 @@
+---
+# PBS's own notification path to Telegram.
+#
+# This deliberately duplicates Alertmanager, which already sends to the same
+# place. Prometheus and Alertmanager both run inside the k3s VM: if that VM
+# is down — the single most likely reason a backup stops happening — every
+# alert in clusters/lab/platform is down with it, including the alert that
+# the VM is down. This notifier runs on the hypervisor. It is the only
+# backup-failure signal that survives the failure it is most needed for.
+#
+# PR 6 adds the metric-based staleness alerts (BackupStale, PbsVerifyStale,
+# PbsGcStale) on top. Those catch the case this one cannot: a job that never
+# runs at all produces no notification, because nothing failed.
+
+- name: Read the configured webhook notification endpoints
+  # Type-scoped (`endpoint webhook list`) rather than a list of every
+  # endpoint kind: it maps onto the same API path the create below posts to,
+  # so if one exists so does the other.
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager notification endpoint webhook list --output-format json
+  register: pbs_notify_endpoint_list
+  changed_when: false
+
+- name: Select the Telegram webhook endpoint from the list
+  ansible.builtin.set_fact:
+    pbs_notify_endpoint_current: >-
+      {{ (pbs_notify_endpoint_list.stdout | from_json
+        | selectattr('name', 'equalto', pbs_notify_endpoint_id)
+        | list | first) | default({}, true) }}
+
+- name: Create the Telegram webhook notification endpoint
+  # The bot token and chat id are passed as PBS `secrets`, not baked into the
+  # URL: PBS stores those in a root-only companion file and substitutes them
+  # at send time, so the token never appears in notifications.cfg, in the UI,
+  # or in a support dump.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager notification endpoint webhook create
+      {{ pbs_notify_endpoint_id }} {{ pbs_notify_webhook_args }}
+  when: not pbs_notify_endpoint_current
+  changed_when: true
+  no_log: true
+
+- name: Update the Telegram webhook notification endpoint
+  # Only when the credentials are being rotated: like every other secret in
+  # this role, PBS will not read them back, so there is nothing to diff
+  # against on an ordinary converge.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager notification endpoint webhook update
+      {{ pbs_notify_endpoint_id }} {{ pbs_notify_webhook_args }}
+  when:
+    - pbs_notify_endpoint_current | length > 0
+    - pbs_rotate_secrets | bool
+  changed_when: true
+  no_log: true
+
+- name: Read the configured notification matchers
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager notification matcher list --output-format json
+  register: pbs_notify_matcher_list
+  changed_when: false
+
+- name: Select this matcher from the list
+  ansible.builtin.set_fact:
+    pbs_notify_matcher_current: >-
+      {{ (pbs_notify_matcher_list.stdout | from_json
+        | selectattr('name', 'equalto', pbs_notify_matcher_id)
+        | list | first) | default({}, true) }}
+
+- name: Create the notification matcher routing failures to Telegram
+  # Additive: PBS's built-in default-matcher still routes everything to
+  # mail-to-root, and is left alone. This one carries warnings and errors
+  # only — every successful GC, prune and verify also emits a notification,
+  # and a channel that pages on success stops being read.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager notification matcher create {{ pbs_notify_matcher_id }}
+      --target {{ pbs_notify_endpoint_id }}
+      --match-severity {{ pbs_notify_severities | join(',') }}
+      --comment {{ 'Backup warnings and errors to Telegram' | quote }}
+  when: not pbs_notify_matcher_current
+  changed_when: true
+
+- name: Update the notification matcher
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager notification matcher update {{ pbs_notify_matcher_id }}
+      --target {{ pbs_notify_endpoint_id }}
+      --match-severity {{ pbs_notify_severities | join(',') }}
+  when:
+    - pbs_notify_matcher_current | length > 0
+    - >-
+      pbs_notify_endpoint_id not in ([pbs_notify_matcher_current.target | default([])] | flatten)
+      or ([pbs_notify_matcher_current['match-severity'] | default([])] | flatten | join(','))
+         != (pbs_notify_severities | join(','))
+  changed_when: true

@@ -27,8 +27,39 @@
     suites: "{{ ansible_distribution_release }}"
     components: pve-no-subscription
     state: present
+  register: pve_repos_pve_source
+
+- name: Point apt at the free PBS no-subscription repo
+  # proxmox-backup-server (roles/pbs) does not live in the PVE repos — it
+  # ships from its own component, under the same free/enterprise split.
+  # PBS 4.x is built for Debian 13, the same release this PVE 9 host runs,
+  # so `ansible_distribution_release` resolves to trixie for both entries
+  # and no repo pulls packages from a different Debian release. (PBS 3.x
+  # was the bookworm-based one; guides that say PBS can't be installed
+  # alongside PVE 9 are describing that mismatch, not this configuration.)
+  #
+  # Declared here rather than in roles/pbs so that every apt source on this
+  # host is defined in one place, and so it lands before any other role's
+  # apt tasks — this role runs first in playbooks/proxmox-host.yml.
+  #
+  # No `signed_by:`, deliberately, matching the PVE entry above: that entry
+  # is proven working on this host, so the Proxmox archive key is already
+  # trusted here. Naming a keyring path that turned out not to exist would
+  # break `apt update` for every role that follows, not just this repo.
+  ansible.builtin.deb822_repository:
+    name: pbs-no-subscription
+    types: deb
+    uris: http://download.proxmox.com/debian/pbs
+    suites: "{{ ansible_distribution_release }}"
+    components: pbs-no-subscription
+    state: present
+  register: pve_repos_pbs_source
 
 - name: Refresh the apt cache now that the repos are fixed
+  # cache_valid_time skips the refresh when the cache is under an hour old,
+  # which is the right default for a converge that changed no sources — but
+  # a source file just written above has to be fetched *now*, or the next
+  # role's `apt install` fails on a package apt has never heard of.
   ansible.builtin.apt:
     update_cache: true
-    cache_valid_time: 3600
+    cache_valid_time: "{{ 0 if (pve_repos_pve_source is changed or pve_repos_pbs_source is changed) else 3600 }}"

@@ -1,0 +1,67 @@
+# Template for the values roles/pbs needs in proxmox_host.sops.yml.
+#
+# NOT loaded by Ansible: the vars plugins only read group_vars files whose
+# name matches an inventory group, and `.example` is not a recognised
+# extension. This file is plaintext and committed; the real one is SOPS +
+# age (see ../../../.sops.yaml and docs/secrets.md) and never holds a
+# plaintext value in git.
+#
+# proxmox_host.sops.yml already exists and holds wireguard_peer_psks. ADD to
+# it, do not replace it:
+#
+#     sops ansible/inventory/group_vars/proxmox_host.sops.yml
+#
+# Every value must be a QUOTED string. An unquoted all-digit value (a
+# Telegram chat id, notably) re-encrypts as type:int and the consumer then
+# silently sees the wrong type — the same failure #55 added a CI check for
+# on the cluster side. There is no such check for ansible/ group_vars, so
+# the quoting is on you here.
+#
+# --- Backblaze B2 -----------------------------------------------------------
+# From the B2 console: Application Keys -> Add a New Application Key, scoped
+# to THIS BUCKET ONLY, read+write. Never the master application key — that
+# one can delete every bucket in the account, and the point of putting
+# backups at a third vendor is that no single stolen credential reaches both
+# production and the backups.
+#
+# The bucket itself must have Object Lock and versioning OFF. PBS supports
+# neither, and enabling either can corrupt the datastore: garbage collection
+# has to be free to delete chunks.
+#
+# The non-secret half of this configuration — the bucket name and region —
+# is not here. It goes in inventory/host_vars/server.yml, in the open.
+pbs_s3_access_key: "the key id B2 shows you"
+pbs_s3_secret_key: "the key secret B2 shows you once"
+
+# --- Client-side backup encryption key ---------------------------------------
+# Generate ONCE, on any machine, and keep it forever:
+#
+#     proxmox-backup-client key create --kdf none /tmp/lab-pbs.enc
+#
+# --kdf none because PVE has to use it unattended at 04:00 — a passphrase
+# would mean a human at every backup. The file is a single line of JSON;
+# paste its whole contents as the value below, quoted.
+#
+# THIS FILE IS THE BACKUPS. B2 holds ciphertext only, so losing this key
+# loses every backup while appearing to have them. Store a copy in the
+# password manager next to the age key before you paste it here — the age
+# key decrypts this file, so a copy of this key that exists only inside it
+# is not a second copy.
+pbs_encryption_key: 'the whole one-line JSON from the key file, pasted verbatim'
+
+# --- PBS user PVE backs up as ------------------------------------------------
+# Any long random string — roles/pbs creates the PBS user with it and hands
+# the same value to `pvesm add`, so it only ever has to match itself:
+#
+#     openssl rand -base64 33
+#
+# Not root@pam and not an API token: see tasks/pve_storage.yml for why.
+pbs_pve_storage_password: "the random string you just generated"
+
+# --- Telegram webhook notifier ------------------------------------------------
+# The same bot and group the Alertmanager config already uses (a dedicated
+# alerts group is fine too). This path exists to work when the k3s VM — and
+# therefore Alertmanager — is down, so it must not depend on anything in the
+# cluster. Quote the chat id: it is all digits, usually negative.
+pbs_notify_telegram_bot_token: "the bot token, as in the cluster telegram secret"
+pbs_notify_telegram_chat_id: "the group chat id, quoted"

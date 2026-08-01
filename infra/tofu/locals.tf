@@ -31,6 +31,7 @@ locals {
     { comment = "SSH (host)", proto = "tcp", dport = local.lab.ports.ssh },
     { comment = "Proxmox API/UI", proto = "tcp", dport = local.lab.ports.pve_api },
     { comment = "node_exporter (host metrics)", proto = "tcp", dport = local.lab.ports.node_exporter },
+    { comment = "Proxmox Backup Server UI/API", proto = "tcp", dport = local.lab.ports.pbs_api },
   ]
   # No vm_mgmt_rules / runner_mgmt_rules: guests run without a per-VM firewall
   # (firewall=false, so host egress NAT works) — see firewall.tf "VM (guest)

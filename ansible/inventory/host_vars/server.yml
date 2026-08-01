@@ -7,3 +7,17 @@
 zfs_tank_pool_disks:
   - /dev/disk/by-id/ata-HGST_HUS726020ALA610_K5J12RAG
   - /dev/disk/by-id/ata-HGST_HUS726020ALA610_K5HWWV7G
+
+# The Backblaze B2 bucket roles/pbs stores backups in. Non-secret (the
+# credentials that reach it are in group_vars/proxmox_host.sops.yml), but
+# account-specific, so it has no sensible default in the role — bucket names
+# are globally unique on B2. Uncomment and fill in before merging; the role
+# asserts it is set and stops the play rather than converging half a backup
+# destination.
+#
+# pbs_s3_region only needs setting if the bucket is NOT in eu-central-003,
+# which is what roles/pbs defaults to. It must match the region the bucket
+# was actually created in — B2 puts the region in the hostname, so a
+# mismatch is a name-resolution failure, not a redirect.
+# pbs_s3_bucket: <the bucket name from the B2 console>
+# pbs_s3_region: eu-central-003
