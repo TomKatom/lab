@@ -225,15 +225,25 @@ spec:
           # after the pod first booted (Loki, added alongside loki.yaml, is
           # exactly this case) was written to disk but never loaded into the
           # running Grafana, and showed up in neither the datasource list nor
-          # Explore. initDatasources runs the sidecar once as an initContainer,
-          # so the file is on disk before Grafana boots and is loaded natively
-          # with no reload API involved; skipReload stops the running sidecar
-          # from issuing the reload that can only 401 here. A datasource change
+          # Explore.
+          #
+          # initDatasources swaps the long-running datasource sidecar for a
+          # single initContainer (grafana chart 12.10.0 _pod.tpl renders the
+          # watch sidecar only `if not initDatasources`), so the file is written
+          # before Grafana boots and loaded natively — no reload API involved.
+          # watchMethod: LIST is REQUIRED, not tidiness: that same template sets
+          # the initContainer's METHOD to `.watchMethod`, whose default is WATCH,
+          # and a WATCH-mode k8s-sidecar never exits — the initContainer runs
+          # forever and the pod is stuck in Init:0/1 indefinitely (observed once,
+          # exactly this). LIST makes it list once, write the files and exit 0.
+          # skipReload then drops the reload POST the initContainer would
+          # otherwise aim at a Grafana that is not up yet. A datasource change
           # now takes effect on the next pod roll — free, since Grafana keeps no
           # PVC (persistence below is false).
           sidecar:
             datasources:
               initDatasources: true
+              watchMethod: LIST
               skipReload: true
           persistence:
             enabled: false
