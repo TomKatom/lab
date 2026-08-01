@@ -211,6 +211,30 @@ spec:
               type: loki
               access: proxy
               url: http://loki.monitoring.svc:3100
+          # Datasources reach Grafana through the chart's datasource sidecar,
+          # which writes the provisioning file and then live-reloads it with
+          # POST /api/admin/provisioning/datasources/reload. That endpoint is
+          # admin-only, and this Grafana has no admin to authenticate as:
+          # GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION above leaves no admin
+          # account, the login form and basic auth are off, and the sidecar's
+          # reload request carries no Remote-User for auth.proxy to accept — so
+          # the reload is answered 401 ("cannot authenticate request") and
+          # silently loads nothing. Dashboards survive this because Grafana
+          # rescans their directory on a timer; datasources do NOT — they load
+          # only at Grafana startup or on that reload. So every datasource added
+          # after the pod first booted (Loki, added alongside loki.yaml, is
+          # exactly this case) was written to disk but never loaded into the
+          # running Grafana, and showed up in neither the datasource list nor
+          # Explore. initDatasources runs the sidecar once as an initContainer,
+          # so the file is on disk before Grafana boots and is loaded natively
+          # with no reload API involved; skipReload stops the running sidecar
+          # from issuing the reload that can only 401 here. A datasource change
+          # now takes effect on the next pod roll — free, since Grafana keeps no
+          # PVC (persistence below is false).
+          sidecar:
+            datasources:
+              initDatasources: true
+              skipReload: true
           persistence:
             enabled: false
           resources:

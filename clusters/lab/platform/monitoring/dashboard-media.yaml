@@ -19,6 +19,15 @@
 #     increments a different metric, and a direct-play session appears in
 #     neither. So "direct play" on this dashboard is the distance between the
 #     sessions line and the two transcode lines, not a series of its own.
+#     The exporter also does not create plex_sessions_count or either transcode
+#     series until the first session of the exporter's life has occurred, so on
+#     a freshly-rolled exporter with nobody watching they do not exist at all —
+#     the sessions/transcodes panel would read "No data" rather than an honest
+#     zero. Each of its three targets therefore ends `or vector(0)`, which
+#     substitutes a 0 sample exactly when the series is absent and is a no-op
+#     once it exists. plex_media_count (panel 8, "Plex — library items") is the
+#     opposite: it is emitted every scrape regardless of streams, so it — not
+#     the sessions panel — is what shows the exporter is alive while idle.
 #   <app>_queue_total — one series per scrape at the pinned exportarr v2.3.0,
 #     not one per queue state. Its collector overwrites a single metric
 #     variable inside the loop over records and sends only the last
@@ -141,7 +150,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(plex_sessions_count)",
+              "expr": "sum(plex_sessions_count) or vector(0)",
               "legendFormat": "all sessions",
               "range": true,
               "refId": "A"
@@ -152,7 +161,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(plex_video_transcode_sessions_count)",
+              "expr": "sum(plex_video_transcode_sessions_count) or vector(0)",
               "legendFormat": "video transcode",
               "range": true,
               "refId": "B"
@@ -163,7 +172,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(plex_audio_transcode_sessions_count)",
+              "expr": "sum(plex_audio_transcode_sessions_count) or vector(0)",
               "legendFormat": "audio transcode",
               "range": true,
               "refId": "C"
@@ -559,6 +568,68 @@ data:
             }
           ],
           "title": "Newest *arr backup age",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Item counts per Plex library section, straight from the exporter's plex_media_count gauge. Unlike plex_sessions_count and the transcode series — which the exporter only creates once a session has occurred, so their panels above read 0 rather than 'No data' until someone streams — this gauge is emitted on every scrape whether or not anyone is watching, so it is the panel that proves the Plex exporter is alive when the library is idle. type=\"show\" counts series, type=\"show_episode\" counts episodes.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 30
+          },
+          "id": 8,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "plex_media_count",
+              "legendFormat": "{{title}} ({{type}})",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Plex — library items",
           "type": "timeseries"
         }
       ],
