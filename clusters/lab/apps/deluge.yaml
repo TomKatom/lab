@@ -219,6 +219,21 @@ spec:
                   DELUGE_HOST: 127.0.0.1
                   HOME: /config
                   LISTEN_PORT: "9354"
+                  # Required, not cosmetic. deluge_exporter.py defaults this
+                  # to "" and passes it straight to prometheus_client's
+                  # start_http_server(port, address), which calls
+                  # socket.getaddrinfo(address, port, flags=AI_PASSIVE). On
+                  # this image's Alpine/musl libc that raises
+                  # gaierror("Name does not resolve") for an empty string —
+                  # musl does not treat "" as the passive/wildcard address
+                  # the way glibc does; "0.0.0.0" resolves fine on the same
+                  # container. start_exporter() is wrapped in
+                  # @logger.catch, which logs that traceback and swallows
+                  # it, so the process survives in its while-True sleep loop
+                  # with nothing ever listening on 9354 — Running and Ready
+                  # forever, scrape target permanently down, no
+                  # deluge_info series, DelugeDown/TargetDown firing.
+                  LISTEN_ADDRESS: "0.0.0.0"
                   # Default is ERROR, which hides the one line worth having:
                   # at INFO the exporter states which config directory, host
                   # and user it resolved, so a wrong mount is one `kubectl
