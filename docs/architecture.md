@@ -43,8 +43,18 @@ re-declaring these values:
   `local.lab`, feeding the bridge/VM/firewall/DNS resources.
 - **Ansible** (Phase 3) — loaded via `vars_files` in `group_vars`, feeding
   WireGuard, NAT/DNAT, and the inventory.
-- **Helm/Argo** (Phase 5) — referenced via Argo `Application` `valueFiles`,
-  feeding ingress hostnames, cert-manager, and service ports.
+- **Helm/Argo** (Phase 5+) — **does not read this file, and cannot.** Argo
+  renders `clusters/lab/` straight from git with no templating layer in
+  between, and every `Application` carries its values inline in
+  `helm.valuesObject`; the only `valueFiles` in the repo is `argo-cd.yaml`
+  pointing at its own `bootstrap/argocd-values.yaml`. So the handful of
+  `lab.yml` facts the cluster layer needs — the domain in ingress hostnames
+  and external-dns's `domainFilters`, `ports.torrent` in Deluge's
+  Services and `core.conf`, `network.vmbr1_host_address` in the two
+  hypervisor scrape targets — are **hand-copied constants**. Each carries a
+  comment naming the `config/lab.yml` key it must track; changing one of
+  those facts means editing those manifests by hand, and nothing enforces
+  that they agree.
 
 Facts used by only one layer (Proxmox endpoint, storage pools, VM sizing,
 image checksum) stay declared in that layer, alongside its secrets.
@@ -90,7 +100,7 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
            ├─ traefik (ingress :443)                 ├─ prowlarr / flaresolverr (indexers)
            ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
-           └─ monitoring/ (placeholder → later)      ├─ unpackerr / recyclarr
+           └─ monitoring (metrics + logs + alerts)   ├─ unpackerr / recyclarr
                                                      ├─ seerr (requests) / maintainerr
                                                      └─ tautulli / homepage (apex + www)
 ```
@@ -350,7 +360,11 @@ Each phase is its own PR. Full detail and current status in
    server (operator-executed —
    [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,
    separately and later, the **public DNS cutover**.
-7. **Observability** *(later)* — kube-prometheus-stack + Loki.
+7. **Observability** — kube-prometheus-stack (Prometheus, Alertmanager,
+   Grafana), Loki + Alloy for logs, `prometheus-pve-exporter` and the
+   hypervisor's own `node_exporter` for the layer below Kubernetes, alerting
+   to Telegram. Component map, alert catalog, retention and rotation
+   procedures: [`docs/observability.md`](observability.md).
 8. **Backups** *(later)* — `vzdump` → NFS on a separate box.
 
 ## Verification
