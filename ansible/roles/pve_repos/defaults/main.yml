@@ -4,3 +4,4 @@
 
 pve_repos_enterprise_sources: /etc/apt/sources.list.d/pve-enterprise.sources
 pve_repos_ceph_enterprise_sources: /etc/apt/sources.list.d/ceph.sources
+pve_repos_pbs_enterprise_sources: /etc/apt/sources.list.d/pbs-enterprise.sources
