@@ -28,6 +28,16 @@
 # longer than the ones below and never diff clean against them — the
 # omitted keys inherit Deluge 2.2.0 defaults by design.
 #
+# A second container joined this pod for metrics. It is a sidecar and not a
+# Deployment of its own precisely because the credential it needs is a file on
+# the /config PVC — see the `metrics` container below for why that decides
+# both the topology and the securityContext. Note before writing any query
+# against it: neither Deluge exporter in existence emits a `deluge_up`, and
+# this one returns HTTP 200 with an empty body when the RPC connection fails,
+# so Prometheus' own `up` stays 1 through a deluged outage.
+# ../platform/monitoring/rules-media.yaml alerts on the absence of
+# `deluge_info` instead.
+#
 # The in-app torrent listen port is part of that contract now: core.conf
 # pins listen_ports [51413, 51413] with random_port: false, which is the
 # in-app half of config/lab.yml's ports.torrent: 51413 (DNAT'd
@@ -146,6 +156,100 @@ spec:
                     memory: 1Gi
                   limits:
                     memory: 4Gi
+              # Prometheus metrics for the session: torrents by state,
+              # libtorrent throughput counters, and the live core config.
+              #
+              # A sidecar rather than its own Deployment, for two reasons that
+              # are both about not duplicating state. It reads deluged's own
+              # config directory for the RPC credentials — /config is a
+              # globalMounts volume, so it is already mounted here at /config
+              # with nothing to add — which means the localclient password
+              # exists in exactly one place (the PVC) and never becomes a
+              # second SOPS Secret to rotate in step. And that PVC is
+              # ReadWriteOnce, so a second pod wanting the same directory would
+              # be pinned to this node by the volume rather than by choice.
+              # 127.0.0.1:58846 works from here because containers in a pod
+              # share a network namespace — which is also why core.conf's
+              # allow_remote can stay false.
+              #
+              # DELUGE_CONFIG_DIR selects that mode. The exporter uses env
+              # credentials only when all four of DELUGE_HOST/PORT/USER/
+              # PASSWORD are set; with fewer than four it parses core.conf for
+              # daemon_port and the `auth` file for the localclient user and
+              # password. DELUGE_HOST alone is therefore safe and is set for
+              # legibility, not effect — 127.0.0.1 is already its default in
+              # that branch.
+              #
+              # HOME is not decoration either. deluge_exporter.py:66 reads
+              # `os.environ.get("DELUGE_CONFIG_DIR", get_deluge_config_dir())`
+              # — Python evaluates that default eagerly, so Path.home() is
+              # called on every start even though DELUGE_CONFIG_DIR is set, and
+              # pathlib raises RuntimeError("Could not determine home
+              # directory") when HOME is unset and the uid has no passwd entry.
+              # runAsUser 1000 against a python:alpine image is exactly that
+              # case. Setting HOME costs one line and removes the whole class.
+              #
+              # runAsUser 1000 is required, not stylistic: the image runs as
+              # root by default (its config declares no user), and /config/auth
+              # is mode 0600 owned by the uid deluged runs as, which the PUID
+              # above pins to 1000. Root would also read it, but the pod-level
+              # LSIO exception above means nothing else here forces non-root,
+              # so this container carries the full house securityContext the
+              # init container does.
+              #
+              # ⚠ The liveness probe is what makes a broken exporter visible,
+              # and it is not optional. start_exporter() is wrapped in
+              # loguru's @logger.catch, which logs and *swallows*: if the
+              # config read fails, the exception never reaches the interpreter,
+              # start_http_server is never called, and the process sits in its
+              # `while True: sleep(60)` loop forever with nothing listening.
+              # The container would stay Running and Ready, reporting no
+              # metrics, indefinitely. A TCP probe on 9354 turns that into a
+              # restart. There is deliberately NO readiness probe: readiness is
+              # a pod-level property, so a failing one here would pull deluged
+              # out of its own Service endpoints and break every *arr's
+              # download client over a metrics problem.
+              metrics:
+                image:
+                  repository: ghcr.io/tobbez/deluge_exporter
+                  # renovate: datasource=docker depName=ghcr.io/tobbez/deluge_exporter
+                  tag: "2.4.0@sha256:2aeab50aac50415da7c72fc934740329110988d011d9c592a00dd2eee2d87aa2"
+                env:
+                  DELUGE_CONFIG_DIR: /config
+                  DELUGE_HOST: 127.0.0.1
+                  HOME: /config
+                  LISTEN_PORT: "9354"
+                  # Default is ERROR, which hides the one line worth having:
+                  # at INFO the exporter states which config directory, host
+                  # and user it resolved, so a wrong mount is one `kubectl
+                  # logs -c metrics` away instead of a silent empty scrape.
+                  LOG_LEVEL: INFO
+                  # Off, explicitly. Set to 1 this emits 17 metric families
+                  # labelled by torrent name, hash and state — about 6,600
+                  # series for this session's ~390 permaseeds, every one of
+                  # them churning its `state` label. The default is already 0;
+                  # stating it means an upstream default flip cannot quietly
+                  # multiply this cluster's series count by an order of
+                  # magnitude.
+                  PER_TORRENT_METRICS: "0"
+                securityContext:
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                probes:
+                  liveness:
+                    enabled: true
+                    type: TCP
+                    port: 9354
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 128Mi
         # Documented exception (./README.md "Identity: everything runs as
         # 1000:1000"): the LSIO image boots as root via its own s6 init and
         # drops privilege internally to PUID/PGID above. No
@@ -197,6 +301,16 @@ spec:
             ports:
               http:
                 port: 8112
+              # The sidecar exporter's port, added to the existing Service
+              # rather than given a fourth Service of its own. The exporter
+              # runs in this pod, so a separate Service would carry the
+              # identical selector and exist only to hold one more port —
+              # another object to keep named correctly for no isolation in
+              # return. The WebUI port stays first and unchanged; the
+              # ServiceMonitor below selects this Service and scrapes the
+              # metrics port by name, not by number.
+              metrics:
+                port: 9354
           bt-tcp:
             type: LoadBalancer
             ports:
@@ -209,6 +323,34 @@ spec:
               torrent:
                 port: 51413
                 protocol: UDP
+        # Chart-rendered rather than a hand-written CR in the monitoring
+        # overlay: app-template 5.0.1 ships templates/classes/_serviceMonitor.tpl
+        # and resolves the Service name through the same helper that produced
+        # the forceRename above, so the selector cannot drift from the Service
+        # it selects. It emits selector `app.kubernetes.io/service: deluge`,
+        # which is the label the renamed Service carries.
+        #
+        # It also leaves `jobLabel` at the chart default,
+        # `app.kubernetes.io/name`, so these series land under `job="deluge"`.
+        # ../platform/monitoring/rules-media.yaml deliberately does not match
+        # on that — `deluge_torrents` and `deluge_info` are unambiguous names
+        # and a job matcher would only be another thing to keep in step — but
+        # it is what `up{job="deluge"}` and the target list will read. Only one
+        # ServiceMonitor here, so its own name is `deluge` too.
+        #
+        # 1m interval: a scrape opens an RPC connection, pulls the whole
+        # session status and every torrent's state, and disconnects. At ~390
+        # torrents that is not free, and nothing downstream needs finer
+        # resolution than a minute.
+        serviceMonitor:
+          app:
+            service:
+              identifier: app
+            endpoints:
+              - port: metrics
+                path: /metrics
+                interval: 1m
+                scrapeTimeout: 30s
         ingress:
           app:
             annotations:
@@ -330,6 +472,19 @@ spec:
               # and allow_remote: false keeps the daemon protocol on
               # localhost — deluged and deluge-web share this container and
               # the *arrs come in over the WebUI's JSON-RPC.
+              #
+              # daemon_port is declared even though 58846 is already Deluge's
+              # default, because the metrics sidecar reads it *out of this
+              # file* rather than from deluged: with fewer than four DELUGE_*
+              # env vars set, deluge_exporter.py parses core.conf for
+              # daemon_port and then the auth file for credentials. The
+              # init container rewrites core.conf from this block on every
+              # start, so between that write and deluged's first save the
+              # on-disk file is exactly what is declared here — omit the key
+              # and the sidecar's startup KeyErrors through @logger.catch into
+              # a silent no-listener state until the liveness probe restarts
+              # it. Stating it makes that window deterministic instead of a
+              # race.
               core.conf: |
                 {
                   "file": 1,
@@ -348,6 +503,7 @@ spec:
                   "new_release_check": false,
                   "send_info": false,
                   "allow_remote": false,
+                  "daemon_port": 58846,
                   "enc_in_policy": 1,
                   "enc_out_policy": 1,
                   "enc_level": 2,

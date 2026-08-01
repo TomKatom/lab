@@ -1,0 +1,189 @@
+# plex-exporter — stream counts, transcode counts and library sizes out of
+# Plex, which exposes no Prometheus endpoint of its own. A separate Application
+# rather than a sidecar on ./plex.yaml: Plex's pod carries a 20Gi config PVC, a
+# read-only media hostPath and a transcode emptyDir, and a sidecar would inherit
+# all three plus every restart of a server that is deliberately slow to roll.
+# The exporter talks to Plex over the same in-cluster Service everything else
+# uses.
+#
+# The whole point of the transcode metrics is the direct-play policy this lab
+# runs on. The E5-1650v4 has no integrated GPU, so there is no QuickSync path
+# and every transcode is software libx264 on the same cores the *arrs and
+# Deluge share — see ./plex.yaml's resources comment. The quality tiers are
+# picked so clients direct-play; a video transcode that persists means a client
+# or a file has fallen outside them, and that is the condition
+# ../platform/monitoring/rules-media.yaml alerts on.
+#
+# ⚠ There is no transcode-*decision* label anywhere in this exporter, and the
+# obvious PromQL is wrong. Reading collector.rb at tag 2.1.0: it inspects
+# `TranscodeSession.videoDecision == "transcode"` and
+# `TranscodeSession.audioDecision == "transcode"` and increments two *separate
+# metrics* — `plex_video_transcode_sessions_count` and
+# `plex_audio_transcode_sessions_count`. The metric NAME is the decision. A rule
+# written as plex_sessions_count{decision="transcode"} matches nothing and never
+# fires. Direct-play and direct-stream are indistinguishable from each other:
+# they appear only in `plex_sessions_count` and in neither transcode metric.
+#
+# A second consequence of that file worth keeping in mind before writing any
+# rule against it: stale label sets are reset to 0 rather than deleted
+# (`set_gauge_metric_values_or_reset_missing`), so every user/state combination
+# that has ever streamed stays present at 0 forever. Comparisons must be `> 0`;
+# `absent()` on these series is always false and always will be.
+#
+# PLEX_ADDR is composed from ./media-common/media-urls.yaml's PLEX_HOST and
+# PLEX_PORT rather than written out again. That map deliberately keeps Plex
+# split because Tautulli wants the halves separately, and says in its own
+# header that anything needing the joined form composes it — this is that.
+# The env block is therefore a LIST, not the map form the rest of this repo
+# uses, and the order is load-bearing: the kubelet expands $(VAR) only against
+# variables defined *earlier* in the list, and app-template renders a map form
+# alphabetically, which would put PLEX_ADDR before both of its inputs and ship
+# the literal string "http://$(PLEX_HOST):$(PLEX_PORT)" as the address.
+#
+# runAsUser has to be numeric and 1000 is a free choice. The image declares
+# `USER app:appgroup` — names, from an alpine `adduser -S`, which the kubelet
+# cannot resolve, so `runAsNonRoot: true` on its own is refused with "container
+# has runAsNonRoot and image has non-numeric user". The app tree at /srv is
+# world-readable and the process writes nothing, so any uid runs it; 1000 keeps
+# ./README.md "Identity: everything runs as 1000:1000" true here too.
+#
+# Probes are TCP, not HTTP, and that is not laziness. collector.rb only collects
+# on `PATH_INFO == "/metrics"`, so an HTTP probe on that path would drive a full
+# round of Plex API calls — /identity, /status/sessions, /activities — on every
+# probe interval, against a server whose CPU is the scarce resource here. An
+# accepted connection on 9594 says puma is serving, which is all a probe needs
+# to decide.
+#
+# PLEX_TOKEN comes from the existing `tautulli-credentials` Secret and this PR
+# adds no new one. That Secret's `PLEX_TOKEN` is not a Tautulli-scoped key —
+# it is the Plex server's own account token, read off Preferences.xml, and it
+# is the same credential this exporter needs, signed into the same
+# `X-Plex-Token` header against the same server. Minting a second copy would
+# have meant a second encrypted file to rotate in step with the first, a second
+# ksops generator entry, and — because ksops has no `optional:` — a merge that
+# takes the entire media-common overlay down until the operator has created the
+# file. Reading the key that already exists costs one line and no operator step
+# at all.
+#
+# What it does cost is a name that reads wrong, so: the reason
+# ./media-common/tautulli-credentials.sops.yaml's own header gives for keeping
+# the token there ("Tautulli is its only environment consumer") stopped being
+# true with this file. ./README.md's Secret inventory records the second
+# consumer. If the token is ever promoted to a shared `plex` Secret, both
+# consumers move in the same commit.
+#
+# Note what a *bad* token looks like from here: send_plex_api_request
+# JSON.parses whatever comes back and Plex answers 401 with XML, so the
+# exception escapes the rack app as a 500 and the scrape fails. That reads as
+# `up == 0`, which kube-prometheus-stack's own TargetDown already alerts on —
+# it does NOT read as `plex_up == 0`, which only ever means /identity raised an
+# HTTP error. The rules file does not restate TargetDown;
+# ../platform/monitoring/rules-cluster.yaml's header explains why duplicating a
+# chart rule is worse than having one.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: plex-exporter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/axsuul/plex-media-server-exporter
+                  # renovate: datasource=docker depName=ghcr.io/axsuul/plex-media-server-exporter
+                  tag: "2.1.0@sha256:ab89d0ba039e4ea70fe5ee087b89c11f36b2eb30b4b85792c0caf60d5e4b2cd1"
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  - name: PLEX_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_HOST
+                  - name: PLEX_PORT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_PORT
+                  # Must stay after both of the above — see the header.
+                  - name: PLEX_ADDR
+                    value: http://$(PLEX_HOST):$(PLEX_PORT)
+                  # Yes, `tautulli-credentials` — see the header. This is the
+                  # existing Plex server token, not a Tautulli-specific one,
+                  # and there is deliberately no second encrypted copy of it.
+                  - name: PLEX_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: tautulli-credentials
+                        key: PLEX_TOKEN
+                  # The image sets this too, but the Cmd is
+                  # `puma -b tcp://0.0.0.0:$PORT` — an unset PORT binds to
+                  # nothing usable, so the Service port and the bind address
+                  # agree here by declaration rather than by image default.
+                  - name: PORT
+                    value: "9594"
+                probes:
+                  liveness:
+                    enabled: true
+                    type: TCP
+                    port: 9594
+                  readiness:
+                    enabled: true
+                    type: TCP
+                    port: 9594
+                # Ruby and puma, not a static binary: the floor is the
+                # interpreter plus the loaded gems, and the ceiling covers the
+                # library-section sweep that runs every
+                # METRICS_MEDIA_COLLECTING_INTERVAL_SECONDS (300 by default,
+                # left at it). An OOMKilled monitoring component is the failure
+                # that hides every other failure, so the limit is generous; no
+                # CPU limit, because a throttled exporter times out and reports
+                # as down.
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 256Mi
+        service:
+          app:
+            controller: app
+            ports:
+              http:
+                port: 9594
+        serviceMonitor:
+          app:
+            service:
+              identifier: app
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 1m
+                scrapeTimeout: 30s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

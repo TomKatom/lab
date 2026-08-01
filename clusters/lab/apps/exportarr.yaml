@@ -1,0 +1,324 @@
+# exportarr — the *arr metrics this stack has been running blind without.
+# One Application, three controllers (sonarr, radarr, prowlarr), because the
+# only thing that differs between them is a subcommand, a URL and an API key;
+# three Applications would triple the securityContext, the pin and the
+# ServiceMonitor wiring so that three env vars could differ.
+#
+# This exists because of two findings the last audit surfaced by hand and
+# nothing in the cluster could have surfaced on its own. 21 queue items sat
+# permanently in `importBlocked`, and several indexers had been failing for
+# long enough that Prowlarr had given up retrying them. Neither is visible to
+# a health probe: the *arrs answer /ping happily while their queue silently
+# stops draining, and a dead indexer only shows up as "fewer results than
+# usual", which nothing measures. ../platform/monitoring/rules-media.yaml turns
+# the indexer finding into an alert; this file is what produces the series it
+# reads. The queue finding is only partly served, and the next paragraph is
+# why — read it before adding a queue alert.
+#
+# ⚠ Upstream-version dependency. At the v2.3.0 pinned below, exportarr's queue
+# collector emits ONE `<app>_queue_total` series per scrape rather than one per
+# queue state: it assigns to a single `prometheus.Metric` variable inside the
+# loop over records and sends only the last one
+# (internal/arr/collector/queue.go:88-96 at that tag). The series therefore
+# holds the TOTAL queue length under whichever record's labels came last.
+# v2.3.0 is the newest release; the per-state grouping fix exists only on the
+# unreleased main branch (upstream #389). That is why there is no
+# ArrQueueImportBlocked rule — a per-state matcher would fire on a coin flip
+# and misreport the count when it fired, which is worse than no alert because
+# it reads as proof that somebody checked. rules-media.yaml's header carries
+# the proof and the exact rule to restore once a release later than v2.3.0
+# ships the fix. Bumping the tag below is what unblocks that; downgrading it
+# again would silently re-break the restored rule, which is the direction this
+# note exists to catch.
+#
+# ENABLE_UNKNOWN_QUEUE_ITEMS stays set regardless, and is the most load-bearing
+# value in this manifest. Sonarr's and Radarr's queue API defaults to
+# `includeUnknownSeriesItems=false` / `includeUnknownMovieItems=false`, and an
+# item stuck in importBlocked is very often stuck *precisely because* the *arr
+# can no longer match it to a series or movie — so the default filter hides the
+# exact items worth counting. Setting it true adds no metric and no label
+# (verified in exportarr's queue.go: it only appends the query parameter); it
+# changes what `<app>_queue_total` counts. Today that makes the queue-size
+# panel on the media dashboard honest rather than a filtered view; the day the
+# per-state rule comes back it is what keeps that rule from reproducing the
+# blind spot it was written to close. It is deliberately absent on prowlarr,
+# where the parameter does not exist and the flag is a no-op.
+#
+# Pinned at v2.3.0, and the env var names below are the v2 ones. The upstream
+# main-branch README documents an unreleased v3 that removes APIKEY/CONFIG/
+# ENABLE_ADDITIONAL_METRICS and renames the rest to DISABLE_* flags; nothing is
+# tagged or published under v3. Copying names out of that README is the easy
+# way to produce a container that starts, serves /metrics, and exports nothing
+# but Go runtime metrics. `API_KEY` rather than the README's `APIKEY` for the
+# same reason: at v2.3.0 both work, but `API_KEY` maps straight onto the koanf
+# tag `api-key` while `APIKEY` only works through a compatibility shim in
+# internal/config/config.go whose own comment says "Remove in v2.0.0".
+#
+# PORT is not optional and 9707 is not its default. The image sets
+# ENV PORT=9707, but exportarr's own default confmap sets `port: 8081`
+# (internal/config/config.go), and the two are one image rebuild away from
+# disagreeing. Stating it here makes the Service port, the ServiceMonitor
+# endpoint and the container agree by declaration rather than by coincidence.
+#
+# runAsUser has to be numeric here, and 1000 is a free choice rather than a
+# meaningful one. The image is gcr.io/distroless/static:nonroot with
+# `USER nonroot:nonroot` — a *name*, which the kubelet cannot resolve, so
+# `runAsNonRoot: true` alone is refused with "container has runAsNonRoot and
+# image has non-numeric user". Same trap ../platform/monitoring/
+# pve-exporter-deployment.yaml documents. Unlike that one, the uid does not
+# have to match anything: exportarr is a static binary with no volumes, no
+# writes and no files of its own to own, so it takes the house 1000:1000 and
+# the identity story stays uniform. fsGroup is left off for the same reason —
+# there is no volume for it to apply to.
+#
+# The URLs come from the media-urls ConfigMap rather than being written down a
+# fourth time. exportarr wants the variable called `URL`, which envFrom cannot
+# rename, so each container maps the one key it needs with a configMapKeyRef —
+# ./media-common/media-urls.yaml stays the only place a service address is
+# spelled out.
+#
+# No Ingress on purpose: /metrics is scraped in-cluster and exposing three
+# exporters through Traefik would publish every *arr's queue and library shape
+# behind nothing but Authelia, for no reader. The ServiceMonitors below are
+# chart-rendered (app-template 5.0.1 ships templates/classes/_serviceMonitor.tpl
+# and `serviceMonitor` is a top-level values key) so the Service selector and
+# the port name cannot drift from the Service they point at.
+#
+# `jobLabel: app.kubernetes.io/service` rather than the chart's
+# `app.kubernetes.io/name` default. That label is the release name, `exportarr`,
+# on all three Services, which would collapse the three targets into one `job`
+# and make `up{job=...}` useless for saying *which* exporter is down. The
+# service label is per-Service, so the jobs come out as `exportarr-sonarr`,
+# `exportarr-radarr` and `exportarr-prowlarr`.
+#
+# Every series exportarr emits also carries a constant `url` label holding the
+# *arr address above (helpers.go newDesc), which is why the rules file groups by
+# it: it is the only label that survives a `sum by (...)` and still names the
+# app when a metric is matched by regex across all three.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: exportarr
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          sonarr:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/onedr0p/exportarr
+                  # renovate: datasource=docker depName=ghcr.io/onedr0p/exportarr
+                  tag: "v2.3.0@sha256:af535d94061cf97a52e1661945ffba78c03f9443eae7c0da1a80a5a4be56b520"
+                # The app is a subcommand, not a flag: the entrypoint is
+                # `/tini -- /exportarr` with no default Cmd, and the
+                # subcommand is what sets both the metric prefix
+                # (`sonarr_*`, from cmd.Name()) and which collectors are
+                # registered. Get it wrong and the container exits with a
+                # usage message.
+                args: ["sonarr"]
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  PORT: "9707"
+                  URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SONARR_URL
+                  API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: SONARR_API_KEY
+                  # See the header. Without this the queue metric counts the
+                  # same filtered subset the WebUI shows by default, which is
+                  # the subset that hides blocked items.
+                  ENABLE_UNKNOWN_QUEUE_ITEMS: "true"
+                probes:
+                  # /healthz is a static handler registered on the same mux as
+                  # /metrics (root.go serveHttp) and does not touch Sonarr, so
+                  # a Sonarr outage does not restart its exporter — that is
+                  # what `sonarr_system_status == 0` is for.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 128Mi
+          radarr:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/onedr0p/exportarr
+                  # renovate: datasource=docker depName=ghcr.io/onedr0p/exportarr
+                  tag: "v2.3.0@sha256:af535d94061cf97a52e1661945ffba78c03f9443eae7c0da1a80a5a4be56b520"
+                args: ["radarr"]
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  PORT: "9707"
+                  URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: RADARR_URL
+                  API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: RADARR_API_KEY
+                  ENABLE_UNKNOWN_QUEUE_ITEMS: "true"
+                probes:
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 128Mi
+          prowlarr:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/onedr0p/exportarr
+                  # renovate: datasource=docker depName=ghcr.io/onedr0p/exportarr
+                  tag: "v2.3.0@sha256:af535d94061cf97a52e1661945ffba78c03f9443eae7c0da1a80a5a4be56b520"
+                args: ["prowlarr"]
+                # No ENABLE_UNKNOWN_QUEUE_ITEMS below: Prowlarr has no queue,
+                # and the flag is parsed but never used for this app.
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  PORT: "9707"
+                  URL:
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PROWLARR_URL
+                  API_KEY:
+                    valueFrom:
+                      secretKeyRef:
+                        name: arr-api-keys
+                        key: PROWLARR_API_KEY
+                probes:
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /healthz
+                    port: 9707
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                  limits:
+                    memory: 128Mi
+        # Three Services, so app-template appends the identifier to each name
+        # (`_determineResourceNameFromValues.tpl`) and they come out as
+        # exportarr-sonarr / exportarr-radarr / exportarr-prowlarr. Nothing
+        # outside this file dials them, so unlike ./deluge.yaml there is no
+        # forceRename to pin: the names are consumed only by the
+        # ServiceMonitors below, which resolve them through the same helper.
+        service:
+          sonarr:
+            controller: sonarr
+            ports:
+              http:
+                port: 9707
+          radarr:
+            controller: radarr
+            ports:
+              http:
+                port: 9707
+          prowlarr:
+            controller: prowlarr
+            ports:
+              http:
+                port: 9707
+        # 1m rather than the operator's 30s default: every scrape is several
+        # round trips into the *arr's API (queue, health, history, diskspace,
+        # rootfolder, plus the library walk), and none of these alerts has a
+        # `for:` under an hour. scrapeTimeout has to be stated because a
+        # timed-out scrape reads as `up == 0`, which is indistinguishable from
+        # the exporter being down; the default 10s is not enough for a library
+        # this size.
+        serviceMonitor:
+          sonarr:
+            service:
+              identifier: sonarr
+            jobLabel: app.kubernetes.io/service
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 1m
+                scrapeTimeout: 30s
+          radarr:
+            service:
+              identifier: radarr
+            jobLabel: app.kubernetes.io/service
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 1m
+                scrapeTimeout: 30s
+          prowlarr:
+            service:
+              identifier: prowlarr
+            jobLabel: app.kubernetes.io/service
+            endpoints:
+              - port: http
+                path: /metrics
+                interval: 1m
+                scrapeTimeout: 30s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

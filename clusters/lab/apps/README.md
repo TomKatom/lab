@@ -24,8 +24,8 @@ Phase 6 built this directory — see [`master-plan.md`](../../../master-plan.md)
 
 Every platform component gets its own namespace. This stack deliberately
 does not: `deluge`, `prowlarr`, `sonarr`, `radarr`, `bazarr`, `unpackerr`,
-`plex`, `seerr`, `tautulli`, `maintainerr`, `recyclarr` and `homepage`
-all land in a single `media` namespace.
+`plex`, `seerr`, `tautulli`, `maintainerr`, `recyclarr`, `homepage`,
+`exportarr` and `plex-exporter` all land in a single `media` namespace.
 
 The reason is the shared secrets, not laziness. `media-common` (wave 0,
 below) holds one copy each of `arr-api-keys` and `telegram`, consumed by
@@ -283,14 +283,28 @@ Shared, ksops-encrypted, created once by `media-common` (wave 0, ns
 - **Secret `telegram`** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, for
   Seerr's and Tautulli's notification agents (configured in-app; the
   Secret only holds the credential).
-- **Secret `tautulli-credentials`** — `PLEX_TOKEN`, `TAUTULLI_API_KEY`,
-  both consumed by `tautulli.yaml` as environment variables. Tautulli
-  reads `TAUTULLI_<SETTING>` ahead of its config.ini and refuses to save
-  that setting from the UI while the variable is set, which makes its
-  whole Plex connection declarable the way the *arrs' API keys are. Scoped
-  to Tautulli rather than shared as a `plex` Secret because it is the only
-  environment consumer of a Plex token — Seerr and Maintainerr
-  authenticate to Plex from their own databases.
+- **Secret `tautulli-credentials`** — `PLEX_TOKEN`, `TAUTULLI_API_KEY`.
+  `TAUTULLI_API_KEY` is Tautulli's alone; `PLEX_TOKEN` has **two**
+  consumers, `tautulli.yaml` and `plex-exporter.yaml`. Tautulli reads
+  `TAUTULLI_<SETTING>` ahead of its config.ini and refuses to save that
+  setting from the UI while the variable is set, which makes its whole
+  Plex connection declarable the way the *arrs' API keys are.
+
+  The name is now narrower than the contents, and that is a deliberate
+  trade. `PLEX_TOKEN` is not a Tautulli-scoped key — it is the Plex
+  server's own account token from `Preferences.xml`, and the exporter
+  signs the identical `X-Plex-Token` header with it. The file's own
+  header still says it lives here because Tautulli is its only
+  environment consumer; that sentence predates `plex-exporter.yaml` and
+  is stale (it cannot be corrected without re-encrypting the file, so fix
+  it the next time the file is opened with `sops`). A second encrypted
+  copy under a better name was rejected: it would be the same secret
+  written down twice, rotated in two places, behind a ksops generator
+  entry that takes the whole `media-common` overlay down until the file
+  exists. Promoting it to a shared `plex` Secret is a fine follow-up —
+  one that moves both consumers in the same commit. Seerr and Maintainerr
+  authenticate to Plex from their own databases and are not consumers
+  either way.
 - **ConfigMap `media-env`** — `TZ: Asia/Jerusalem`, one value, and every
   app that cares about time zone consumes the whole map via `envFrom`
   rather than naming the single key.
@@ -394,8 +408,11 @@ deferred to Phase 8.
   other app's Secret/ConfigMap consumption assumes it already exists.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `seerr`, `maintainerr`), together with `recyclarr-config`'s and
-  `homepage-config`'s own kustomize-source Applications.
+  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`), together with
+  `recyclarr-config`'s and `homepage-config`'s own kustomize-source
+  Applications. The two exporters share the wave with the apps they scrape
+  rather than trailing them: neither probes its target at startup, so a
+  target that is not up yet costs a failed scrape, not a crash loop.
 - **`recyclarr` and `homepage` charts — wave `"2"`**, one wave after their
   own `-config` overlays, so the ConfigMap each mounts already exists the
   moment the Pod starts.
@@ -471,7 +488,8 @@ on one of those six and the check quietly passes against **production**.
 kubectl -n argocd get applications
 # every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
 # flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
-# seerr, maintainerr, homepage(+-config), arr-settings(+-config)
+# seerr, maintainerr, homepage(+-config), arr-settings(+-config),
+# exportarr, plex-exporter
 
 kubectl -n media get pods
 ```
