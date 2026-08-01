@@ -65,6 +65,12 @@ hardening_sysctl_settings:
   net.ipv6.conf.all.accept_redirects: "0"
   fs.protected_hardlinks: "1"
   fs.protected_symlinks: "1"
+  # inotify limits — the k3s node runs many Go services (Grafana, Loki, Alloy,
+  # cert-manager, Traefik, the *arr stack…) that each open fsnotify watchers.
+  # The 128-instance default exhausts, and pods then log
+  # "failed to create fsnotify watcher: too many open files".
+  fs.inotify.max_user_instances: "1024"
+  fs.inotify.max_user_watches: "524288"
 
 # --- minimal-package posture ------------------------------------------
 hardening_purge_packages: []
