@@ -71,6 +71,16 @@ Two things about that are worth stating explicitly, because both are easy to
   or `alloy.yaml` as well would be harmless-looking and wrong — the
   convention across this directory is that exactly one Application owns a
   namespace's creation, so there is one place to look when it does not exist.
+- **The chart Application names a file the overlay produces.**
+  `kube-prometheus-stack.yaml` sets `grafana.ini`'s
+  `dashboards.default_home_dashboard_path` to
+  `/tmp/dashboards/lab-overview.json` — an on-disk path inside the Grafana
+  pod, which exists only because `monitoring/dashboard-lab-overview.yaml`
+  holds its JSON under the data key `lab-overview.json` and the dashboard
+  sidecar writes each key out under that name. It is the one coupling here
+  that crosses from the chart half to the config half, and it fails silently:
+  rename the key and Grafana just serves its built-in home page. See
+  [`docs/observability.md`](../../../docs/observability.md#the-three-dashboards).
 
 `ServerSideApply=true` on `kube-prometheus-stack.yaml` is not optional. The
 chart ships ~4.4 MB of CRDs across ten objects, six of them individually

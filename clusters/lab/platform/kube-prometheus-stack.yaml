@@ -260,6 +260,29 @@ spec:
           grafana.ini:
             server:
               root_url: https://grafana.tomkatom.com
+            # The landing page, so the first thing an operator sees is "is the
+            # lab OK" rather than Grafana's built-in getting-started page or a
+            # list of 27 dashboards.
+            #
+            # This is a PATH INSIDE THE POD, not a uid and not a title, and it
+            # is derived rather than guessed. `helm template` of this chart at
+            # 87.21.0 renders the dashboard sidecar with FOLDER=/tmp/dashboards
+            # and no UNIQUE_FILENAMES, and the sidecar writes each selected
+            # ConfigMap's data KEY out as a file of that exact name in that one
+            # flat directory (the rendered sidecarProvider also points at
+            # /tmp/dashboards with foldersFromFilesStructure: false, so there
+            # are no subdirectories to account for). ./monitoring/dashboard-lab-overview.yaml
+            # holds its JSON under the key `lab-overview.json`, so the file is
+            # /tmp/dashboards/lab-overview.json. Both halves of that path are a
+            # contract: change the sidecar's FOLDER or rename that data key and
+            # Grafana silently falls back to its built-in home dashboard with
+            # no error anywhere.
+            #
+            # Grafana opens this file per home-dashboard request rather than at
+            # boot, so the window between Grafana starting and the sidecar
+            # writing the file costs one fallback render, not a broken pod.
+            dashboards:
+              default_home_dashboard_path: /tmp/dashboards/lab-overview.json
             auth:
               disable_login_form: true
             auth.basic:

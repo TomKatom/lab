@@ -1,0 +1,969 @@
+# "Lab overview" — the home dashboard, and the only one written to answer a
+# single question: is the lab OK right now, without scrolling and without a
+# drill-down. Everything on it is a stat or a bar gauge with a threshold, so
+# the answer is a colour rather than a shape someone has to interpret.
+#
+# It exists because the ~27 dashboards Grafana currently carries do not answer
+# that. Twenty-five of them are kube-prometheus-stack's stock Kubernetes set,
+# written for large multi-tenant clusters — namespace pickers, per-workload
+# CPU breakdowns, API-server latency quantiles — and on a single-node lab they
+# are noise. The two hand-written ones beside this file are good, but both are
+# drill-down surfaces: they show a metric's history, which is the question you
+# ask *second*.
+#
+# Every threshold below is deliberately the threshold of the alert that covers
+# the same condition, so amber on this board and a Telegram message are the
+# same event and not two opinions: 0.80/0.90 from ZfsPoolCapacityHigh, 85% used
+# from PveHostFilesystemFillingUp's 15%-free, 21 days from
+# CertificateExpiringSoon, 8 days from MediaBackupStale, and any nonzero from
+# SmartDeviceUnhealthy, PveGuestNotRunning, DelugeTorrentsInError and
+# PlexVideoTranscodeSession. Changing one without the other is how a dashboard
+# starts disagreeing with the alerts.
+#
+# ⚠ THE ConfigMap DATA KEY IS LOAD-BEARING AND MUST STAY `lab-overview.json`.
+# The dashboard sidecar runs with FOLDER=/tmp/dashboards and no
+# UNIQUE_FILENAMES, so it writes each ConfigMap data key out as a file of that
+# exact name in that one flat directory — this dashboard lands at
+# /tmp/dashboards/lab-overview.json, and that literal path is what
+# ../kube-prometheus-stack.yaml's `dashboards.default_home_dashboard_path`
+# names. Rename the key and Grafana silently falls back to its built-in home
+# dashboard; nothing errors. (The flatness is also why the key must stay unique
+# across every dashboard ConfigMap in the cluster — two ConfigMaps sharing a key
+# name overwrite each other's file.)
+#
+# Three panels are shaped the way they are because of how the underlying series
+# behaves when nothing is happening, which is the failure mode this repo keeps
+# hitting:
+#
+#   Panel 8, "*arr backups", counts apps with a fresh backup rather than
+#     showing a backup age, and that is the whole point of it. The textfile
+#     collector in roles/node_exporter emits NO SERIES AT ALL for zero backups —
+#     deliberately, because a 0 sentinel makes `time() - metric` the entire Unix
+#     epoch. An age panel would therefore read "No data" for the case it exists
+#     to catch, or, with a naive `or vector(0)`, a perfectly fresh zero, which is
+#     the misleading direction. A count treats absence as absence: the app
+#     contributes nothing and the tile goes red on its own. The `of 2` is the
+#     role's node_exporter_backup_apps (sonarr, radarr), hard-coded here for the
+#     same reason rules-pve-host.yaml hard-codes one absent() clause per app.
+#     Adding an app there means bumping the green threshold here.
+#   Panel 5's Plex targets both end `or vector(0)`. The exporter does not create
+#     plex_sessions_count or either transcode series until the first session of
+#     its life, so a freshly-rolled exporter with nobody watching has neither.
+#   Panel 1 excludes Watchdog by name. It fires permanently by design as the
+#     heartbeat proving the alert path works, so counting it means this tile is
+#     never green and stops being read.
+#
+# The two job labels are a contract and are not interchangeable, which panels 2,
+# 3, 8, 9 and 10 all depend on: `job="pve-exporter"` is the in-cluster
+# prometheus-pve-exporter Deployment (Proxmox's API), while `job="pve-node"` is
+# the hypervisor's own node_exporter reached by ./scrapeconfig-pve-node.yaml.
+# Panel 10 additionally uses `job="node-exporter"`, the in-cluster DaemonSet
+# inside the k3s VM — three distinct jobs, and a host metric asked of the wrong
+# one matches nothing forever with no error anywhere.
+#
+# Panels 5 and 6 carry a fieldConfig override so that one of their two fields
+# turns red above zero while the other does not — a Plex session is normal and a
+# video transcode is a policy violation; a seeding torrent is the point and an
+# errored one is not. The override matches `byName` on the target's
+# legendFormat, which is what Grafana names the field for a single-series query.
+# If a legendFormat is ever edited, edit the matching override with it or the
+# colour silently stops applying.
+#
+# `grafana_dashboard: "1"` is what makes Grafana notice this at all, and the
+# VALUE matters as much as the key: the chart renders the sidecar with
+# LABEL_VALUE=1, so a bare `grafana_dashboard: ""` is not picked up. NAMESPACE
+# is ALL, which is why this may live in `monitoring` with the rest of the
+# overlay.
+#
+# No ServerSideApply annotation, unlike ./dashboard-node-exporter-full.yaml.
+# This JSON is 25 KiB against its 228 KiB, nowhere near the 262144-byte
+# last-applied-configuration cap that forces server-side apply there — even
+# after JSON-escaping inflates it into the annotation.
+#
+# The datasource is pinned by uid rather than left to resolve to the default,
+# for the reason ./dashboard-media.yaml gives: `uid: prometheus` is what
+# ../kube-prometheus-stack.yaml provisions, and a second default datasource
+# would quietly re-point anything that relies on resolution.
+#
+# `editable: false` and a pinned `uid`: edits made in the Grafana UI live only
+# until the sidecar reloads this ConfigMap, so making the panel look editable is
+# a way to lose work. Change it here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-lab-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-lab-overview
+data:
+  # Renaming this key breaks the home dashboard — see the header.
+  lab-overview.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": false,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [
+        {
+          "asDropdown": false,
+          "icon": "external link",
+          "includeVars": false,
+          "keepTime": false,
+          "tags": [],
+          "targetBlank": false,
+          "title": "Media stack",
+          "tooltip": "The *arrs, Plex and Deluge over time",
+          "type": "link",
+          "url": "/d/lab-media-stack/"
+        },
+        {
+          "asDropdown": false,
+          "icon": "external link",
+          "includeVars": false,
+          "keepTime": false,
+          "tags": [],
+          "targetBlank": false,
+          "title": "Node Exporter Full",
+          "tooltip": "Host and VM detail; pick the job in the dropdown",
+          "type": "link",
+          "url": "/d/rYdddlPWk/"
+        },
+        {
+          "asDropdown": false,
+          "icon": "doc",
+          "includeVars": false,
+          "keepTime": false,
+          "tags": [],
+          "targetBlank": false,
+          "title": "Explore",
+          "tooltip": "Ad-hoc PromQL and LogQL",
+          "type": "link",
+          "url": "/explore"
+        }
+      ],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "ALERTS is Prometheus' own synthetic series, so this counts what Alertmanager is actually being told — not what a rule file says. Watchdog is excluded because it fires permanently by design as the heartbeat that proves the alert path works. Anything above zero here means the answer to \"is the lab OK\" is no, and the alert's own annotations (Alerting -> Alert rules, or Telegram) carry the detail.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(ALERTS{alertstate=\"firing\", alertname!=\"Watchdog\", severity=\"critical\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "critical",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(ALERTS{alertstate=\"firing\", alertname!=\"Watchdog\", severity=\"warning\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "warning",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Alerts firing",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Two different \"not answering\" counts that happen to share a threshold. `up == 0` is every Prometheus target across every job. The guest count is the same join PveGuestNotRunning uses: pve_up carries only an `id` label (values like qemu/100), so template=\"0\" — which drops VM templates, stopped by definition — can only be applied by joining pve_guest_info on id.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(up == 0) or vector(0)",
+              "instant": true,
+              "legendFormat": "scrape targets",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(\n  (pve_up{job=\"pve-exporter\", id=~\"(qemu|lxc)/.+\"} == 0)\n  and on(id)\n  pve_guest_info{job=\"pve-exporter\", template=\"0\"}\n) or vector(0)",
+              "instant": true,
+              "legendFormat": "proxmox guests",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Down — scrape targets and Proxmox guests",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "smartmon_device_smart_healthy is 1 on PASSED/OK and 0 otherwise, from the packaged prometheus-node-exporter-collectors smartmon.sh on its 15-minute timer. It is NOT EMITTED AT ALL when smartctl cannot determine health, so a drive that has stopped answering SMART goes quiet rather than counting here — a zero on this tile means \"no device is reporting failure\", not \"every device was checked\".",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "id": 3,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(smartmon_device_smart_healthy{job=\"pve-node\"} == 0) or vector(0)",
+              "instant": true,
+              "legendFormat": "unhealthy",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "SMART — unhealthy devices",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Minimum time-to-expiry across every cert-manager Certificate. The `> 0` guard is not defensive noise: cert-manager emits a literal 0 for a Certificate that has never been issued, and without the guard that 0 minus time() is about minus fifty-six years and takes the minimum with it. Amber at 21 days is where CertificateExpiringSoon fires; cert-manager starts renewing at 30 days, so reaching amber means renewal has been failing for over a week. \"No data\" here means cert-manager's ServiceMonitor is not producing series at all.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 604800
+                  },
+                  {
+                    "color": "green",
+                    "value": 1814400
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "min(certmanager_certificate_expiration_timestamp_seconds > 0) - time()",
+              "instant": true,
+              "legendFormat": "soonest",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Certificates — soonest expiry",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "The transcode decision is encoded in the metric NAME, not in a label — this exporter has no decision label at all. Video transcoding is a violation of this lab's locked direct-play policy (there is no GPU in an E5-1650v4, so it is software libx264 on the cores the *arrs and Deluge are also using), which is why that field alone turns red above zero while a session count does not. Both end `or vector(0)`: the exporter does not create either series until the first session of its life, so a freshly-rolled exporter with nobody watching would otherwise read \"No data\" rather than an honest zero.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "video transcode"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 5
+          },
+          "id": 5,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(plex_sessions_count) or vector(0)",
+              "instant": true,
+              "legendFormat": "sessions",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(plex_video_transcode_sessions_count) or vector(0)",
+              "instant": true,
+              "legendFormat": "video transcode",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Plex — sessions and video transcodes",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "State values are lowercase in this exporter; state=\"Error\" matches nothing. Today this is roughly 390 seeding and 0 errored, so the floor really is zero — any error state is signal, not background noise. On a private tracker an errored torrent is a stalled seed and counts against ratio. If both fields read \"No data\", deluge_info is gone too and DelugeDown is the alert to look for.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "errored"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 5
+          },
+          "id": 6,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(deluge_torrents{state=\"seeding\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "seeding",
+              "range": false,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(deluge_torrents{state=\"error\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "errored",
+              "range": false,
+              "refId": "B"
+            }
+          ],
+          "title": "Deluge — seeding and errored",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Summed across Sonarr and Radarr, including the items the API hides by default (ENABLE_UNKNOWN_QUEUE_ITEMS). Deliberately NOT broken down by download_state: at the pinned exportarr v2.3.0 the queue collector emits one series per scrape holding the TOTAL, labelled with whichever record happened to be last, so any by(download_state) split would be fiction. A number that never comes down is the visible form of items that are not draining — the Media stack dashboard has the history.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 50
+                  },
+                  {
+                    "color": "red",
+                    "value": 100
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 5
+          },
+          "id": 7,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum({__name__=~\"(sonarr|radarr)_queue_total\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "queued",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "*arr — total queue items",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Counts apps whose newest backup archive is under 8 days old, out of the two the textfile collector walks (sonarr, radarr — the role's node_exporter_backup_apps). Deliberately a COUNT rather than an age: the collector emits no series at all for an app with zero backups, on purpose, so an age panel would read \"No data\" or — with a naive `or vector(0)` — a perfectly fresh zero, which is the misleading direction. Absence contributes nothing to this count and the tile goes red on its own. 8 days is MediaBackupStale's threshold: the schedule is weekly, so seven days is a healthy newest backup and the eighth is grace.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "green",
+                    "value": 2
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 5
+          },
+          "id": 8,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(\n  media_backup_newest_mtime_seconds{job=\"pve-node\"}\n  > time() - 8 * 86400\n) or vector(0)",
+              "instant": true,
+              "legendFormat": "fresh",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "*arr backups — apps with a fresh one",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "From roles/node_exporter's own textfile collector, not from node_exporter's zfs collector — /proc/spl/kstat/zfs carries pool state and I/O counters but no size or allocation at all, so capacity can only come from zpool(8). The label is `pool`, NOT `zpool` (node_zfs_zpool_state's) and NOT `zpool_name` (Debian's own zfs_zpool.sh). Thresholds match ZfsPoolCapacityHigh: ZFS degrades well before a pool is full, and free space cannot be reclaimed by deleting files once snapshots hold them.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "max": 1,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.8
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.9
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 0,
+            "y": 10
+          },
+          "id": 9,
+          "options": {
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "zfs_pool_capacity_ratio{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "{{pool}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "ZFS pool capacity",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Both roots on one tile, which is only possible because the two jobs are distinguishable: job=\"pve-node\" is the hypervisor's own node_exporter (via the ScrapeConfig) and job=\"node-exporter\" is the in-cluster DaemonSet inside the k3s VM, whose --path.rootfs=/host/root makes the VM's root appear as mountpoint=\"/\" here too. The fstype exclusion is copied verbatim from PveHostFilesystemFillingUp. Amber at 85 percent is that alert's 15-percent-free threshold, inverted. /tank is ZFS and is on the panel above instead.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "max": 1,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.85
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.95
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 12,
+            "x": 12,
+            "y": 10
+          },
+          "id": 10,
+          "options": {
+            "displayMode": "gradient",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "1 - (\n  node_filesystem_avail_bytes{job=~\"pve-node|node-exporter\", fstype!~\"tmpfs|devtmpfs|squashfs|overlay|ramfs|fuse.*\", mountpoint=\"/\"}\n  /\n  node_filesystem_size_bytes{job=~\"pve-node|node-exporter\", fstype!~\"tmpfs|devtmpfs|squashfs|overlay|ramfs|fuse.*\", mountpoint=\"/\"}\n)",
+              "instant": true,
+              "legendFormat": "{{job}} {{instance}} {{mountpoint}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Root filesystem usage",
+          "type": "bargauge"
+        },
+        {
+          "gridPos": {
+            "h": 4,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "id": 11,
+          "options": {
+            "code": {
+              "language": "plaintext",
+              "showLineNumbers": false,
+              "showMiniMap": false
+            },
+            "content": "**Green everywhere means the lab is fine.** This board is deliberately the whole answer — if nothing here is amber or red, stop reading.\n\nDrill down: [Media stack](/d/lab-media-stack/) · [Node Exporter Full](/d/rYdddlPWk/) · [Explore](/explore) · [Alert rules](/alerting/list)\n\nTiles read \"No data\" rather than zero when the exporter behind them emits no series at all; each panel's description says which case that is and which alert covers it.",
+            "mode": "markdown"
+          },
+          "title": "Where to go next",
+          "transparent": true,
+          "type": "text"
+        }
+      ],
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "tags": [
+        "lab",
+        "overview"
+      ],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Lab overview",
+      "uid": "lab-overview",
+      "version": 1,
+      "weekStart": ""
+    }
