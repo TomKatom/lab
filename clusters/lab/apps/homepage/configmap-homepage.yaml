@@ -17,10 +17,37 @@
 # authenticates with the credential of the app it polls and renders what
 # comes back to whoever is looking, so Sonarr's queue on an unauthenticated
 # page is a library inventory. The four *arr widgets left with the four *arr
-# tiles, and ../homepage.yaml consequently binds no `HOMEPAGE_VAR_*` at all:
-# nothing in this directory reads a Secret or a cluster-internal address any
-# more. Every `href:` is a public hostname, which is what the browser needs
-# regardless.
+# tiles, and nothing in this directory reads a Secret. Every `href:` is a
+# public hostname, which is what the browser needs regardless.
+#
+# ## `siteMonitor` is the one thing here that reads a cluster-internal address
+#
+# The two tiles carry a status dot, and what stands behind it is the
+# cluster-internal Service URL of each app, bound as `HOMEPAGE_VAR_*` in
+# ../homepage.yaml. That is a documented exception to the paragraph above
+# rather than a hole in it, on three counts:
+#
+#   1. **The address never reaches the browser.** `/api/siteMonitor` takes
+#      `groupName` and `serviceName` and resolves the target from the
+#      server-side config (`getServiceItem`, src/utils/config/
+#      service-helpers.js at the pinned v1.13.2). The client sends a group
+#      and a service name and gets back a status code and a latency; the URL
+#      is in neither the rendered page, the JS bundle, nor the response.
+#   2. **It carries no credential.** Both targets are endpoints that answer
+#      without a token — see the note on each below. A HEAD/GET with nothing
+#      attached is precisely what a widget is not.
+#   3. **One bit is what renders.** `statusStyle: dot` in settings.yaml
+#      drops the response-time text the default style would print, so the
+#      page shows reachable/not and nothing further.
+#
+# Pointing these at the public names instead was the other option and buys
+# less than it looks. It would exercise Traefik and the wildcard cert, but a
+# Traefik that cannot serve Seerr cannot serve this page either, so nobody
+# would be looking at the dot it turned red. It would also make the check
+# depend on hairpin NAT through the host's single-IP DNAT
+# (ansible/roles/network_nat) folding the public IP back into the cluster —
+# live behaviour no CI job here can verify, whose failure mode is a
+# permanent false "down" on the public front page.
 #
 # ## The look
 #
@@ -63,6 +90,14 @@ data:
     disableIndexing: true
     disableCollapse: true
     useEqualHeights: true
+    # Set once here rather than per service in services.yaml: it is a
+    # property of this page (a viewer wants reachable/not, not a latency
+    # readout) rather than of any one tile, and it then applies to whatever
+    # is added later without being remembered. The default style would
+    # print the response time in milliseconds on success and the HTTP
+    # status code on failure — operator numbers on a page written for
+    # people who watch films.
+    statusStyle: dot
     # Keyed by the group names in services.yaml and bookmarks.yaml below.
     # Naming a group here also moves it into homepage's `#layout-groups`
     # container and fixes the render order to this key order, so the two
@@ -77,15 +112,38 @@ data:
 
   services.yaml: |
     ---
+    # `href` and `siteMonitor` deliberately disagree on both tiles, and the
+    # split is the point: `href` is where the browser should be sent, and
+    # `siteMonitor` is the thing whose health actually answers the viewer's
+    # question. The header above covers why the latter is allowed to be a
+    # cluster-internal address.
     - Start here:
         - Plex:
             icon: plex.png
             href: https://app.plex.tv
             description: Everything in the library, ready to play
+            # app.plex.tv is Plex's cloud, not this box — a dot on it would
+            # report Plex Inc.'s uptime and say nothing about whether the
+            # library plays tonight. There is also no local name to probe
+            # instead: Plex is the one app in the stack with no Ingress
+            # (../plex.yaml), reached directly on 32400 via the host's DNAT,
+            # so the public path has no HTTP endpoint of its own to check.
+            #
+            # `/identity` and not `/`: it is one of the few routes Plex
+            # answers without a token, returning 200 and the machine
+            # identifier. `/` without a token returns 401 — and site-monitor
+            # .jsx counts anything ≤ 403 as up, so a probe on `/` would sit
+            # green through every failure that still leaves the port open.
+            siteMonitor: "http://{{HOMEPAGE_VAR_PLEX_HOST}}:{{HOMEPAGE_VAR_PLEX_PORT}}/identity"
         - Requests:
             icon: seerr.png
             href: https://requests.tomkatom.com
             description: Ask for a film or series — sign in with Plex
+            # The same route ../seerr.yaml points its own readiness probe
+            # at, and for the same reason: public by design, no token, and
+            # it answers from the app rather than from a static file, so a
+            # 200 means Seerr is actually serving.
+            siteMonitor: "{{HOMEPAGE_VAR_SEERR_URL}}/api/v1/settings/public"
 
   widgets.yaml: |
     ---

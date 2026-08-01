@@ -10,9 +10,11 @@
 # ./README.md "Sync waves within apps/").
 #
 # It never mounts /data (./README.md "The /data mount") and, since the *arr
-# widgets left with the *arr tiles, it no longer reads a Secret or a
-# cluster-internal address either — there is not one `HOMEPAGE_VAR_*` left
-# in this file.
+# widgets left with the *arr tiles, it reads no Secret at all. The three
+# `HOMEPAGE_VAR_*` below are the only cluster-internal addresses it holds:
+# they feed the `siteMonitor` status dot on the two tiles, and
+# ./homepage/configmap-homepage.yaml carries the argument for why a public
+# page is allowed to resolve them server-side.
 #
 # ## The apex, and the two things that follow from it
 #
@@ -151,6 +153,37 @@ spec:
                   #   page and 400s every /api/* call behind it.
                   - name: HOMEPAGE_ALLOWED_HOSTS
                     value: "$(MY_POD_IP):3000,tomkatom.com,www.tomkatom.com"
+                  # The `siteMonitor` targets, substituted into
+                  # services.yaml as `{{HOMEPAGE_VAR_*}}` — homepage runs
+                  # substituteEnvironmentVars over the raw file before
+                  # parsing it (servicesFromConfig, src/utils/config/
+                  # service-helpers.js), so these are read at page load
+                  # rather than at container start.
+                  #
+                  # Taken per key from `media-urls` rather than written out
+                  # here, because that map is where this stack keeps every
+                  # cluster-internal address and it is a contract nothing
+                  # validates: a Service rename that missed a second copy
+                  # in this file would show as a red dot on the front page
+                  # and nowhere else. Plex is split across two keys because
+                  # media-urls holds it that way for Tautulli's sake — the
+                  # joined form is composed in services.yaml, which is what
+                  # that file's own comment says to do.
+                  - name: HOMEPAGE_VAR_PLEX_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_HOST
+                  - name: HOMEPAGE_VAR_PLEX_PORT
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: PLEX_PORT
+                  - name: HOMEPAGE_VAR_SEERR_URL
+                    valueFrom:
+                      configMapKeyRef:
+                        name: media-urls
+                        key: SEERR_URL
                 envFrom:
                   - configMapRef:
                       name: media-env
