@@ -99,6 +99,14 @@ variable "vm_data_disk_size_gb" {
   default     = 150
 }
 
+# Sized to sit far outside vm_data_disk_size_gb's 140-170 GB detection window
+# in roles/k3s — see the scsi2 comment in vm-k3s.tf before changing it.
+variable "vm_ephemeral_disk_size_gb" {
+  description = "Ephemeral disk (scsi2) size in GB, for unbacked monitoring PVs."
+  type        = number
+  default     = 40
+}
+
 # --- Runner VM ---------------------------------------------------------------
 
 variable "runner_vm_name" {

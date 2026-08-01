@@ -87,8 +87,16 @@
 # place once the ConfigMap exists; the ruler re-polls its directory on its own
 # and picks the rules up.
 #
-# Storage: a 10Gi PVC with no storageClassName, so the cluster default
-# (local-path) applies and this manifest is not pinned to today's storage layer.
+# Storage: a 10Gi PVC pinned to `local-path-ephemeral`, not left on the
+# cluster default. Logs are reproducible telemetry that churns daily, and that
+# StorageClass (clusters/lab/platform/local-path-ephemeral.yaml) puts them on
+# the scsi2 disk carrying `backup = false` — outside the nightly PBS backup of
+# this VM, which is block-level and cannot exclude a path. Drop the line and
+# 30 days of logs quietly rejoin the backup set, where keep-monthly 6 holds
+# those chunks in B2 for half a year. The chart spells the key
+# `singleBinary.persistence.storageClass`, not `storageClassName`; it renders
+# into the StatefulSet's volumeClaimTemplate, so it does not migrate an
+# existing PVC — the cutover recreates it empty.
 # 720h (30 days) of retention with the compactor actually enforcing it —
 # `retention_period` on its own only marks data expired; without
 # `compactor.retention_enabled` nothing ever deletes a chunk and the PVC fills.
@@ -159,6 +167,8 @@ spec:
           persistence:
             enabled: true
             size: 10Gi
+            # NOT the cluster default — see the header.
+            storageClass: local-path-ephemeral
           resources:
             requests:
               cpu: 100m

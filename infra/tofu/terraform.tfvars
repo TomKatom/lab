@@ -33,13 +33,14 @@ node_name            = "server" # `pvesh get /nodes` on the host, or hostname -s
 
 # --- VM identity + sizing -----------------------------------------------------
 
-vm_name              = "k3s-node"
-vm_id                = 9000
-vm_cores             = 8
-vm_cpu_type          = "host"
-vm_memory_mb         = 32768
-vm_disk_size_gb      = 64
-vm_data_disk_size_gb = 150
+vm_name                   = "k3s-node"
+vm_id                     = 9000
+vm_cores                  = 8
+vm_cpu_type               = "host"
+vm_memory_mb              = 32768
+vm_disk_size_gb           = 64
+vm_data_disk_size_gb      = 150
+vm_ephemeral_disk_size_gb = 40 # unbacked (backup=false); keep outside 140-170
 
 # --- Runner VM ---------------------------------------------------------------
 

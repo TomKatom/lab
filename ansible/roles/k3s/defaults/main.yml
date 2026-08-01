@@ -5,17 +5,56 @@
 # renovate: datasource=github-releases depName=k3s-io/k3s
 k3s_version: "v1.36.2+k3s1"
 
-# Device letters (sda/sdb) are not guaranteed stable on this VM's
+# Device letters (sda/sdb/sdc) are not guaranteed stable on this VM's
 # virtio-scsi controller — on the real VM /dev/sdb turned out to be the
-# root disk, not the 150GB data disk. Leave this empty (default) to
-# auto-detect the data disk at runtime (not the root disk, size within the
-# window below); set explicitly only to force a specific device.
+# root disk, not the 150GB data disk. Leave these empty (default) to
+# auto-detect each disk at runtime (not the root disk, size within its
+# window below); set one explicitly only to force a specific device.
 k3s_data_disk_device: ""
 k3s_data_disk_min_size_gb: 140
 k3s_data_disk_max_size_gb: 170
 k3s_data_disk_fstype: ext4
 k3s_storage_mount_path: /var/lib/rancher/k3s/storage
 k3s_data_disk_mount_opts: defaults
+
+# scsi2 — the unbacked disk (Tofu `backup = false`) behind the
+# local-path-ephemeral StorageClass, which holds the Prometheus/Alertmanager/
+# Loki PVCs. Keeping churny TSDB off scsi1 is what keeps it out of the PBS
+# datastore, since a block-level vzdump cannot exclude a path.
+#
+# The 30-50 GB window must never overlap the 140-170 GB one above:
+# auto-detection tells the two disks apart by size and nothing else, and
+# disk.yml asserts the windows are disjoint before either is touched.
+k3s_ephemeral_disk_device: ""
+k3s_ephemeral_disk_min_size_gb: 30
+k3s_ephemeral_disk_max_size_gb: 50
+k3s_ephemeral_disk_fstype: ext4
+# local-path-ephemeral's nodePathMap points here — keep the two in step with
+# clusters/lab/platform/local-path-ephemeral/configmap.yaml.
+k3s_ephemeral_mount_path: /var/lib/rancher/k3s/ephemeral
+k3s_ephemeral_disk_mount_opts: defaults
+
+# The set disk.yml iterates. `override_var` is the name of the variable a
+# reader should set to pin that disk's device, quoted back at them in the
+# assert's failure message — the assert has no other way to say which of the
+# two knobs to reach for.
+k3s_disks:
+  - name: data
+    device_override: "{{ k3s_data_disk_device }}"
+    override_var: k3s_data_disk_device
+    min_size_gb: "{{ k3s_data_disk_min_size_gb }}"
+    max_size_gb: "{{ k3s_data_disk_max_size_gb }}"
+    fstype: "{{ k3s_data_disk_fstype }}"
+    mount_path: "{{ k3s_storage_mount_path }}"
+    mount_opts: "{{ k3s_data_disk_mount_opts }}"
+  - name: ephemeral
+    device_override: "{{ k3s_ephemeral_disk_device }}"
+    override_var: k3s_ephemeral_disk_device
+    min_size_gb: "{{ k3s_ephemeral_disk_min_size_gb }}"
+    max_size_gb: "{{ k3s_ephemeral_disk_max_size_gb }}"
+    fstype: "{{ k3s_ephemeral_disk_fstype }}"
+    mount_path: "{{ k3s_ephemeral_mount_path }}"
+    mount_opts: "{{ k3s_ephemeral_disk_mount_opts }}"
 
 k3s_config_dir: /etc/rancher/k3s
 k3s_disable_components:
