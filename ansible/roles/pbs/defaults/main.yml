@@ -115,10 +115,14 @@ pbs_notify_severities:
   - error
 
 # --- PVE side ---------------------------------------------------------------
-# The PVE storage entry PR 3's backup job will target. 127.0.0.1 because PBS
-# runs on this same host; the connection is still TLS and still pinned by
-# certificate fingerprint, so the hostname it resolves to is irrelevant.
-pbs_pve_storage_id: pbs
+# The PVE storage entry infra/tofu/backup.tf's nightly vzdump job targets.
+# The id itself comes from config/lab.yml (loaded by
+# playbooks/proxmox-host.yml, same as `ports` above) because Tofu names the
+# same string and nothing validates the two against each other — see the
+# comment beside it there. 127.0.0.1 because PBS runs on this same host; the
+# connection is still TLS and still pinned by certificate fingerprint, so the
+# hostname it resolves to is irrelevant.
+pbs_pve_storage_id: "{{ pbs.storage_id }}"
 pbs_pve_storage_server: 127.0.0.1
 
 # PVE authenticates to PBS as its own PBS-realm user, not root@pam: the
