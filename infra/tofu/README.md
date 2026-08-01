@@ -23,6 +23,7 @@ Facts shared with the other IaC layers (domain, subnet, ports) live in
 | `storage.tf` | Downloads the Debian 13 cloud image into the `import` datastore. |
 | `vm-k3s.tf` | The `k3s-node` VM: sizing, OS + data disks, cloud-init. |
 | `firewall.tf` | Cluster/node/VM Proxmox filter firewall, anti-lockout toggle. |
+| `backup.tf` | The nightly `vzdump` job into PBS. The datastore it writes to is `ansible/roles/pbs`. |
 | `cloudflare.tf` | Apex/wildcard/vpn `A` records, grey-cloud. |
 | `variables.tf` / `outputs.tf` | Full variable surface; non-sensitive outputs for Phase 3 Ansible. |
 | `terraform.tfvars` | Committed, non-secret environment values (`CHANGE_ME` placeholders). |
