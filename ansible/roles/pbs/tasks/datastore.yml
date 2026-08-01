@@ -1,0 +1,186 @@
+---
+# The S3 endpoint, the datastore that uses it, and the prune/verify jobs that
+# keep it bounded and prove it is restorable.
+#
+# Every object below is reconciled the same way: read the current config as
+# JSON, compare the fields PBS will report back, and create or update only on
+# a difference. The one field that can never be compared is the S3 secret
+# key — PBS does not return it — so it is written on create, and afterwards
+# only when the access key changes with it (B2 issues both halves together,
+# so a rotated key always changes both) or pbs_rotate_secrets forces it.
+#
+# If a field name below turns out not to match what this PBS version reports,
+# the symptom is a converge that reports "changed" on every run rather than
+# anything incorrect. Converging twice and expecting the second run to be
+# clean is the check for that, and it is in the PR's post-merge list.
+
+- name: Read the configured S3 endpoints
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager s3 endpoint list --output-format json
+  register: pbs_s3_endpoint_list
+  changed_when: false
+
+- name: Select this datastore's S3 endpoint from the list
+  ansible.builtin.set_fact:
+    pbs_s3_endpoint_current: >-
+      {{ (pbs_s3_endpoint_list.stdout | from_json
+        | selectattr('id', 'equalto', pbs_s3_endpoint_id)
+        | list | first) | default({}, true) }}
+
+- name: Decide whether the S3 endpoint needs writing
+  # provider-quirks is normalised through [x] | flatten | join(',') so the
+  # comparison holds whether PBS reports it as a string or as a list.
+  ansible.builtin.set_fact:
+    pbs_s3_endpoint_needs_write: >-
+      {{ not pbs_s3_endpoint_current
+        or pbs_s3_endpoint_current.endpoint | default('') != pbs_s3_endpoint_url
+        or pbs_s3_endpoint_current.region | default('') != pbs_s3_region
+        or pbs_s3_endpoint_current['access-key'] | default('') != pbs_s3_access_key
+        or (pbs_s3_endpoint_current['path-style'] | default(false) | bool) != (pbs_s3_path_style | bool)
+        or ([pbs_s3_endpoint_current['provider-quirks'] | default('')] | flatten | join(','))
+           != pbs_s3_provider_quirks
+        or pbs_rotate_secrets | bool }}
+  no_log: true
+
+- name: Create the S3 endpoint
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager s3 endpoint create {{ pbs_s3_endpoint_id }}
+      {{ pbs_s3_endpoint_args }}
+  when:
+    - pbs_s3_endpoint_needs_write | bool
+    - not pbs_s3_endpoint_current
+  changed_when: true
+  no_log: true
+
+- name: Update the S3 endpoint
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager s3 endpoint update {{ pbs_s3_endpoint_id }}
+      {{ pbs_s3_endpoint_args }}
+  when:
+    - pbs_s3_endpoint_needs_write | bool
+    - pbs_s3_endpoint_current | length > 0
+  changed_when: true
+  no_log: true
+
+- name: Read the configured datastores
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager datastore list --output-format json
+  register: pbs_datastore_list
+  changed_when: false
+
+- name: Select this datastore from the list
+  ansible.builtin.set_fact:
+    pbs_datastore_current: >-
+      {{ (pbs_datastore_list.stdout | from_json
+        | selectattr('name', 'equalto', pbs_datastore)
+        | list | first) | default({}, true) }}
+
+- name: Create the S3-backed datastore
+  # This is the task that actually talks to B2: it creates the bucket layout,
+  # writes the .inuse marker and fails loudly on a wrong key, wrong region or
+  # a bucket with Object Lock enabled. Expect it to take a few seconds.
+  #
+  # notification-mode is set explicitly rather than left to the default
+  # because the whole point of tasks/notifications.yml is that failures
+  # reach Telegram; on legacy-sendmail they would go to root's mailbox on a
+  # host with no MTA to speak of.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager datastore create {{ pbs_datastore }} {{ pbs_cache_mountpoint }}
+      --backend type=s3,client={{ pbs_s3_endpoint_id }},bucket={{ pbs_s3_bucket }}
+      --gc-schedule {{ pbs_gc_schedule | quote }}
+      --notification-mode notification-system
+      --comment {{ pbs_datastore_comment | quote }}
+  when: not pbs_datastore_current
+  changed_when: true
+
+- name: Reconcile the datastore's garbage-collection schedule
+  # Split out from create because it is the setting most likely to be
+  # changed later (GC on S3 costs API calls, so its cadence is a cost dial)
+  # and the one whose absence is silent: with no schedule, pruned chunks are
+  # never deleted from the bucket and the bill grows without any failure.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager datastore update {{ pbs_datastore }}
+      --gc-schedule {{ pbs_gc_schedule | quote }}
+  when:
+    - pbs_datastore_current | length > 0
+    - pbs_datastore_current['gc-schedule'] | default('') != pbs_gc_schedule
+  changed_when: true
+
+- name: Read the configured prune jobs
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager prune-job list --output-format json
+  register: pbs_prune_job_list
+  changed_when: false
+
+- name: Select this datastore's prune job from the list
+  ansible.builtin.set_fact:
+    pbs_prune_job_current: >-
+      {{ (pbs_prune_job_list.stdout | from_json
+        | selectattr('id', 'equalto', pbs_prune_job_id)
+        | list | first) | default({}, true) }}
+
+- name: Create the prune job
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager prune-job create {{ pbs_prune_job_id }}
+      --store {{ pbs_datastore }} {{ pbs_prune_job_args }}
+  when: not pbs_prune_job_current
+  changed_when: true
+
+- name: Update the prune job
+  # Retention lives here and nowhere else. A vzdump job with its own
+  # prune-backups would be a second, silently competing copy of these
+  # numbers — see pbs_pve_acl_role in defaults/main.yml.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager prune-job update {{ pbs_prune_job_id }}
+      {{ pbs_prune_job_args }}
+  when:
+    - pbs_prune_job_current | length > 0
+    - >-
+      pbs_prune_job_current.schedule | default('') != pbs_prune_schedule
+      or (pbs_prune_keep | dict2items
+          | difference(pbs_prune_job_current | dict2items) | length > 0)
+  changed_when: true
+
+- name: Read the configured verify jobs
+  ansible.builtin.command:
+    cmd: proxmox-backup-manager verify-job list --output-format json
+  register: pbs_verify_job_list
+  changed_when: false
+
+- name: Select this datastore's verify job from the list
+  ansible.builtin.set_fact:
+    pbs_verify_job_current: >-
+      {{ (pbs_verify_job_list.stdout | from_json
+        | selectattr('id', 'equalto', pbs_verify_job_id)
+        | list | first) | default({}, true) }}
+
+- name: Create the verify job
+  # Verification is what separates a backup from a directory of files nobody
+  # has read: it re-reads every chunk from B2 and checks it against its
+  # digest. ignore-verified + outdated-after is what keeps that affordable —
+  # see the note on pbs_verify_schedule in defaults/main.yml.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager verify-job create {{ pbs_verify_job_id }}
+      --store {{ pbs_datastore }} {{ pbs_verify_job_args }}
+  when: not pbs_verify_job_current
+  changed_when: true
+
+- name: Update the verify job
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-manager verify-job update {{ pbs_verify_job_id }}
+      {{ pbs_verify_job_args }}
+  when:
+    - pbs_verify_job_current | length > 0
+    - >-
+      pbs_verify_job_current.schedule | default('') != pbs_verify_schedule
+      or not (pbs_verify_job_current['ignore-verified'] | default(false) | bool)
+      or pbs_verify_job_current['outdated-after'] | default(0) | int != pbs_verify_outdated_after
+  changed_when: true

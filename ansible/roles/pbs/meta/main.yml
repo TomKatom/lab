@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: pbs
+  author: tomkatom
+  description: Proxmox Backup Server on the Proxmox host, with a Backblaze B2-backed datastore, a dedicated ZFS chunk cache, prune/verify/GC schedules, a Telegram webhook notifier and the PVE storage entry that targets it
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

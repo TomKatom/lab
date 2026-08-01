@@ -1,0 +1,70 @@
+---
+# The S3 datastore's local persistent cache.
+#
+# PBS requires one, and it has to be a path of its own: it refuses a
+# directory that is already a datastore, and it writes and evicts chunks
+# there continuously, so anything sharing the filesystem is competing with
+# it for space. A dedicated dataset with an explicit quota gives both — the
+# cache cannot grow into the pool, and nothing else can grow into the cache.
+#
+# Deliberately NOT snapshotted: PR 5's sanoid config must exclude this
+# dataset. Snapshots of a chunk cache hold dead chunks on the pool for the
+# whole retention window and protect nothing — every byte here is a copy of
+# something already in B2.
+
+- name: Read the free space on the cache pool
+  ansible.builtin.command:
+    cmd: zpool list -Hp -o free {{ pbs_cache_pool }}
+  register: pbs_cache_pool_free
+  changed_when: false
+
+- name: Assert the pool has room for the cache quota twice over
+  # The quota is a guess until this runs: it was sized against a free-space
+  # figure that was inferred from a percentage, not measured. Requiring 2x
+  # headroom means the guess being wrong stops the play instead of filling
+  # rpool — which on this host is the root filesystem and both VM disks.
+  ansible.builtin.assert:
+    that:
+      - pbs_cache_pool_free.stdout | int > (pbs_cache_quota | human_to_bytes) * 2
+    fail_msg: >-
+      {{ pbs_cache_pool }} has {{ (pbs_cache_pool_free.stdout | int / 1024**3) | round(1) }} GiB
+      free, which is not twice the {{ pbs_cache_quota }} cache quota. Lower
+      pbs_cache_quota (the PBS docs recommend 64-128 GiB, and a smaller cache
+      costs read performance on restore, never correctness) or free space on
+      the pool first.
+    success_msg: >-
+      {{ pbs_cache_pool }} has {{ (pbs_cache_pool_free.stdout | int / 1024**3) | round(1) }} GiB
+      free for a {{ pbs_cache_quota }} cache.
+
+- name: Ensure the PBS cache dataset exists with its quota and mountpoint
+  community.general.zfs:
+    name: "{{ pbs_cache_dataset }}"
+    state: present
+    extra_zfs_properties:
+      mountpoint: "{{ pbs_cache_mountpoint }}"
+      quota: "{{ pbs_cache_quota }}"
+
+- name: Read back the cache dataset's quota and mountpoint
+  # -p (parsable) so the quota comes back in bytes: `zfs get quota` renders
+  # "64G", which compares equal to the default only by luck of spelling, and
+  # would silently pass if someone wrote 64GiB or 65536M.
+  ansible.builtin.command:
+    cmd: zfs get -Hp -o value quota,mountpoint {{ pbs_cache_dataset }}
+  register: pbs_cache_properties
+  changed_when: false
+
+- name: Assert the cache dataset's quota and mountpoint took effect
+  # An inherited-default quota of 0 (unlimited) is the failure this catches:
+  # the dataset exists, PBS is happy, and the cache grows until rpool is
+  # full months later.
+  ansible.builtin.assert:
+    that:
+      - pbs_cache_properties.stdout_lines[0] | int == pbs_cache_quota | human_to_bytes
+      - pbs_cache_properties.stdout_lines[1] == pbs_cache_mountpoint
+    fail_msg: >-
+      {{ pbs_cache_dataset }} reports quota={{ pbs_cache_properties.stdout_lines[0] }} bytes
+      and mountpoint={{ pbs_cache_properties.stdout_lines[1] }}, expected
+      {{ pbs_cache_quota | human_to_bytes }} bytes at {{ pbs_cache_mountpoint }}.
+    success_msg: >-
+      {{ pbs_cache_dataset }} is mounted at {{ pbs_cache_mountpoint }} with a
+      {{ pbs_cache_quota }} quota.

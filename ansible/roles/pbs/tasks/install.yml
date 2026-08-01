@@ -1,0 +1,75 @@
+---
+# Package install. The apt source itself is roles/pve_repos' job (it runs
+# first in playbooks/proxmox-host.yml, and every apt source on this host is
+# declared there).
+
+- name: Refresh the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Simulate the Proxmox Backup Server install  # noqa: command-instead-of-module
+  # The noqa is the point of the task, not a shortcut around the rule: the
+  # apt module has no dry-run that reports the solver's decisions, so there
+  # is no module form of "solve the dependency graph and tell me what you
+  # would remove". Everything that actually changes the system below uses
+  # the module.
+  #
+  # proxmox-backup-server and pve-manager share proxmox-widget-toolkit and
+  # several other proxmox-* packages. Installing both on one host is
+  # supported and they are built for the same Debian release here, but a
+  # dependency solution that *removes* a PVE package would take the
+  # hypervisor's UI or its storage stack down as a side effect of adding
+  # backups — on a server with no IPMI and no console. So: solve the
+  # dependency graph first, refuse if it wants to remove anything, and only
+  # then install for real. apt-get --simulate changes nothing on disk.
+  ansible.builtin.command:
+    cmd: apt-get --simulate --quiet=2 install {{ pbs_packages | join(' ') }}
+  register: pbs_install_simulation
+  changed_when: false
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Assert installing PBS would not remove any package
+  ansible.builtin.assert:
+    that:
+      - pbs_install_simulation.stdout_lines | select('match', '^Remv ') | list | length == 0
+    fail_msg: >-
+      Installing {{ pbs_packages | join(', ') }} would REMOVE:
+      {{ pbs_install_simulation.stdout_lines | select('match', '^Remv ') | list | join('; ') }}.
+      Refusing to converge — on this host that is very likely the PVE stack.
+      Resolve the conflict by hand before re-running (see the role header).
+    success_msg: Proxmox Backup Server installs without removing any package.
+
+- name: Install Proxmox Backup Server
+  # state: present, not latest, and roles/hardening's unattended-upgrades
+  # blacklist already covers `proxmox-*` — so this package is patched by a
+  # deliberate `apt upgrade` on the host and by nothing else, exactly like
+  # the rest of the Proxmox stack it shares libraries with. That is the
+  # existing policy on this host, not a new exception: an unattended upgrade
+  # swapping a proxmox component under a running hypervisor is the failure
+  # that policy exists to prevent, and PBS is now one of those components.
+  ansible.builtin.apt:
+    name: "{{ pbs_packages }}"
+    state: present
+
+- name: Enable and start the PBS services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ pbs_services }}"
+
+- name: Wait for the PBS API to answer
+  # Every task after this one talks to that API. Without the wait, the first
+  # converge races the proxy's startup and fails on a connection refused
+  # that looks like a configuration error.
+  #
+  # The proxy binds a wildcard address, exactly as pveproxy on 8006 does;
+  # what keeps 8007 off the public uplink is the Proxmox firewall rule that
+  # config/lab.yml's ports.pbs_api feeds into infra/tofu's node_mgmt_rules,
+  # where it is reachable from the internal and WireGuard subnets only.
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ ports.pbs_api }}"
+    timeout: 120

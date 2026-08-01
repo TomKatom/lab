@@ -1,0 +1,84 @@
+---
+# Proxmox Backup Server on the hypervisor itself, backed by a Backblaze B2
+# bucket. This role brings up the *destination* only — after it converges
+# nothing is being backed up yet; infra/tofu/backup.tf (PR 3) creates the job
+# that writes to it.
+#
+# WHY PBS RUNS ON THE PVE HOST. The Proxmox docs advise against it, and the
+# reason they give is a shared failure domain: lose the hypervisor, lose the
+# backups with it. That reason does not apply here, because the copy that
+# matters is in B2 and the local cache holds no authoritative data. There is
+# exactly one machine, so the alternative is a VM on the same machine — the
+# same failure domain, plus a guest OS to patch.
+#
+# WHY THE PVE STORAGE ENTRY IS ANSIBLE AND NOT TOFU. bpg does ship
+# proxmox_virtual_environment_storage_pbs / proxmox_storage_pbs, and on the
+# face of it this belongs in infra/tofu with the rest of the PVE
+# configuration. It needs the PBS API certificate's fingerprint, which does
+# not exist until PBS has been installed and has generated its self-signed
+# certificate — so a Tofu resource would need a value produced by a later
+# layer, which is Phase 7's #84 ordering knot all over again for no gain.
+# Ansible installs PBS and reads the fingerprint in the same run
+# (`proxmox-backup-manager cert info`), so there is no knot. If someone moves
+# this to Tofu later, this is the problem they have to solve first.
+#
+# THREE CONSTRAINTS THAT SHAPED THIS ROLE, all of them non-obvious:
+#   1. PBS does not support S3 Object Lock or bucket versioning, and turning
+#      either on can corrupt the datastore — garbage collection has to be
+#      free to delete chunks. Immutability is therefore off the table, and
+#      the protections that replace it are a bucket-scoped application key
+#      (never the B2 master key) and the local ZFS snapshot tier (PR 5).
+#      This is an accepted risk, recorded, not an oversight.
+#   2. An S3 datastore needs a local persistent cache on a path of its own —
+#      see tasks/cache.yml.
+#   3. Secrets that PBS never reveals again cannot be diffed, so they are
+#      written on create and thereafter only when pbs_rotate_secrets is
+#      true for one converge. Rotating a B2 key or the PBS user password
+#      means: update the SOPS value, converge once with
+#      `-e pbs_rotate_secrets=true`, converge again without it.
+#
+# ROLLBACK. `apt remove --purge proxmox-backup-server` plus
+# `pvesm remove {{ pbs_pve_storage_id }}` and `zfs destroy` of the cache
+# dataset returns the host to its pre-role state. Nothing in the B2 bucket is
+# touched by any of that, which is the point: a rebuilt PBS reattaches the
+# same datastore with --reuse-datastore.
+
+- name: Assert the operator-supplied PBS configuration is present
+  # Fails before anything is installed rather than half way through, and
+  # names the file each missing value belongs in. `quiet` because a failing
+  # assert prints the expressions it evaluated, and there is no reason to
+  # print the names of six secrets on a wide terminal to say one is empty.
+  ansible.builtin.assert:
+    that:
+      - pbs_s3_bucket | default('') | length > 0
+      - pbs_s3_region | default('') | length > 0
+      - pbs_s3_access_key | default('') | length > 0
+      - pbs_s3_secret_key | default('') | length > 0
+      - pbs_encryption_key | default('') | length > 0
+      - pbs_pve_storage_password | default('') | length > 0
+      - pbs_notify_telegram_bot_token | default('') | length > 0
+      - pbs_notify_telegram_chat_id | default('') | length > 0
+    quiet: true
+    fail_msg: >-
+      roles/pbs is missing configuration. pbs_s3_bucket belongs in
+      inventory/host_vars/server.yml; the credentials (pbs_s3_access_key,
+      pbs_s3_secret_key, pbs_encryption_key, pbs_pve_storage_password,
+      pbs_notify_telegram_bot_token, pbs_notify_telegram_chat_id) belong in
+      inventory/group_vars/proxmox_host.sops.yml — see the .example beside
+      it for how each value is produced.
+    success_msg: PBS bucket, region and all six credentials are configured.
+
+- name: Install Proxmox Backup Server
+  ansible.builtin.import_tasks: install.yml
+
+- name: Provision the local chunk cache dataset
+  ansible.builtin.import_tasks: cache.yml
+
+- name: Configure the S3 endpoint and the datastore
+  ansible.builtin.import_tasks: datastore.yml
+
+- name: Configure backup-failure notifications
+  ansible.builtin.import_tasks: notifications.yml
+
+- name: Register the datastore as PVE storage
+  ansible.builtin.import_tasks: pve_storage.yml

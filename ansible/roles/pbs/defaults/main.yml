@@ -1,0 +1,145 @@
+---
+# Role-private vars, prefixed pbs_* so they can't collide with another
+# role's defaults. The one value that is NOT role-private — the API port —
+# is read straight out of config/lab.yml's `ports` (loaded by
+# playbooks/proxmox-host.yml's vars_files), the same way roles/node_exporter
+# reads node_exporter's. Nothing here restates a fact that lives there.
+#
+# SECRETS ARE NOT DECLARED HERE. The five values below live in
+# inventory/group_vars/proxmox_host.sops.yml (see the .example next to it)
+# and are deliberately left undefined in this file, so a typo'd SOPS key
+# fails the assert in tasks/main.yml instead of silently converging with an
+# empty string:
+#   pbs_s3_access_key             B2 application key id (bucket-scoped)
+#   pbs_s3_secret_key             B2 application key secret
+#   pbs_encryption_key            contents of the client encryption key JSON
+#   pbs_pve_storage_password      password for the PBS user PVE backs up as
+#   pbs_notify_telegram_bot_token bot token for the webhook notifier
+#   pbs_notify_telegram_chat_id   chat id for the webhook notifier
+
+pbs_packages:
+  - proxmox-backup-server
+# proxmox-backup.service is the privileged API daemon; proxmox-backup-proxy
+# is the public-facing one that answers on pbs_api. Both are enabled by the
+# package; asserted here so a host where one was masked converges back.
+pbs_services:
+  - proxmox-backup.service
+  - proxmox-backup-proxy.service
+
+# --- Local chunk cache ------------------------------------------------------
+# An S3-backed datastore requires a local persistent cache, and it must be a
+# path of its own — PBS refuses a directory that is already a datastore, and
+# a cache sharing a filesystem with something else can starve it. Hence a
+# dedicated dataset with an explicit quota rather than a directory.
+#
+# 64 GiB is the low end of the 64–128 GiB the PBS docs recommend, chosen
+# because the "~380 GB free on rpool" figure this was planned against is
+# inferred from a percentage reading, never measured. tasks/cache.yml reads
+# the pool's real free space and refuses to create the dataset if the quota
+# does not fit twice over, so the number is checked against reality at
+# converge time rather than trusted from a plan.
+pbs_cache_pool: rpool
+pbs_cache_dataset: rpool/pbs-cache
+pbs_cache_mountpoint: /mnt/pbs-cache
+pbs_cache_quota: 64G
+
+# --- Object store (Backblaze B2) --------------------------------------------
+# The endpoint is a PBS-side template, not an Ansible one: PBS substitutes
+# {{bucket}} and {{region}} itself at request time, so the braces must
+# survive Ansible's own templating — hence {% raw %}. B2 speaks
+# virtual-hosted-style S3, which is what this form addresses.
+pbs_s3_endpoint_id: backblaze-b2
+pbs_s3_endpoint_url: "{% raw %}{{bucket}}.s3.{{region}}.backblazeb2.com{% endraw %}"
+# Must match the region the bucket was actually created in — B2 encodes it
+# in the hostname, so a mismatch is a DNS/404 error, not a redirect.
+pbs_s3_region: eu-central-003
+# No default: bucket names are globally unique on B2, so there is no
+# sensible placeholder. Set it in inventory/host_vars/server.yml, next to
+# the other operator-verified environment facts for this host.
+pbs_s3_bucket: ""
+pbs_s3_path_style: false
+# B2's S3 API does not implement conditional writes. PBS uses an
+# If-None-Match PUT to claim the datastore's .inuse marker when it opens the
+# datastore; B2 answers 501 and PBS reports "access time safety check
+# failed". This quirk switches that one request to an unconditional create.
+# Empty string omits the flag (any provider that does support If-None-Match).
+pbs_s3_provider_quirks: skip-if-none-match-header
+
+# --- Datastore --------------------------------------------------------------
+# The datastore NAME is part of the disaster-recovery contract, not a label:
+# reattaching this bucket to a rebuilt PBS requires creating a datastore with
+# the same name, or the S3 object prefix will not line up with what is
+# already in the bucket. Changing it means migrating, not renaming.
+pbs_datastore: lab
+pbs_datastore_comment: Offsite backups on Backblaze B2 - managed by ansible/roles/pbs
+
+# Garbage collection weekly, not daily: on an S3 datastore GC is a full
+# bucket listing plus deletes, i.e. billable API calls, and it only has work
+# to do after a prune has unreferenced some chunks.
+pbs_gc_schedule: sat 02:00
+
+# Prune daily, after the 04:00 backup window infra/tofu/backup.tf will use.
+pbs_prune_job_id: lab-daily
+pbs_prune_schedule: "06:00"
+# Keyed by PBS's own option names so one dict serves as both the argument
+# list and the comparison against what `prune-job list` reports back.
+pbs_prune_keep:
+  keep-last: 3
+  keep-daily: 7
+  keep-weekly: 4
+  keep-monthly: 6
+
+# Verify weekly, but only snapshots not verified in the last 30 days
+# (--outdated-after). The schedule is the *opportunity* to verify; the
+# outdated-after window is what actually bounds the cost. Verification reads
+# every chunk back out of B2, so in steady state this re-reads the datastore
+# roughly once a month — well inside B2's free egress allowance of 3x stored
+# per month. A weekly schedule with no outdated-after would read it 4x a
+# month and start costing real money.
+pbs_verify_job_id: lab-verify
+pbs_verify_schedule: sun 07:00
+pbs_verify_outdated_after: 30
+
+# --- Notifications ----------------------------------------------------------
+# A webhook straight to Telegram from the host, deliberately duplicating what
+# Alertmanager already does for everything else. Prometheus runs inside the
+# k3s VM: if that VM is down, every alert path in clusters/lab/platform is
+# down with it, including any alert about the VM being down. This notifier
+# runs on the hypervisor and is the only backup-failure signal that survives
+# that. It is the reason it exists — do not "consolidate" it into
+# Alertmanager.
+pbs_notify_endpoint_id: telegram
+pbs_notify_matcher_id: lab-telegram
+pbs_notify_severities:
+  - warning
+  - error
+
+# --- PVE side ---------------------------------------------------------------
+# The PVE storage entry PR 3's backup job will target. 127.0.0.1 because PBS
+# runs on this same host; the connection is still TLS and still pinned by
+# certificate fingerprint, so the hostname it resolves to is irrelevant.
+pbs_pve_storage_id: pbs
+pbs_pve_storage_server: 127.0.0.1
+
+# PVE authenticates to PBS as its own PBS-realm user, not root@pam: the
+# credential is stored in cleartext under /etc/pve/priv/storage/, and a
+# backup identity that can only write backups is worth the one extra user.
+# DatastoreBackup grants Datastore.Backup (create, and read back its own
+# snapshots) and nothing else — no prune, no datastore administration. If a
+# vzdump job is ever given `prune-backups` (retention on the PVE side rather
+# than PBS's own prune job), this has to become DatastorePowerUser; prefer
+# keeping retention in the PBS prune job, where it is defined exactly once.
+pbs_pve_user: pve-backup@pbs
+pbs_pve_acl_role: DatastoreBackup
+
+# Client-side encryption key, in PBS's own JSON key format. PVE copies it to
+# /etc/pve/priv/storage/<id>.enc when the storage is added; this copy is kept
+# because proxmox-backup-client needs the same key for the host file-level
+# backups PR 4 adds, and because a restore needs it before /etc/pve exists.
+pbs_encryption_key_path: /etc/proxmox-backup/lab-encryption-key.json
+
+# Secrets that cannot be read back cannot be diffed, so this role only writes
+# them when the thing they belong to is created. Set to true for one converge
+# to push a rotated B2 secret key or PBS user password (see the role header),
+# then set it back.
+pbs_rotate_secrets: false
