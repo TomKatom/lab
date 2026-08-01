@@ -86,9 +86,23 @@
 # real server admin back, point `grafana.admin.existingSecret` at a ksops Secret
 # rather than un-setting this.
 #
-# Sizing: Prometheus gets a 15Gi PVC with no storageClassName, because
-# local-path is the cluster default StorageClass and naming it here would pin
-# this manifest to today's storage layer. Retention is whichever bound hits
+# Sizing: Prometheus gets a 15Gi PVC and Alertmanager a 1Gi one, both pinned
+# to `local-path-ephemeral` rather than left on the cluster default. That is
+# the one storage decision in this file that is not about capacity: those two
+# StatefulSets hold reproducible telemetry that churns daily, and
+# `local-path-ephemeral` (clusters/lab/platform/local-path-ephemeral.yaml)
+# puts it on the scsi2 disk that carries `backup = false`, outside the nightly
+# PBS backup of this VM. A block-level VM backup cannot exclude a path, so
+# deleting either storageClassName line silently moves ~25 GB of TSDB back
+# into the backup set — where PBS's keep-monthly 6 holds those chunks in B2
+# for half a year. Loki's PVC in loki.yaml is pinned for the same reason.
+#
+# Note this is a StatefulSet volumeClaimTemplate, so the change does not
+# migrate: the existing PVCs must be deleted for the operator to recreate
+# them on the new class, and the metrics in them are lost. Accepted — see the
+# PR that introduced this.
+#
+# Retention is whichever bound hits
 # first — 15 days, or 13GiB of blocks, the head-room being for the WAL and for
 # compaction's transient double-write. Grafana keeps no PVC at all: its
 # dashboards are provisioned from git, so the only thing a restart loses is an
@@ -149,6 +163,10 @@ spec:
             storageSpec:
               volumeClaimTemplate:
                 spec:
+                  # NOT the cluster default — see the header. This is the
+                  # unbacked disk, and naming it is what keeps TSDB out of
+                  # the nightly PBS backup.
+                  storageClassName: local-path-ephemeral
                   accessModes:
                     - ReadWriteOnce
                   resources:
@@ -168,6 +186,7 @@ spec:
             storage:
               volumeClaimTemplate:
                 spec:
+                  storageClassName: local-path-ephemeral
                   accessModes:
                     - ReadWriteOnce
                   resources:

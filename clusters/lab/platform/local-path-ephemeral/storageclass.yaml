@@ -1,0 +1,21 @@
+# No `storageclass.kubernetes.io/is-default-class` annotation, deliberately:
+# k3s's `local-path` stays the cluster default, so a PVC that says nothing
+# lands on the backed-up 150 GB disk. Landing on this one has to be an
+# explicit storageClassName.
+#
+# `provisioner` is the join key with deployment.yaml's --provisioner-name,
+# not a label — see that file's header.
+#
+# defaultVolumeType `local` (not the chart's `hostPath` default) matches what
+# k3s's bundled provisioner does: the PV gets node affinity, so the scheduler
+# is told where the data physically is instead of trusting a bare host path.
+# volumeBindingMode WaitForFirstConsumer is what makes that affinity useful.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-ephemeral
+  annotations:
+    defaultVolumeType: "local"
+provisioner: cluster.local/local-path-ephemeral
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete

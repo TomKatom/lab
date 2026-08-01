@@ -177,45 +177,68 @@ Three notes on the numbers:
 
 ## Where a PVC actually lives
 
-**All three PVCs land on the 150 GB scsi1 data disk, not on the 64 GB OS
-disk.** Earlier notes in this repo said the opposite; they were wrong.
+**None of the three land on the 64 GB OS disk**, and since Phase 8 none of
+them land on the 150 GB data disk either. `k3s-node` has three disks, and the
+monitoring PVCs are the reason the third one exists:
+
+| Disk | Size | Mounted at | In the VM backup? | Holds |
+|---|---|---|---|---|
+| `scsi0` | 64 GB | `/` | yes | the OS |
+| `scsi1` | 150 GB | `/var/lib/rancher/k3s/storage` | yes | every PVC on the default `local-path` class — Plex metadata, the \*arr DBs |
+| `scsi2` | 40 GB | `/var/lib/rancher/k3s/ephemeral` | **no** (`backup = false`) | the Prometheus, Alertmanager and Loki PVCs, via `local-path-ephemeral` |
+
+The split is a backup decision, not a capacity one. `vzdump` of VM 9000 is
+block-level and cannot exclude a path, so the only way to keep ~25 GB of
+daily-churning TSDB out of the PBS datastore — and out of B2 for the six
+months `keep-monthly` would hold those chunks — is to put it on a disk the
+backup job never reads. `docs/backups.md` will carry the full picture once
+the backup jobs themselves land.
 
 The chain, end to end:
 
-1. [`infra/tofu/vm-k3s.tf`](../infra/tofu/vm-k3s.tf) attaches two disks to
-   `k3s-node`: `scsi0` sized `var.vm_disk_size_gb` (default **64**, the
-   imported Debian cloud image) and `scsi1` sized `var.vm_data_disk_size_gb`
-   (default **150**, raw and blank).
+1. [`infra/tofu/vm-k3s.tf`](../infra/tofu/vm-k3s.tf) attaches the three disks
+   above, sized by `var.vm_disk_size_gb` (**64**), `var.vm_data_disk_size_gb`
+   (**150**) and `var.vm_ephemeral_disk_size_gb` (**40**). Only `scsi2`
+   carries `backup = false`.
 2. [`ansible/roles/k3s/tasks/disk.yml`](../ansible/roles/k3s/tasks/disk.yml)
-   formats that data disk `ext4` and mounts it at
-   `k3s_storage_mount_path` = `/var/lib/rancher/k3s/storage`.
-3. That path is local-path-provisioner's default storage directory, and
-   `roles/k3s`'s task order puts the mount **before** k3s's first start, so
-   the provisioner resolves to the data disk from the very first PV.
+   formats both data disks `ext4` and mounts them, at `k3s_storage_mount_path`
+   and `k3s_ephemeral_mount_path` respectively, **before** k3s's first start.
+3. `/var/lib/rancher/k3s/storage` is the bundled local-path-provisioner's
+   default directory, so the default StorageClass resolves to `scsi1` from
+   the very first PV. `/var/lib/rancher/k3s/ephemeral` is the `nodePathMap` of
+   the second provisioner in
+   [`clusters/lab/platform/local-path-ephemeral/`](../clusters/lab/platform/local-path-ephemeral/),
+   which serves the non-default `local-path-ephemeral` StorageClass named
+   explicitly by `kube-prometheus-stack.yaml` and `loki.yaml`.
 
-**To grow it, raise `vm_data_disk_size_gb`, never `vm_disk_size_gb`** —
-the second grows the OS disk and leaves every PV exactly as cramped as it
+`local-path` remains the cluster default, so anything that omits
+`storageClassName` lands on the backed-up disk. Opting *out* of backup is
+always an explicit line in a manifest.
+
+**To grow either, raise the matching Tofu variable, never `vm_disk_size_gb`**
+— that one grows the OS disk and leaves every PV exactly as cramped as it
 was. Two traps on the way:
 
-- `roles/k3s` refuses to guess which block device is the data disk. It
-  auto-detects by "not the root disk, and sized between
-  `k3s_data_disk_min_size_gb` and `k3s_data_disk_max_size_gb`" — **140 to
-  170 GB today**. Growing the disk past 170 GB without raising that window
-  makes the role's assert fail on the next run rather than mkfs the wrong
-  device. Move both together.
+- `roles/k3s` refuses to guess which block device is which. It auto-detects
+  each by "not the root disk, and sized inside this disk's window" — **140 to
+  170 GB** for the data disk, **30 to 50 GB** for the ephemeral one — and
+  `disk.yml` asserts the two windows do not overlap before touching anything.
+  Growing a disk out of its window makes the role's assert fail on the next
+  run rather than mkfs the wrong device. Move the size and the window
+  together, and keep the windows disjoint.
 - Device letters are not stable on this VM's virtio-scsi controller — on the
   real machine `/dev/sdb` is the *root* disk and `/dev/sda` the data disk,
   the opposite of what a naive `scsi0=sda` reading predicts. Never hardcode
   a device.
 
-To see what is actually consuming it, from `k3s-node`:
+To see what is actually consuming them, from `k3s-node`:
 
 ```sh
-ssh debian@k3s.lab.tomkatom.com 'sudo sh -c "du -sh /var/lib/rancher/k3s/storage/*"'
+ssh debian@k3s.lab.tomkatom.com 'sudo sh -c "du -sh /var/lib/rancher/k3s/storage/* /var/lib/rancher/k3s/ephemeral/*"'
 ```
 
 The `sudo sh -c` wrapper is required: an unprivileged login shell cannot
-traverse that directory, so it never expands the glob and `du` is handed a
+traverse those directories, so it never expands the glob and `du` is handed a
 literal `*`.
 
 ## The alert catalog

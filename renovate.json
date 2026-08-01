@@ -70,8 +70,11 @@
     },
     {
       "customType": "regex",
-      "description": "Combined `image: repo:tag` form used by raw Helm values (e.g. Argo CD initContainers), as opposed to the split repository/tag form under clusters/lab/apps/",
-      "fileMatch": ["^clusters/lab/bootstrap/[^/]+\\.ya?ml$"],
+      "description": "Combined `image: repo:tag` form the built-in managers cannot see: raw Helm values (e.g. Argo CD initContainers), and pod specs embedded as strings in a ConfigMap (local-path-ephemeral's helperPod.yaml)",
+      "managerFilePatterns": [
+        "/^clusters/lab/bootstrap/[^/]+\\.ya?ml$/",
+        "/^clusters/lab/platform/local-path-ephemeral/configmap\\.ya?ml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: registryUrl=(?<registryUrl>\\S+))?\\s+image:\\s*[\"']?[^\"'\\s:]+:(?<currentValue>[^\"'\\s@]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?[\"']?"
       ],

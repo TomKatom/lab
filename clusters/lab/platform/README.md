@@ -36,9 +36,19 @@ Cluster platform services, synced before any media app depends on them:
   `monitoring-config.yaml` + `monitoring/` — metrics, logs and alerting.
   **Implemented (Phase 7).** See "The monitoring stack" below and
   [`../../../docs/observability.md`](../../../docs/observability.md).
+- `local-path-ephemeral.yaml` + `local-path-ephemeral/` — a second
+  local-path-provisioner serving a **non-default** `local-path-ephemeral`
+  StorageClass, whose volumes live on the one VM disk `vzdump` does not read
+  (`backup = false` on `scsi2`). It exists so the monitoring PVCs — daily-
+  churning, reproducible telemetry — stay out of the nightly PBS backup;
+  a block-level VM backup cannot exclude a path, so the exclusion has to be a
+  disk. **Implemented (Phase 8).** The two files that name the class are
+  `kube-prometheus-stack.yaml` and `loki.yaml`; everything else keeps the
+  cluster default and stays backed up.
 
-Every platform component Phase 5 set out to build is in place, and Phase 7
-added the monitoring stack on top of it.
+Every platform component Phase 5 set out to build is in place; Phase 7 added
+the monitoring stack on top of it and Phase 8 the unbacked storage tier
+underneath it.
 
 ## The monitoring stack
 

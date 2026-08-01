@@ -45,6 +45,29 @@ resource "proxmox_virtual_environment_vm" "k3s" {
     size         = var.vm_data_disk_size_gb
   }
 
+  # scsi2 — ephemeral disk, raw and blank. Formatted and mounted by Ansible
+  # (roles/k3s) for the second local-path provisioner, which backs the
+  # Prometheus/Alertmanager/Loki PVCs.
+  #
+  # backup = false is the entire point of this disk, not a tuning knob. A
+  # vzdump of 9000 is block-level and cannot exclude a path, so the only way
+  # to keep ~25 GB of daily-churning TSDB out of the PBS datastore — where
+  # keep-monthly 6 would hold those chunks in B2 for half a year — is to put
+  # it on a disk the backup job never reads. Flipping this to true silently
+  # triples the nightly upload and the bill.
+  #
+  # The 40 GB is a safety constant as much as a capacity figure:
+  # roles/k3s auto-detects each disk by size window and refuses to guess, so
+  # this must stay well outside the 140-170 GB window that identifies scsi1.
+  # The role asserts the windows do not overlap; resizing this disk past
+  # 50 GB fails the play rather than arming a mkfs on the wrong device.
+  disk {
+    datastore_id = var.data_storage_pool
+    interface    = "scsi2"
+    size         = var.vm_ephemeral_disk_size_gb
+    backup       = false
+  }
+
   network_device {
     bridge = proxmox_network_linux_bridge.vmbr1.name
     model  = "virtio"

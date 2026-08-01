@@ -1,0 +1,64 @@
+# Copied from the upstream chart's split, NOT from k3s's bundled
+# local-storage.yaml. k3s's version grants `["*"]` on endpoints,
+# persistentvolumes and pods cluster-wide, which means create/delete on any
+# pod in any namespace — a considerably larger grant than this provisioner
+# needs. Upstream's own chart narrows it to the verbs below and pushes pod
+# creation down to a namespaced Role, so the only pods this ServiceAccount can
+# spawn are the helper pods in its own namespace. Same binary, same
+# behaviour, much smaller blast radius if the pod is ever compromised.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-path-ephemeral
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "configmaps", "pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-path-ephemeral
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: local-path-ephemeral
+subjects:
+  - kind: ServiceAccount
+    name: local-path-ephemeral
+    namespace: local-path-ephemeral
+---
+# Helper-pod lifecycle, namespaced on purpose — see the ClusterRole header.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: local-path-ephemeral
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: local-path-ephemeral
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: local-path-ephemeral
+subjects:
+  - kind: ServiceAccount
+    name: local-path-ephemeral
+    namespace: local-path-ephemeral

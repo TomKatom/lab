@@ -1,0 +1,68 @@
+# local-path-ephemeral — a SECOND local-path-provisioner, alongside the one
+# k3s ships, backing a StorageClass whose volumes live on the scsi2 disk that
+# `vzdump` never reads (infra/tofu/vm-k3s.tf, `backup = false`).
+#
+# Why it exists: Prometheus, Alertmanager and Loki hold reproducible telemetry
+# with daily churn — roughly 25 GB that changes every night. A VM backup is
+# block-level and cannot exclude a path, so the only way to keep that out of
+# the PBS datastore is to put it on a disk outside the backup. Left on the
+# default StorageClass it would triple both the nightly upload and the B2
+# bill, and PBS's `keep-monthly 6` would hold those chunks for half a year.
+#
+# Why a second provisioner rather than reconfiguring the bundled one: k3s
+# re-applies /var/lib/rancher/k3s/server/manifests/local-storage.yaml on every
+# restart, so any edit to `local-path` is reverted on the next reboot.
+# `--disable local-storage` would stick, but it puts every PV already bound to
+# `local-path` behind a migration for no benefit. A separately-named
+# provisioner has zero blast radius on anything already running: different
+# Deployment, different namespace, different ConfigMap, different
+# provisionerName, different StorageClass. The two never look at each other's
+# objects.
+#
+# `provisionerName` is the load-bearing field, not the StorageClass name. It
+# is what a provisioner matches PVCs on, so `cluster.local/local-path-ephemeral`
+# (in ./local-path-ephemeral/deployment.yaml and storageclass.yaml, which must
+# agree character for character) is what keeps this instance from racing the
+# bundled `rancher.io/local-path` one for the same claims. Spelling them
+# differently in those two files is a PVC that stays Pending forever with no
+# error on either provisioner.
+#
+# Deliberately NOT the default StorageClass: `local-path` keeps that flag, so
+# every manifest that omits `storageClassName` — the media PVCs, anything
+# added later — still lands on the backed-up 150 GB disk. Opting a PVC out of
+# backup has to be an explicit, visible line in its manifest.
+#
+# Plain manifests in a kustomize overlay rather than a chart, deliberately.
+# Upstream ships a chart in-tree (rancher/local-path-provisioner
+# deploy/chart/), but publishes it to no Helm repository —
+# rancher.github.io/local-path-provisioner returns 404 — so the only hosted
+# index carrying it is a third party's repackage. This is a component with a
+# ClusterRole over PersistentVolumes that spawns root helper pods mounting the
+# host filesystem; taking it from an unofficial mirror to save writing eight
+# short objects is the wrong trade. The manifests below are the upstream
+# chart's own output, rendered by hand and reviewable in full.
+#
+# Wave 0, with cert-manager and traefik: the StorageClass has to exist before
+# the wave-4 monitoring PVCs are created, and this depends on nothing itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: local-path-ephemeral
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/platform/local-path-ephemeral
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: local-path-ephemeral
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

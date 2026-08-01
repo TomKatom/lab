@@ -1,0 +1,154 @@
+---
+# Safety-critical: this formats a raw disk. Device letters (sda/sdb/sdc) are
+# assigned by kernel probe order on this VM's virtio-scsi controller and are
+# NOT guaranteed to match the scsi0/scsi1/scsi2 Tofu interface numbers or stay
+# stable across boots — on the real VM, /dev/sdb turned out to be the root
+# disk and /dev/sda the 150GB data disk, the opposite of what a naive
+# scsi0=sda/scsi1=sdb assumption would predict. So this file never hardcodes
+# a device name: by default it identifies the disk at runtime, purely from
+# facts gathered on this run (not the root disk, size in the expected
+# window), and refuses to guess if that isn't exactly one disk. Set the
+# disk's override var (k3s_data_disk_device / k3s_ephemeral_disk_device) to
+# skip auto-detection and force a device. Either way, the asserts below are
+# the real guard — they must never be skipped or downgraded to advisory,
+# since a mistaken device here would mkfs over either the OS disk or a disk
+# holding data that matters.
+#
+# Parameterised over `k3s_disk`, one entry of `k3s_disks` (see defaults),
+# and included once per disk by disk.yml. Reaching it any other way is a
+# bug: disk.yml is what resolves the root device and what asserts no two
+# size windows overlap, and auto-detection is only unambiguous because of
+# that assert.
+
+- name: Reset auto-detection state for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.set_fact:
+    k3s_disk_candidates: []
+    k3s_disk_device: "{{ k3s_disk.device_override }}"
+
+- name: Evaluate each block device as a candidate for k3s disk {{ k3s_disk.name }}
+  # Real disks only (skip cdrom/loop/device-mapper), not the root disk, and
+  # size within this disk's expected window — evaluated fresh every run so a
+  # reboot that reassigns sda/sdb doesn't matter.
+  ansible.builtin.set_fact:
+    k3s_disk_candidates: "{{ k3s_disk_candidates + ['/dev/' + item.key] }}"
+  loop: "{{ ansible_devices | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - k3s_disk_device | length == 0
+    - item.value.removable == "0"
+    - item.key is not match('^(sr|loop|fd|dm-|zd)')
+    - ('/dev/' + item.key) != k3s_root_disk
+    - "'GB' in item.value.size"
+    - (item.value.size.split(' ')[0] | float) >= (k3s_disk.min_size_gb | float)
+    - (item.value.size.split(' ')[0] | float) <= (k3s_disk.max_size_gb | float)
+
+- name: Assert auto-detection found exactly one candidate for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.assert:
+    that:
+      - k3s_disk_candidates | length == 1
+    fail_msg: >-
+      Auto-detection of the k3s {{ k3s_disk.name }} disk found
+      {{ k3s_disk_candidates | length }} candidate(s)
+      ({{ k3s_disk_candidates | join(', ') }}) instead of exactly one,
+      out of all non-root disks sized {{ k3s_disk.min_size_gb }}-
+      {{ k3s_disk.max_size_gb }} GB. Device letters are not guaranteed
+      stable on this VM, so this role refuses to guess — set
+      {{ k3s_disk.override_var }} explicitly to override auto-detection.
+    success_msg: >-
+      Auto-detected {{ k3s_disk_candidates[0] }} as the k3s
+      {{ k3s_disk.name }} disk (root disk is {{ k3s_root_disk }}).
+  when: k3s_disk_device | length == 0
+
+- name: Adopt the auto-detected device for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.set_fact:
+    k3s_disk_device: "{{ k3s_disk_candidates[0] }}"
+  when: k3s_disk_device | length == 0
+
+- name: Stat the device backing k3s disk {{ k3s_disk.name }}
+  ansible.builtin.stat:
+    path: "{{ k3s_disk_device }}"
+  register: k3s_disk_stat
+
+- name: Compute the reported size in GB of k3s disk {{ k3s_disk.name }}
+  # ansible_devices is keyed by bare device name (sdb, not /dev/sdb) and
+  # gives exact sectors/sectorsize — computing from those avoids parsing the
+  # human-formatted 'size' string (e.g. "150.00 GB").
+  ansible.builtin.set_fact:
+    k3s_disk_facts: >-
+      {{ ansible_devices[k3s_disk_device | regex_replace('^/dev/', '')] | default({}) }}
+
+- name: Assert presence, size and non-rootness of k3s disk {{ k3s_disk.name }}
+  # This is the guard that keeps this role from ever touching the wrong
+  # disk: refuses to proceed unless the device exists, reports a size in the
+  # expected window, and is provably a different device than the one
+  # backing the root filesystem. Applies whether the device came from
+  # auto-detection or an explicit override.
+  ansible.builtin.assert:
+    that:
+      - k3s_disk_stat.stat.exists
+      - k3s_disk_facts | length > 0
+      - ((k3s_disk_facts.sectors | int) * (k3s_disk_facts.sectorsize | int) / (1000 * 1000 * 1000)) | int >= (k3s_disk.min_size_gb | int)
+      - ((k3s_disk_facts.sectors | int) * (k3s_disk_facts.sectorsize | int) / (1000 * 1000 * 1000)) | int <= (k3s_disk.max_size_gb | int)
+      - k3s_disk_device != k3s_root_disk
+    fail_msg: >-
+      Refusing to touch {{ k3s_disk_device }}: either it doesn't exist,
+      its size is outside the expected {{ k3s_disk.name }} disk window
+      ({{ k3s_disk.min_size_gb }}-{{ k3s_disk.max_size_gb }} GB), or
+      it is the device backing the root filesystem
+      ({{ k3s_root_disk }}). This guard exists so this role can never mkfs
+      over the OS disk or a wrongly-identified device.
+    success_msg: >-
+      {{ k3s_disk_device }} exists, is not the root disk
+      ({{ k3s_root_disk }}), and is within the
+      {{ k3s_disk.min_size_gb }}-{{ k3s_disk.max_size_gb }} GB
+      expected size window.
+
+- name: Ensure the mount point's parent directory exists for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.file:
+    path: "{{ k3s_disk.mount_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the filesystem on k3s disk {{ k3s_disk.name }}
+  # community.general.filesystem is idempotent by design: it only runs mkfs
+  # when no filesystem is detected on the device, so re-running this role is
+  # safe without any extra existence check here. force is always false —
+  # never overwrite an existing filesystem signature.
+  community.general.filesystem:
+    fstype: "{{ k3s_disk.fstype }}"
+    dev: "{{ k3s_disk_device }}"
+    force: false
+
+- name: Read the filesystem UUID of k3s disk {{ k3s_disk.name }}
+  ansible.builtin.command:
+    cmd: "blkid -s UUID -o value {{ k3s_disk_device }}"
+  register: k3s_disk_uuid
+  changed_when: false
+
+- name: Mount at its configured path k3s disk {{ k3s_disk.name }}
+  ansible.posix.mount:
+    path: "{{ k3s_disk.mount_path }}"
+    src: "UUID={{ k3s_disk_uuid.stdout }}"
+    fstype: "{{ k3s_disk.fstype }}"
+    opts: "{{ k3s_disk.mount_opts }}"
+    state: mounted
+
+- name: Read back the mount source for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.command:
+    cmd: "findmnt -no SOURCE {{ k3s_disk.mount_path }}"
+  register: k3s_disk_mount_check
+  changed_when: false
+
+- name: Assert the mount took effect for k3s disk {{ k3s_disk.name }}
+  ansible.builtin.assert:
+    that:
+      - k3s_disk_mount_check.stdout | trim | length > 0
+    fail_msg: >-
+      {{ k3s_disk.mount_path }} does not report a mount source from
+      findmnt — the mount did not take effect.
+    success_msg: >-
+      {{ k3s_disk.mount_path }} is mounted from
+      {{ k3s_disk_mount_check.stdout }}.
