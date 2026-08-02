@@ -1,0 +1,46 @@
+---
+# Package install. The apt sources themselves are roles/pve_repos' job — it
+# runs first in playbooks/proxmox-host.yml and every source on this host is
+# declared there. sanoid comes from Debian trixie/main, which is already
+# configured; nothing new is added here.
+
+- name: Refresh the apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Simulate the sanoid install  # noqa: command-instead-of-module
+  # The same gate roles/pbs/tasks/install.yml puts in front of
+  # proxmox-backup-server, for the same reason and not because sanoid is
+  # suspect: this host has no IPMI and no console, so any apt solution that
+  # removes a PVE package takes the hypervisor away from the only person who
+  # could fix it. sanoid's declared dependencies are perl, pv, lzop, mbuffer,
+  # zfsutils-linux and two Perl libraries — a set with no realistic conflict
+  # — so this is insurance rather than a known hazard, and it costs one
+  # command that changes nothing on disk. See roles/pbs for the long version.
+  #
+  # The noqa is the point of the task: the apt module has no dry run that
+  # reports the solver's decisions. Everything that actually changes the
+  # system uses the module.
+  ansible.builtin.command:
+    cmd: apt-get --simulate --quiet=2 install {{ zfs_snapshots_packages | join(' ') }}
+  register: zfs_snapshots_install_simulation
+  changed_when: false
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Assert installing sanoid would not remove any package
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_install_simulation.stdout_lines | select('match', '^Remv ') | list | length == 0
+    fail_msg: >-
+      Installing {{ zfs_snapshots_packages | join(', ') }} would REMOVE:
+      {{ zfs_snapshots_install_simulation.stdout_lines | select('match', '^Remv ') | list | join('; ') }}.
+      Refusing to converge — on this host that is very likely the PVE stack.
+      Resolve the conflict by hand before re-running.
+    success_msg: sanoid installs without removing any package.
+
+- name: Install sanoid
+  ansible.builtin.apt:
+    name: "{{ zfs_snapshots_packages }}"
+    state: present

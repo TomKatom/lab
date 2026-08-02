@@ -1,0 +1,117 @@
+---
+# Renders the config, proves it works, and only then hands the job to the
+# packaged timer.
+#
+# Ordering is deliberate: the config exists before either unit is touched
+# (both carry ConditionFileNotEmpty on it, and a skipped unit reports
+# success), and the timer is enabled only after a real run has been seen to
+# produce real snapshots. Enabling a timer whose first run has never been
+# observed is how the failure modes in tasks/main.yml stay hidden.
+
+- name: Ensure the sanoid configuration directory exists
+  # The package ships /usr/sbin/sanoid, the units and the read-only defaults
+  # template, but no /etc/sanoid — checked against the .deb's file list.
+  ansible.builtin.file:
+    path: "{{ zfs_snapshots_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the sanoid configuration
+  # No handler and no notify: sanoid is not a daemon. It re-reads this file
+  # from scratch on every invocation, so there is nothing to reload and a
+  # changed config takes effect on the next run either way.
+  ansible.builtin.template:
+    src: sanoid.conf.j2
+    dest: "{{ zfs_snapshots_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Take and prune snapshots once now
+  # The counterpart of the `pvesm status` assert in roles/pbs: it runs the
+  # real thing rather than checking that a file rendered. It exercises the
+  # config parser (sanoid dies on a setting it does not recognise, so a typo
+  # in a retention key fails here rather than being ignored forever), the
+  # section-to-dataset resolution, and the zfs calls themselves.
+  #
+  # Idempotent by sanoid's own design, not by a guard here: it takes a
+  # snapshot of a given type only when the newest of that type is older than
+  # that type's period, so a second converge within the hour takes nothing
+  # and changed_when stays false. It also means the host leaves this role
+  # with snapshots already in place instead of up to 15 minutes of nothing.
+  #
+  # Two consecutive converges that straddle the top of an hour are the one
+  # case where this legitimately reports *changed* twice in a row: an hourly
+  # became due in between. That is a real snapshot being taken, not drift,
+  # and it is reported rather than suppressed — but it is worth knowing
+  # before reading it as a converge that will not settle.
+  #
+  # TZ=UTC to match the packaged units, which set it explicitly. Without it,
+  # snapshots taken by a converge would be named in local time and those
+  # taken by the timer in UTC — pruning works off creation time so nothing
+  # would break, but the names would disagree about when they were taken,
+  # which is the sort of thing that costs an hour during an incident.
+  ansible.builtin.command:
+    cmd: sanoid --cron --verbose
+  environment:
+    TZ: UTC
+  register: zfs_snapshots_run
+  changed_when: >-
+    'taking snapshot' in zfs_snapshots_run.stdout
+    or 'INFO: pruning' in zfs_snapshots_run.stdout
+
+- name: List the snapshots that exist
+  ansible.builtin.command:
+    cmd: zfs list -H -o name -t snapshot
+  register: zfs_snapshots_present
+  changed_when: false
+  check_mode: false
+
+- name: Assert every selected dataset has a sanoid snapshot
+  # Not under --check: the run above is skipped there, so on a host that has
+  # never converged this would fail for the one reason a dry run cannot do
+  # anything about.
+  #
+  # Matched on the `autosnap_` prefix, which is the same string sanoid
+  # itself filters on — a `vzdump` snapshot left behind by a failed backup
+  # would otherwise satisfy this check while sanoid was doing nothing.
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_selected | difference(zfs_snapshots_covered) | length == 0
+    fail_msg: >-
+      sanoid ran but took no snapshot of:
+      {{ zfs_snapshots_selected | difference(zfs_snapshots_covered) | join(', ') }}.
+      Its own output was: {{ zfs_snapshots_run.stdout | default('(no output)') }}
+    success_msg: >-
+      All {{ zfs_snapshots_selected | length }} selected datasets have sanoid
+      snapshots.
+  vars:
+    zfs_snapshots_covered: >-
+      {{ zfs_snapshots_present.stdout_lines
+         | select('search', '@autosnap_')
+         | map('regex_replace', '@.*$', '')
+         | unique | list }}
+  when: not ansible_check_mode
+
+- name: Enable the sanoid prune service
+  # sanoid.service already carries Wants=sanoid-prune.service, so pruning
+  # normally follows a snapshot run without this. It is reconciled anyway,
+  # for the same reason roles/node_exporter reconciles the packaged smartmon
+  # timer: dpkg enables it once at install, and a unit disabled or masked by
+  # hand afterwards is invisible until the symptom shows up — here, snapshots
+  # accumulating on rpool until ZfsPoolCapacityHigh fires weeks later.
+  #
+  # No `state`: this is a oneshot pulled in by sanoid.service, not something
+  # to start on its own.
+  ansible.builtin.systemd:
+    name: "{{ zfs_snapshots_prune_service }}"
+    enabled: true
+
+- name: Enable and start the sanoid timer
+  ansible.builtin.systemd:
+    name: "{{ zfs_snapshots_timer }}"
+    enabled: true
+    state: started
+    daemon_reload: true

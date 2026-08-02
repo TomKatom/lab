@@ -1,0 +1,33 @@
+# Managed by Ansible (roles/zfs_snapshots) — do not edit by hand.
+#
+# Local ZFS snapshot tier — the rollback half of this server's backup
+# strategy. The offsite half is Proxmox Backup Server (ansible/roles/pbs)
+# writing to Backblaze B2; these snapshots live on the pool they protect and
+# do not survive losing it.
+#
+# The dataset sections below are derived, not hand-written: the host
+# filesystems come from zfs_snapshots_filesystems, and the guest disks from
+# `qm config` — every disk PVE is told to back up, and no disk it is told to
+# skip. Editing this file by hand is reverted on the next converge; change
+# ansible/roles/zfs_snapshots/defaults/main.yml instead.
+#
+# Every retention type is stated, including the zeros. sanoid seeds each
+# section from [template_default] in
+# {{ zfs_snapshots_defaults_path }} — which ships hourly = 48,
+# daily = 90 and monthly = 6 — before applying anything from this file, so a
+# type left unset here is not "off", it is whatever that file says.
+
+[template_{{ zfs_snapshots_template_name }}]
+frequently = {{ zfs_snapshots_retention.frequently }}
+hourly = {{ zfs_snapshots_retention.hourly }}
+daily = {{ zfs_snapshots_retention.daily }}
+weekly = {{ zfs_snapshots_retention.weekly }}
+monthly = {{ zfs_snapshots_retention.monthly }}
+yearly = {{ zfs_snapshots_retention.yearly }}
+autosnap = yes
+autoprune = yes
+{% for dataset in zfs_snapshots_selected %}
+
+[{{ dataset }}]
+use_template = {{ zfs_snapshots_template_name }}
+{% endfor %}
