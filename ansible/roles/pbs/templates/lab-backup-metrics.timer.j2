@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+[Unit]
+Description=Run {{ pbs_metrics_name }} every {{ pbs_metrics_interval }}
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ pbs_metrics_interval }}
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

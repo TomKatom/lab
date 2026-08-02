@@ -1,0 +1,122 @@
+---
+# Backup telemetry: a textfile collector that turns PBS's own view of this
+# datastore into series node_exporter can serve. See pbs_metrics_* in
+# defaults/main.yml for the knobs, templates/lab-backup-metrics.sh.j2 for what
+# each series is measured from, and rules-backups.yaml in
+# clusters/lab/platform/monitoring/ for the alerts.
+#
+# Runs last in this role, after tasks/host_backup.yml, because the collector
+# authenticates with the credential file that task writes and reports on the
+# backups it schedules. Both PBS clients on this host therefore share one
+# password, one repository string and one fingerprint-reading idiom.
+#
+# WHAT THIS DOES NOT REPLACE. The Telegram webhook in tasks/notifications.yml
+# stays. Prometheus runs inside the k3s VM: if that VM is down, every alert
+# below is down with it, including any alert about it being down. The webhook
+# runs on the hypervisor and survives that. The two overlap on PBS's own
+# verify/GC failures and cover different things everywhere else — the webhook
+# never sees a vzdump that failed on the PVE side, and these metrics never see
+# a PBS event that produced no state change.
+
+- name: Ensure the restore-drill marker directory exists
+  # The directory only. The marker file inside it is created by an operator
+  # finishing a restore drill and by nothing else — see
+  # pbs_metrics_restore_drill_marker in defaults/main.yml for why seeding it
+  # would defeat the alert that reads it.
+  ansible.builtin.file:
+    path: "{{ pbs_metrics_restore_drill_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the backup-metrics collector script
+  ansible.builtin.template:
+    src: lab-backup-metrics.sh.j2
+    dest: "{{ pbs_metrics_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Refresh lab-backup-metrics
+
+- name: Install the backup-metrics systemd unit
+  ansible.builtin.template:
+    src: lab-backup-metrics.service.j2
+    dest: "/etc/systemd/system/{{ pbs_metrics_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-backup-metrics
+
+- name: Install the backup-metrics systemd timer
+  ansible.builtin.template:
+    src: lab-backup-metrics.timer.j2
+    dest: "/etc/systemd/system/{{ pbs_metrics_name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-backup-metrics
+
+- name: Enable and start the backup-metrics timer
+  # The timer, never the .service: enabling a oneshot's service unit makes
+  # systemd try to "start" it at boot as a dependency and report it
+  # active-exited forever. OnBootSec has long since elapsed on a running host,
+  # so starting the timer fires the first run immediately.
+  ansible.builtin.systemd:
+    name: "{{ pbs_metrics_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Run the backup-metrics collector once now
+  # Handlers run at the end of the play, so without this the assert below
+  # would read the *previous* run's file on the converge that changed the
+  # script. Cheap and side-effect-free: it reads local API calls and rewrites
+  # one file. `changed_when: false` because publishing metrics is not a change
+  # to the host's configuration.
+  ansible.builtin.command:
+    cmd: "{{ pbs_metrics_script_path }}"
+  changed_when: false
+
+- name: Read back the metrics the collector published
+  ansible.builtin.slurp:
+    src: "{{ pbs_metrics_textfile_path }}"
+  register: pbs_metrics_published
+
+- name: Assert the collector reached the datastore and produced usable series
+  # The counterpart of the `pvesm status` assert in tasks/pve_storage.yml and
+  # the client probe in tasks/host_backup.yml, for the third client of this
+  # datastore. It exercises the credential, the fingerprint, jq's presence and
+  # the script's own output grammar in one go — none of which is testable by
+  # reading a rendered template, and all of which would otherwise fail for the
+  # first time on a timer with nothing watching.
+  #
+  # `reachable 1` is asserted, not merely `reachable` being present: the
+  # script emits a 0 for exactly the failures this is meant to catch (PBS
+  # down, wrong password, expired fingerprint), so asserting on presence alone
+  # would pass on every one of them.
+  #
+  # The cache families are asserted too because they are the ones that come
+  # back from the client call rather than from a local command — if the JSON
+  # field names ever change, this is where it surfaces. The last-backup and
+  # verify/GC families deliberately are NOT asserted: they are absent by
+  # design until the first backup, verify and GC have happened, and a converge
+  # on a fresh datastore must not fail for the reason the alerts exist to
+  # report.
+  ansible.builtin.assert:
+    that:
+      - pbs_metrics_content is search('lab_backup_datastore_reachable\{datastore="' ~ pbs_datastore ~ '"\} 1')
+      - pbs_metrics_content is search('lab_backup_cache_used_bytes\{datastore="' ~ pbs_datastore ~ '"\} [0-9]')
+      - pbs_metrics_content is search('lab_backup_cache_total_bytes\{datastore="' ~ pbs_datastore ~ '"\} [0-9]')
+    quiet: true
+    fail_msg: >-
+      {{ pbs_metrics_script_path }} ran but did not report the {{ pbs_datastore }}
+      datastore as reachable with a usable cache reading. Run it by hand and read
+      its stderr: the usual causes are PBS being down, the credential in
+      {{ pbs_host_backup_password_path }} no longer matching {{ pbs_pve_user }},
+      or a renewed certificate the fingerprint probe could not read.
+    success_msg: >-
+      The collector reached the {{ pbs_datastore }} datastore and published
+      valid exposition to {{ pbs_metrics_textfile_path }}.
+  vars:
+    pbs_metrics_content: "{{ pbs_metrics_published.content | b64decode }}"

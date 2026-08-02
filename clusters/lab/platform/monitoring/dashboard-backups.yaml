@@ -1,0 +1,711 @@
+# "Backups" — the drill-down surface for the tier that has no upstream
+# dashboard and could not have one: PBS exposes no Prometheus endpoint at any
+# version, so every series here comes from ansible/roles/pbs' own textfile
+# collector (templates/lab-backup-metrics.sh.j2) through the hypervisor's
+# node_exporter, scraped as job="pve-node" by ./scrapeconfig-pve-node.yaml.
+#
+# Every threshold on it is the threshold of the alert covering the same
+# condition — 36 h from BackupStale, 10 d from PbsVerifyStale and PbsGcStale,
+# 85 % from PbsCacheDiskHigh, 180 d from RestoreDrillOverdue — so amber here
+# and a Telegram message are the same event rather than two opinions. Changing
+# one without the other in ./rules-backups.yaml is how a dashboard starts
+# disagreeing with the alerts.
+#
+# THE ABSENCE RULE SHAPES FOUR OF THESE PANELS, and it is the thing most
+# likely to be "fixed" into a bug by someone tidying later. The collector
+# emits no series at all for a backup, verify, GC or drill that has never
+# happened, because a 0 sentinel would make `time() - metric` the entire Unix
+# epoch and pin the matching alert firing forever. So an age panel is empty
+# for the case that matters most, and the temptation is to add `or vector(0)`
+# to make it render — which produces a perfectly fresh zero, the misleading
+# direction. Panel 1 is the answer: it COUNTS groups with a recent snapshot,
+# so absence contributes nothing and the tile goes red on its own, exactly as
+# the "*arr backups" tile on Lab overview does. Panels 2, 5, 6 and 7 stay
+# honestly empty and say so in their descriptions.
+#
+# Panel 3 is named for the CACHE and not for the datastore on purpose.
+# `proxmox-backup-client status` against an S3-backed datastore reports the
+# local chunk cache filesystem — measured on this host, its total is exactly
+# the 64 GiB ZFS quota on rpool/pbs-cache. PBS does not expose how much sits
+# in the B2 bucket at all, so a panel called "datastore used" would show a
+# number an operator reads as the offsite copy and be wrong by orders of
+# magnitude.
+#
+# The two timeseries are step functions rather than curves: they only move
+# when a snapshot lands or a prune runs. Panel 8 is the one worth opening
+# after any change to what the k3s VM has attached — a jump from ~10-12 GB to
+# 30-40 GB means monitoring data is back on a backed-up disk, which is the
+# failure PR 2 of this phase existed to prevent.
+#
+# The datasource is pinned by uid rather than left to default resolution, like
+# ./dashboard-media.yaml and for the same reason. `grafana_dashboard: "1"` is
+# what makes Grafana notice this at all and the VALUE matters as much as the
+# key — the chart renders its sidecar with LABEL_VALUE=1. The data key
+# `backups.json` must stay unique across every dashboard ConfigMap in the
+# cluster: the sidecar writes all of them into one flat directory, so two
+# ConfigMaps sharing a key overwrite each other's file. It must NOT be
+# `lab-overview.json`, which ../kube-prometheus-stack.yaml names as the home
+# dashboard path.
+#
+# `editable: false` and a pinned `uid`: edits made in the Grafana UI live only
+# until the sidecar reloads this ConfigMap, so making the panel look editable
+# is a way to lose work. Change it here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-backups
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-backups
+data:
+  backups.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": false,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Counts the PBS backup groups whose newest COMPLETE snapshot is under 36 hours old, out of the two that must exist (host/server and vm/9000). Deliberately a COUNT rather than an age, for the same reason the *arr tile on Lab overview is: the collector emits no series at all for a group that has never been backed up, so an age panel reads \"No data\" for exactly the case that matters. Absence contributes nothing here and the tile goes red on its own. 36 hours is BackupStale's threshold - one missed night is 24 hours, so this needs two consecutive failures.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "green",
+                    "value": 2
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(\n  lab_backup_last_success_timestamp_seconds{job=\"pve-node\"}\n  > time() - 36 * 3600\n) or vector(0)",
+              "instant": true,
+              "legendFormat": "fresh",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Backup targets with a fresh snapshot",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Per backup group. Green under 36 hours, which is BackupStale's threshold. A group that has NEVER been backed up shows nothing here rather than a large number - that is the honest encoding of an absent series, and the tile to the left is the one that turns red for it.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 129600
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - lab_backup_last_success_timestamp_seconds{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "{{target}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Age of the newest snapshot",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "The local S3 chunk cache on rpool, as PBS itself reports it - NOT the size of the B2 bucket, which PBS does not expose. Amber at 85 %, PbsCacheDiskHigh's threshold. PBS evicts from this cache with an LRU of its own well below the 64 GiB ZFS quota, so this sitting high is a symptom rather than normal growth.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.85
+                  },
+                  {
+                    "color": "red",
+                    "value": 0.95
+                  }
+                ]
+              },
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "id": 3,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "lab_backup_cache_used_bytes{job=\"pve-node\"}\n/\nlab_backup_cache_total_bytes{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "cache",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Chunk cache used",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "1 when proxmox-backup-client could read the datastore's status, 0 when it could not. The one series in this dashboard whose 0 is a real value rather than a staleness sentinel. It says nothing about B2: an S3-backed datastore answers a status call out of its local cache.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "unreachable",
+                      "index": 0
+                    },
+                    "1": {
+                      "text": "reachable",
+                      "index": 1
+                    }
+                  }
+                }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "lab_backup_datastore_reachable{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "{{datastore}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "PBS datastore",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "How long ago a PBS verify task last finished OK - the only thing that proves the chunks in B2 still read back and match their checksums. Amber at 10 days, PbsVerifyStale's threshold, against a weekly schedule. Empty means no verify has EVER succeeded.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 864000
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 5
+          },
+          "id": 5,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - lab_backup_verify_last_success_timestamp_seconds{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "{{datastore}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Last successful verify",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "GC is what actually frees the chunks a prune unreferenced; until it runs, pruned snapshots keep costing B2 storage. Amber at 10 days, PbsGcStale's threshold, against a weekly schedule. Empty means none has ever completed.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 864000
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 8,
+            "y": 5
+          },
+          "id": 6,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - lab_backup_gc_last_success_timestamp_seconds{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "{{datastore}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Last successful garbage collection",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Age of the marker file the restore runbook's final step touches. This is the only panel here that cannot be satisfied by a machine, and an empty one means no restore has ever been performed - which is what RestoreDrillOverdue fires on. Amber at 180 days.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 15552000
+                  }
+                ]
+              },
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 16,
+            "y": 5
+          },
+          "id": 7,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "time() - lab_backup_restore_drill_timestamp_seconds{job=\"pve-node\"}",
+              "instant": true,
+              "legendFormat": "drill",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Last restore drill",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Logical size of each group's newest snapshot, before deduplication and compression. This is the panel that catches the failure PR 2 of this phase existed to prevent: the k3s VM's snapshot should sit around 10-12 GB, and a jump to 30-40 GB means monitoring data is back on a backed-up disk. It is a step function, not a curve - it only moves when a new snapshot lands.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 10
+          },
+          "id": 8,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "lab_backup_last_size_bytes{job=\"pve-node\"}",
+              "instant": false,
+              "legendFormat": "{{target}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Newest snapshot size, per target",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Complete snapshots in each group. This is where pruning is visible: the PBS prune job runs daily at 06:00 keeping 3 last / 7 daily / 4 weekly / 6 monthly, so these lines should climb and then flatten rather than growing without bound. A line that keeps climbing means the prune job has stopped.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 10
+          },
+          "id": 9,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "lab_backup_snapshot_count{job=\"pve-node\"}",
+              "instant": false,
+              "legendFormat": "{{target}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Snapshots held, per target",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "5m",
+      "schemaVersion": 39,
+      "tags": [
+        "lab",
+        "backups"
+      ],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-7d",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "Backups",
+      "uid": "lab-backups",
+      "version": 1,
+      "weekStart": ""
+    }

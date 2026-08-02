@@ -25,6 +25,13 @@ pbs_packages:
   # this role schedules a nightly job around is a stated requirement rather
   # than a package that happens to be pulled in by something else.
   - proxmox-backup-client
+  # tasks/metrics.yml's collector parses PBS's JSON output with it. Already
+  # present on this host, and named anyway for the same reason as the line
+  # above: a metrics collector that silently emits nothing because a tool it
+  # assumed was there is not, is precisely the failure this role's telemetry
+  # exists to prevent. Perl with JSON::PP would need no package at all, but
+  # the parsing here is filter-shaped and jq keeps it readable.
+  - jq
 # proxmox-backup.service is the privileged API daemon; proxmox-backup-proxy
 # is the public-facing one that answers on pbs_api. Both are enabled by the
 # package; asserted here so a host where one was masked converges back.
@@ -223,6 +230,57 @@ pbs_host_backup_sources:
 # .db is the fallback for a pmxcfs that will not start at all.
 pbs_host_backup_include_devs:
   - /etc/pve
+
+# --- Backup telemetry -------------------------------------------------------
+# PBS has no Prometheus endpoint at any version — it pushes to InfluxDB or
+# Graphite and to nothing else — so the last-backup, verify, GC and cache
+# numbers reach the Prometheus in the k3s VM the same way ZFS pool capacity
+# does: a textfile collector on this host. See templates/lab-backup-metrics.sh.j2
+# for what each series is measured from, and
+# clusters/lab/platform/monitoring/rules-backups.yaml for the alerts that read
+# them. Without this, a failed vzdump or a stopped host backup is silent —
+# roles/pbs' Telegram webhook is a *PBS* notifier and sees PBS's own
+# verify/GC/prune events, never a client backup that failed, and this host has
+# no MTA.
+pbs_metrics_name: lab-backup-metrics
+pbs_metrics_script_path: /usr/local/bin/lab-backup-metrics
+
+# Written into roles/node_exporter's textfile directory, which that role
+# creates and asserts. It runs earlier in playbooks/proxmox-host.yml, so its
+# default is in scope here; the literal is the standalone-run fallback, not a
+# second source of truth. A SEPARATE FILE from that role's lab.prom on
+# purpose: this collector depends on a network service, and one file would
+# mean a PBS outage taking ZFS capacity and SMART freshness down with it.
+pbs_metrics_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/prometheus/node-exporter') }}"
+pbs_metrics_textfile_path: "{{ pbs_metrics_textfile_dir }}/lab-backup.prom"
+
+# 15 minutes. Nothing here moves faster than a nightly backup, and the
+# staleness thresholds are 36 h and 10 d, so this is about how quickly a
+# recovery is *reflected* rather than how quickly a failure is caught. It was
+# measured to cost nothing in B2 requests: the datastore's s3-statistics
+# counters do not move across a status + snapshot list + gc list + task list
+# cycle, because manifests are served from the local chunk cache.
+pbs_metrics_interval: 15min
+# The collector talks to a network service, so its unit needs a bound —
+# systemd will not start a second run of a oneshot that is still going, so one
+# hung run would freeze these metrics permanently. Generous: the calls are
+# local and take milliseconds.
+pbs_metrics_timeout: 2min
+
+# How far back to read the task archive for the last successful verify.
+# Verify runs weekly and this host produces a handful of tasks a day, so 1000
+# (PBS's own maximum for this parameter) reaches back months. If it ever
+# stopped reaching back far enough the series would vanish rather than go
+# wrong, and PbsVerifyStale would fire — the safe direction.
+pbs_metrics_task_limit: 1000
+
+# Touched by the last step of the restore drill, and by nothing else. The
+# directory is created at converge; THE FILE IS DELIBERATELY NOT SEEDED. A
+# seeded marker would assert that a restore had been proven when none had,
+# and the whole value of RestoreDrillOverdue is that the only way to clear it
+# is to actually perform one.
+pbs_metrics_restore_drill_dir: /var/lib/lab-backup-metrics
+pbs_metrics_restore_drill_marker: /var/lib/lab-backup-metrics/last-restore-drill
 
 # Secrets that cannot be read back cannot be diffed, so this role only writes
 # them when the thing they belong to is created. Set to true for one converge
