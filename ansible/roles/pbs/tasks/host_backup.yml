@@ -1,0 +1,91 @@
+---
+# The hypervisor's own files, on a timer, into the datastore tasks/datastore.yml
+# created. See pbs_host_backup_* in defaults/main.yml for what is archived, why
+# it is not covered by the VM's vzdump job, and why it authenticates as the same
+# PBS user the PVE storage entry does.
+#
+# Runs last in this role, after tasks/pve_storage.yml, for two reasons: the
+# probe below needs the certificate fingerprint that file reads, and there is no
+# point scheduling backups before the datastore has been proven reachable at all.
+#
+# OWNERSHIP, worth knowing before the first run. PBS ties a backup group to the
+# auth-id that created it, and Datastore.Backup only reaches groups this user
+# owns. If a host/{{ pbs_host_backup_id }} group already exists under a
+# different owner — a manual test run as root@pam, say — the first timer run
+# fails with "backup owner check failed". The fix is
+# `proxmox-backup-manager datastore ... change-owner`, not a different backup id:
+# a new id starts a new retention series and leaves the old one unpruned.
+
+- name: Install the host-backup credential file
+  # The same password tasks/pve_storage.yml gives PVE. Mode 0600 and root:root
+  # like the encryption key beside it — between them these two files are read
+  # access to every backup this server has.
+  ansible.builtin.copy:
+    content: "{{ pbs_pve_storage_password }}"
+    dest: "{{ pbs_host_backup_password_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Verify the host-backup credential reaches the datastore
+  # The counterpart of the `pvesm status` assert in tasks/pve_storage.yml, for
+  # the other client: it exercises the repository string this role assembles,
+  # the credential file written above, TLS and the pinned fingerprint together.
+  # None of that is testable by reading a rendered file, and all of it would
+  # otherwise fail for the first time at 03:30 with nothing watching.
+  #
+  # Deliberately not no_log: nothing secret is in the arguments (the password
+  # is passed as a path), and hiding the client's stderr is exactly the wrong
+  # trade on the one task whose whole job is to report why it could not connect.
+  ansible.builtin.command:
+    cmd: >-
+      proxmox-backup-client snapshot list
+      --repository {{ pbs_host_backup_repository }}
+      --output-format json
+  environment:
+    PBS_PASSWORD_FILE: "{{ pbs_host_backup_password_path }}"
+    PBS_FINGERPRINT: "{{ pbs_cert_fingerprint }}"
+  changed_when: false
+
+- name: Install the host-backup script
+  # No handler. Unlike roles/node_exporter's collector, whose output goes stale
+  # the moment the script changes, running this on a converge would mean a real
+  # ~1 GB upload on every edit — and a converge that can fail on a transient B2
+  # error. The timer picks the new script up on its next run.
+  ansible.builtin.template:
+    src: lab-host-backup.sh.j2
+    dest: "{{ pbs_host_backup_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the host-backup systemd unit
+  ansible.builtin.template:
+    src: lab-host-backup.service.j2
+    dest: "/etc/systemd/system/{{ pbs_host_backup_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-host-backup
+
+- name: Install the host-backup systemd timer
+  ansible.builtin.template:
+    src: lab-host-backup.timer.j2
+    dest: "/etc/systemd/system/{{ pbs_host_backup_name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-host-backup
+
+- name: Enable and start the host-backup timer
+  # The timer, never the .service: enabling a oneshot's service unit makes
+  # systemd try to "start" it at boot and report it active-exited forever.
+  # Starting the timer does not run a backup — OnCalendar with Persistent only
+  # fires immediately if a scheduled run was actually missed while the host was
+  # down, which on a converging host it was not.
+  ansible.builtin.systemd:
+    name: "{{ pbs_host_backup_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

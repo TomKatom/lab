@@ -62,9 +62,10 @@ node_exporter_textfile_interval: 5min
 # and its default is in scope by then; the literal is the standalone-run
 # fallback, not a second source of truth.
 node_exporter_backups_dir: "{{ zfs_tank_mountpoint | default('/tank/data') }}/backups"
-# NOT created by roles/virtiofs (backups/ is absent from virtiofs_subdirs —
-# it exists because docs/runbooks/media-migration.md mkdir'd it), so the
-# script must tolerate any of these being missing.
+# roles/virtiofs creates backups/ itself (it is in virtiofs_subdirs), but not
+# the per-app directories under it — the *arrs create those on their first
+# scheduled backup — so the script must still tolerate any of these being
+# missing.
 node_exporter_backup_apps:
   - sonarr
   - radarr

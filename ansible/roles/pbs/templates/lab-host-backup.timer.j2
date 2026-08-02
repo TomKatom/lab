@@ -1,0 +1,14 @@
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+[Unit]
+Description=Run {{ pbs_host_backup_name }} daily at {{ pbs_host_backup_schedule }}
+
+[Timer]
+OnCalendar={{ pbs_host_backup_schedule }}
+# A host that was down or rebooting at {{ pbs_host_backup_schedule }} runs as soon as it is
+# back rather than skipping the night outright — the same reasoning as
+# repeat_missed on infra/tofu/backup.tf's vzdump job.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

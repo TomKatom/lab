@@ -24,10 +24,18 @@ virtiofs_dir_mode: "2775"
 # declares those paths; this is what makes them real. Parents are listed
 # before their children so each one gets this role's owner/mode rather
 # than whatever implicit `mkdir -p` would leave behind.
+# `backups` is load-bearing and was, until now, the one entry here that only
+# existed because docs/runbooks/media-migration.md §3.3 mkdir'd it by hand:
+# Sonarr and Radarr write their scheduled backups into backups/<app>, and the
+# MediaBackupStale alert reads the newest archive's mtime from that tree. A
+# recreated dataset would have taken it away silently and left the alert
+# firing on a directory that no longer exists. It belongs in IaC on those
+# grounds alone, independently of anything to do with roles/pbs.
 virtiofs_subdirs:
   - torrents
   - torrents-final
   - media
+  - backups
   - .recyclebin
   - .recyclebin/sonarr
   - .recyclebin/radarr

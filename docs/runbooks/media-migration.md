@@ -473,14 +473,15 @@ re-asserting it here guards against rsync's `-a` having carried over
 different permission bits from the old server. Note what each path in that
 list is for:
 
-- `torrents` and `media` are the only two the `virtiofs` role creates
-  itself (`virtiofs_subdirs`), so they may already exist with the right
-  bits before rsync ever runs.
-- `torrents-final` arrives from the old server (§2.4) and the role knows
-  nothing about it — it needs the bits asserted here.
-- `backups` does not exist on either side. It is created here because §6
-  points Sonarr's and Radarr's built-in backups at `/data/backups/<app>`,
-  and that is the local-path `Delete`-reclaim mitigation §12 depends on.
+- `torrents`, `torrents-final`, `media` and `backups` are all in the
+  `virtiofs` role's `virtiofs_subdirs`, so they may already exist with the
+  right bits before rsync ever runs. The `mkdir -p` and the `chmod` above are
+  kept anyway: this pass may run against a host the role has not converged
+  yet, and rsync's `-a` can carry different permission bits over from the old
+  server even where the directory already existed.
+- `backups` exists on neither server. §6 points Sonarr's and Radarr's
+  built-in backups at `/data/backups/<app>`, which is the local-path
+  `Delete`-reclaim mitigation §12 depends on.
 - `/tank/data` **itself** is in the list deliberately: the `zfs_tank` role
   creates the dataset but never sets ownership on its mountpoint, so it
   starts `root:root`. Without this chown, a pod running as 1000 cannot
