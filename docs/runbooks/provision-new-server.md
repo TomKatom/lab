@@ -377,6 +377,13 @@ ansible first, tofu second — the same way this runbook stages them.
 
 ## Appendix: rebuilding a replacement server
 
+**If you are rebuilding because the server was lost rather than replaced,
+read [`disaster-recovery.md`](disaster-recovery.md) alongside this.** It
+wraps these stages with the parts that only matter when there is data to get
+back: reading the old machine's disk layout out of the backup *before* you
+lay out the new pool, reattaching the B2 datastore to a fresh PBS (the one
+step in that path with no automation), and restoring the k3s VM.
+
 The stages above apply unchanged; the deltas, in order:
 
 1. **Unset `LAB_RUNNER` before anything else** (§1.2.4) and cancel
@@ -404,3 +411,9 @@ The stages above apply unchanged; the deltas, in order:
    registration (re-minted from `GH_RUNNER_PAT`). Nothing in the password
    manager changes; `proxmox_api_token` is re-minted in Stage A step 3
    (the old one died with the host).
+   **Since Phase 8 the WG host key no longer has to die with the server** —
+   `/etc/wireguard/wg0.key` is inside the nightly `host/server` backup.
+   Restoring it before `roles/wireguard` runs keeps every existing peer
+   config working and makes deltas 5 and 7 above moot; `roles/wireguard`
+   only generates a key when it finds none. See
+   [`disaster-recovery.md` §3](disaster-recovery.md#3-bring-the-host-up-through-the-normal-pipeline).

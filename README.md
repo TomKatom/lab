@@ -18,7 +18,7 @@ phase lands.
 | [`infra/tofu/`](infra/tofu/) | Provision (VM, disks, Proxmox firewall, DNS) | OpenTofu |
 | [`ansible/`](ansible/) | Configure (WireGuard, NAT, hardening, k3s bootstrap) | Ansible |
 | [`clusters/lab/`](clusters/lab/) | Deliver (everything in-cluster) | Argo CD |
-| [`docs/`](docs/) | Architecture, bootstrap, secrets, SSH keys, media retention, runbooks | — |
+| [`docs/`](docs/) | Architecture, bootstrap, secrets, SSH keys, observability, backups, media retention, runbooks | — |
 
 ## Status
 
@@ -45,7 +45,15 @@ is declared in git and described once, in
 Moving an existing library onto it is
 [`docs/runbooks/deluge-arr-path-contract.md`](docs/runbooks/deluge-arr-path-contract.md).
 
-Two things are deliberately still pending:
+**Phase 7 — Observability** and **Phase 8 — Backups** are live. Prometheus,
+Loki, Alloy and Grafana run in the `monitoring` namespace and alert to
+Telegram ([`docs/observability.md`](docs/observability.md)). Backups are
+three tiers — sanoid ZFS snapshots for rollback, a nightly `vzdump` of the
+k3s VM into Proxmox Backup Server, and a nightly file-level backup of the
+hypervisor itself — all client-side encrypted into a Backblaze B2 bucket for
+about $0.25/month ([`docs/backups.md`](docs/backups.md)).
+
+Three things are deliberately still pending:
 
 - **Public DNS has not moved.** `tomkatom.com` and the `sonarr./radarr./
   prowlarr./deluge.` CNAMEs still resolve to the old server, and
@@ -53,7 +61,11 @@ Two things are deliberately still pending:
   NXDOMAIN publicly and is reached over WireGuard only. Moving the zone is
   a separate, operator-triggered runbook —
   [`docs/runbooks/dns-cutover.md`](docs/runbooks/dns-cutover.md).
-- Phases 7 (observability) and 8 (backups) have not started.
+- **The first restore drill has not been run.** Everything in Phase 8 is
+  live and alerting, but `RestoreDrillOverdue` fires until a real restore
+  has been performed and its final step touches the marker — deliberately,
+  because a backup that has never been restored is a hypothesis. Procedure:
+  [`docs/runbooks/restore.md`](docs/runbooks/restore.md#the-restore-drill).
 
 See the phased plan in
 [`master-plan.md`](master-plan.md#phased-implementation-each-phase--its-own-pr).

@@ -64,6 +64,58 @@ outside of the edit workflow above.
 `~/.config/sops/age/keys.txt`. On a new machine, set `SOPS_AGE_KEY_FILE`
 to wherever you've restored it from the password manager instead.
 
+## Backup credentials
+
+Phase 8 added six values to
+`ansible/inventory/group_vars/proxmox_host.sops.yml`. Five behave like every
+other secret in this repo. **One does not, and it is the most important
+thing on this page after the age key itself.**
+
+| Value | What it is | Rotatable |
+|---|---|---|
+| `pbs_encryption_key` | the PBS client-side encryption key, in PBS's own JSON key format | **no — see below** |
+| `pbs_s3_access_key` / `pbs_s3_secret_key` | the **bucket-scoped** Backblaze B2 application key, never the master key | yes |
+| `pbs_pve_storage_password` | the password PVE authenticates to PBS with, as `pve-backup@pbs` | yes |
+| `pbs_notify_telegram_bot_token` / `pbs_notify_telegram_chat_id` | the PBS-native Telegram webhook, which survives the k3s VM being down | yes |
+
+**`pbs_encryption_key` cannot be rotated.** Backups in B2 are encrypted
+client-side, so that key *is* the backups — regenerate it and every existing
+snapshot becomes permanently unreadable. PBS has no re-key operation;
+"rotating" it in practice means starting a new datastore and keeping the old
+one until its retention runs out. It was generated once
+(`proxmox-backup-client key create --kdf none`) and must never be generated
+again.
+
+It therefore lives in **two** places on purpose:
+
+| Copy | Why it exists |
+|---|---|
+| Password-manager entry ("lab — PBS encryption key") | The durable copy, and the only one not protected by the age key. |
+| `pbs_encryption_key` in `proxmox_host.sops.yml` | So a rebuilt host gets it from git before `/etc/pve` exists — the disaster-recovery chain in [`backups.md`](backups.md#the-disaster-recovery-chain). |
+
+**A copy that exists only inside the SOPS file is not a second copy.** The
+age key that decrypts it is in the same password manager, so losing that
+manager loses both. Two separate entries, one root of trust — which is the
+same trade [the keypair table](#the-keypair) already documents, restated
+here because the consequence is different: a lost age key means re-encrypting
+from plaintext sources, while a lost encryption key means the backups are
+gone.
+
+The four rotatable values need a **two-converge dance**, because a secret
+PBS never reveals again cannot be diffed: update the value in SOPS, converge
+once with `-e pbs_rotate_secrets=true`, then converge again without it. The
+reasoning is in `ansible/roles/pbs/tasks/main.yml`'s header, and the
+operational detail in
+[`backups.md`](backups.md#secret-rotation).
+
+**What an attacker holding the B2 key can do:** delete the backups. PBS
+supports neither S3 Object Lock nor bucket versioning — enabling either can
+corrupt the datastore, because garbage collection must be free to delete
+chunks — so there is no vendor-side immutability standing behind this. That
+is an accepted, recorded risk; what stands in for it is bucket scoping, the
+local ZFS snapshot tier under different credentials, and alerting that
+notices a datastore which has stopped changing within 36 hours.
+
 ## CI / Argo access
 
 - **The PR gate** (`ci.yml`) holds no secrets and decrypts nothing. It only

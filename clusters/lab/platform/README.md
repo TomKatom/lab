@@ -44,7 +44,9 @@ Cluster platform services, synced before any media app depends on them:
   a block-level VM backup cannot exclude a path, so the exclusion has to be a
   disk. **Implemented (Phase 8).** The two files that name the class are
   `kube-prometheus-stack.yaml` and `loki.yaml`; everything else keeps the
-  cluster default and stays backed up.
+  cluster default and stays backed up — which way round that defaults, and
+  what else is excluded, is
+  [`../../../docs/backups.md`](../../../docs/backups.md).
 
 Every platform component Phase 5 set out to build is in place; Phase 7 added
 the monitoring stack on top of it and Phase 8 the unbacked storage tier
