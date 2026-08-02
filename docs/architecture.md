@@ -214,10 +214,15 @@ else default-drop.
 
 - App **configs/DBs** (*arr SQLite, Plex metadata) → VM NVMe via
   **local-path-provisioner**. Fast, doesn't need bulk-disk redundancy at
-  this tier (backups cover loss).
+  this tier (backups cover loss — they are inside the nightly VM backup
+  from their first write, because `local-path` is the cluster default).
 - **Media + downloads** → host `tank/data` shared into the VM via
-  **virtiofs**, mounted `/data`, exposed to pods as hostPath/local PVs; ZFS
-  snapshots/scrubs stay on the host.
+  **virtiofs**, mounted `/data`, exposed to pods as hostPath/local PVs.
+  **`tank` is deliberately not snapshotted and not backed up at all** — 3.6
+  TB of re-downloadable content on a non-redundant stripe, and snapshotting
+  it would pin deleted media forever on the pool with the least room for it.
+  The reasoning, including why the \*arr backup zips on it are redundant
+  rather than a gap, is in [`docs/backups.md`](backups.md#deliberately-not-backed-up).
 - **Single `/data` tree** (`/data/torrents` + `/data/media`, TRaSH layout)
   so Sonarr/Radarr do **atomic hardlink moves** — instant imports, no
   copies, same inode.
@@ -329,8 +334,14 @@ which hangs `tofu plan`/`apply` on every run.
   secret for the gated pipelines, and in-cluster for Argo/ksops. Tofu state
   is natively encrypted even though it's committed. Details:
   [`docs/secrets.md`](secrets.md).
-- **Backups** are deferred — later, `vzdump` → NFS on a separate box; the
-  age key and the Argo/ksops secret get backed up alongside cluster state.
+- **Backups** run in three tiers: sanoid ZFS snapshots on `rpool` (local
+  rollback), a nightly `vzdump` of the k3s VM into Proxmox Backup Server,
+  and a nightly file-level backup of the hypervisor's own configuration into
+  the same datastore — which is **client-side encrypted and stored in
+  Backblaze B2**, so the offsite copy is ciphertext the vendor cannot read.
+  The age key and the PBS encryption key are held out-of-band in the
+  password manager; everything else reconciles from git. Design, retention,
+  cost and the recovery chain: [`docs/backups.md`](backups.md).
 
 ## Phased implementation
 
@@ -365,7 +376,16 @@ Each phase is its own PR. Full detail and current status in
    hypervisor's own `node_exporter` for the layer below Kubernetes, alerting
    to Telegram. Component map, alert catalog, retention and rotation
    procedures: [`docs/observability.md`](observability.md).
-8. **Backups** *(later)* — `vzdump` → NFS on a separate box.
+8. **Backups** — Proxmox Backup Server on the host, S3-backed datastore in
+   Backblaze B2 (`ansible/roles/pbs`); the nightly `vzdump` job
+   (`infra/tofu/backup.tf`); a file-level backup of the hypervisor itself;
+   sanoid ZFS snapshots (`ansible/roles/zfs_snapshots`) as the local
+   rollback tier; the monitoring PVCs moved onto an unbacked disk so
+   telemetry never reaches the bucket; and alerting on all of it. Tiers,
+   retention, cost model and the recovery chain:
+   [`docs/backups.md`](backups.md). Restores:
+   [`docs/runbooks/restore.md`](runbooks/restore.md) and
+   [`docs/runbooks/disaster-recovery.md`](runbooks/disaster-recovery.md).
 
 ## Verification
 

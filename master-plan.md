@@ -28,7 +28,7 @@ recoverable (just slow). Management is via **WireGuard**, not public SSH.
 - **Ingress/auth/TLS:** **Traefik + Authelia** forward-auth on **:443**; **wildcard cert `*.tomkatom.com`** via cert-manager (Let's Encrypt **DNS-01 / Cloudflare**); per-service subdomains (`plex.`, `sonarr.`, `auth.`…). external-dns manages records.
 - **Plex:** **direct-play only, no transcoding** → modest resources, no GPU concern, no transcode scratch; served on its own port (not behind Authelia/Traefik auth).
 - **Observability:** deferred (placeholder namespace now).
-- **Backups:** deferred — later, `vzdump` → NFS share on a separate box.
+- **Backups:** **Proxmox Backup Server on the host, S3-backed datastore in Backblaze B2** (EU), plus a local ZFS snapshot tier via sanoid. **This supersedes the original "`vzdump` → NFS share on a separate box" decision** (kept below at "Security / hardening" and in the phase list, struck through, because *why* it changed is the useful part): there is no separate box, and buying one to protect ~35 GB is the wrong trade. PBS gives dirty-bitmap incrementals, chunk dedup, client-side encryption, verify jobs that prove restorability, and single-file restore out of a block-level VM image — none of which an NFS target does. ~$0.25/mo measured. Full design: [`docs/backups.md`](docs/backups.md).
 - Upstream givens: GitHub repo + CI/CD, Cloudflare DNS, trunk-based dev, DRY config.
 - **Cross-tool DRY:** facts shared by ≥2 layers (domain, internal/WireGuard
   subnets, VM IP, service ports) live once in `config/lab.yml`; OpenTofu,
@@ -177,7 +177,7 @@ Reseller-mediated console is the slow last-resort fallback.
 - **Internal segmentation / DMZ (TODO — not yet implemented):** guests currently run with **no per-VM firewall** (`firewall = false` on the vNIC), because a per-VM firewall bridge is incompatible with host egress NAT — with it enabled the guests lose all internet access (see `infra/tofu/firewall.tf` "VM (guest) firewall — intentionally absent"). Consequence: any WireGuard peer has unrestricted L3 reach into the internal network, and there is no east-west control between guests. **Still needed:** a way to deny/limit access *within* the internal network — host-level forward filtering, or a proper DMZ segment — so guest ingress is least-privilege again without sacrificing egress NAT. The guests are not publicly exposed in the meantime (no public IP; internet reaches them only via host DNAT, management only over WireGuard).
 - Least exposure: admin UIs behind **Authelia** (TOTP); Plex uses plex.tv auth on its own port.
 - Secrets never plaintext: `.sops.yaml` enforces encryption by path; gitleaks in CI; age private key held **out-of-band** (password manager), injected once at bootstrap; **Tofu state natively encrypted** even though committed.
-- **Backups (deferred):** later, `vzdump` → NFS on a separate box; also back up the age key + Argo/ksops secret. `docs/runbooks/lockout-recovery.md` covers the reseller path.
+- **Backups:** ~~later, `vzdump` → NFS on a separate box~~ — **superseded**, see the Backups decision above. Now: `vzdump` and a host file-level backup into PBS, **client-side encrypted before anything leaves the host**, into a bucket-scoped Backblaze B2 key. The age key stays out-of-band in the password manager, and the PBS encryption key beside it — that key *is* the backups, and B2 holds ciphertext only. **PBS supports neither S3 Object Lock nor bucket versioning** (enabling either can corrupt the datastore), so immutability is off the table and is an accepted, recorded risk — [`docs/backups.md`](docs/backups.md#what-replaces-immutability) says what stands in for it. `docs/runbooks/lockout-recovery.md` still covers the reseller path; `docs/runbooks/disaster-recovery.md` covers everything after it.
 
 ---
 
@@ -190,7 +190,7 @@ Reseller-mediated console is the slow last-resort fallback.
 5. **Platform apps** — cert-manager (Cloudflare DNS-01, wildcard `*.tomkatom.com`), external-dns, Traefik (:443), Authelia (`auth.tomkatom.com`). Verify a test Ingress → valid cert + auth.
 6. **Media apps** — Prowlarr → Sonarr/Radarr/Bazarr → Deluge (torrent port) → Plex (direct port) → Seerr, on the shared `/data` tree with hardlinks.
 7. **Observability (later)** — kube-prometheus-stack + Loki + node/pve exporters into the placeholder namespace.
-8. **Backups (later)** — `vzdump` → NFS on a separate box.
+8. **Backups** — ~~`vzdump` → NFS on a separate box~~. Proxmox Backup Server on the host with a Backblaze B2 S3 datastore: nightly `vzdump` of the k3s VM, a nightly file-level backup of the hypervisor itself, sanoid ZFS snapshots as the local rollback tier, and the monitoring PVCs moved onto an unbacked disk so daily-churning telemetry never reaches the bucket. Telemetry and alerts on all of it, and restore runbooks that end by touching a drill marker no machine can satisfy. [`docs/backups.md`](docs/backups.md).
 
 ---
 

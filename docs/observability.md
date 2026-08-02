@@ -193,8 +193,8 @@ The split is a backup decision, not a capacity one. `vzdump` of VM 9000 is
 block-level and cannot exclude a path, so the only way to keep ~25 GB of
 daily-churning TSDB out of the PBS datastore — and out of B2 for the six
 months `keep-monthly` would hold those chunks — is to put it on a disk the
-backup job never reads. `docs/backups.md` will carry the full picture once
-the backup jobs themselves land.
+backup job never reads. [`docs/backups.md`](backups.md) carries the full
+picture, including what else is excluded and why.
 
 The chain, end to end:
 

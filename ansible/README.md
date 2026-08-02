@@ -2,8 +2,10 @@
 
 **Layer 2 — Configure.** Brings up the management plane and OS-level state
 that OpenTofu doesn't own: WireGuard, single-IP NAT/DNAT, host + VM
-hardening, the `tank` ZFS pool, the virtiofs share, and the k3s install
-(bundled Traefik disabled).
+hardening, the `tank` ZFS pool, the virtiofs share, the k3s install
+(bundled Traefik disabled), the hypervisor's own metrics, and the backup
+tier — Proxmox Backup Server, the host's file-level backup, and the sanoid
+ZFS snapshots.
 
 Layout:
 - `inventory/hosts.yml` — the Proxmox host (`server`) and the k3s VM
@@ -22,18 +24,41 @@ Layout:
   playbook in dependency order — what a merge to `master` auto-deploys, see
   below), `ping.yml` (connectivity smoke test), `proxmox-host.yml`
   (host-side roles), `verify-wireguard.yml` (the anti-lockout gate below),
-  `hardening-vms.yml` (VM hardening), `virtiofs.yml` (mounts the tank/data
-  share in the k3s VM), `k3s-vm.yml` (formats/mounts the scsi1 data disk and
-  installs single-node k3s in the k3s VM), `argocd-bootstrap.yml` (installs
-  Argo CD via a pinned helm binary and applies the `root-app` app-of-apps
-  manifest — install only; no dispatch has been run against the live
-  cluster yet, see `clusters/lab/bootstrap/README.md`).
-- `roles/` — `pve_repos` (apt repo fix, runs first), `wireguard`,
-  `network_nat`, `hardening`, `zfs_tank`, `virtiofs`, `k3s`, `argocd_secrets`
-  (trust-root cluster Secrets), `argocd` done. Role directory names use
-  underscores, not hyphens (`network_nat`, not `network-nat`) —
-  ansible-lint's `role-name` rule (safety profile) rejects hyphens in role
-  names, so later roles should follow the same convention.
+  `hardening-vms.yml` (VM hardening), `runner.yml` (registers the
+  self-hosted GitHub Actions runner on VM 9001), `virtiofs.yml` (mounts the
+  tank/data share in the k3s VM), `k3s-vm.yml` (formats/mounts the scsi1
+  data disk and installs single-node k3s in the k3s VM),
+  `report-disks.yml` (read-only discovery for new hardware),
+  `argocd-bootstrap.yml` (installs Argo CD via a pinned helm binary and
+  applies the `root-app` app-of-apps manifest — install only, dispatch-only,
+  see `clusters/lab/bootstrap/README.md`).
+- `roles/` — role directory names use underscores, not hyphens
+  (`network_nat`, not `network-nat`): ansible-lint's `role-name` rule
+  (safety profile) rejects hyphens, so new roles follow the same
+  convention.
+
+| Role | What it does | Applied by |
+|---|---|---|
+| `pve_repos` | swaps the subscriber-only PVE/Ceph/PBS enterprise apt sources for the free ones. **Runs first**, before any other role's apt tasks | `proxmox-host.yml` |
+| `pve_firewall` | the host-side firewall backend and the sysctl the Proxmox filter firewall needs | `proxmox-host.yml` |
+| `wireguard` | the management tunnel — the host key is generated in place and never leaves the box | `proxmox-host.yml` |
+| `network_nat` | single-IP NAT/DNAT in nftables (a different hook from the filter firewall Tofu owns) | `proxmox-host.yml` |
+| `hardening` | SSH, `fail2ban`, `unattended-upgrades`, sysctl, `auditd`. Runs on the host *and* the guests, switched by `hardening_is_pve_host` | `proxmox-host.yml`, `hardening-vms.yml` |
+| `zfs_tank` | the `tank` HDD stripe and its datasets | `proxmox-host.yml` |
+| `pve_permissions` | the `Terraform` PVE role, user and ACL that Tofu's API token inherits — including the guest-agent grant, which self-gates until the agents answer | `proxmox-host.yml` |
+| `zfs_arc` | ARC sizing, host-wide (32 GiB), derived against what the guests reserve | `proxmox-host.yml` |
+| `node_exporter` | the hypervisor's own node_exporter plus a textfile collector for ZFS capacity, SMART and the \*arr backup ages — [`docs/observability.md`](../docs/observability.md) | `proxmox-host.yml` |
+| `pbs` | Proxmox Backup Server, the B2-backed `lab` datastore, the PVE storage entry, the host's own file-level backup, and the backup metrics collector — [`docs/backups.md`](../docs/backups.md) | `proxmox-host.yml` |
+| `zfs_snapshots` | sanoid: the local ZFS rollback tier on `rpool`, derived from PVE's own `backup=` flags | `proxmox-host.yml` |
+| `github_runner` | registers the self-hosted Actions runner on VM 9001 | `runner.yml` |
+| `virtiofs` | mounts the host's `tank/data` share inside the k3s VM | `virtiofs.yml` |
+| `k3s` | formats and mounts the VM's data disks, then installs single-node k3s (bundled Traefik off) | `k3s-vm.yml` |
+| `argocd_secrets` | the trust-root cluster Secrets (age key, repo deploy key) | `argocd-bootstrap.yml` |
+| `argocd` | installs Argo CD from a pinned helm binary and applies `root-app` | `argocd-bootstrap.yml` |
+
+`proxmox-host.yml`'s role order is a dependency chain, not an accident —
+that file's header explains each edge, and the list is deliberately
+append-only.
 
 **Bootstrap ordering matters:** WireGuard is brought up and verified first,
 over the still-public SSH; only after the tunnel is confirmed does OpenTofu
