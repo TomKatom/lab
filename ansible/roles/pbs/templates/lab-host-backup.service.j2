@@ -1,0 +1,18 @@
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+[Unit]
+Description=Back up this hypervisor's own configuration to Proxmox Backup Server
+Documentation=https://pbs.proxmox.com/docs/backup-client.html
+# The datastore is served by proxmox-backup-proxy on this same host. Without
+# this the first run after a reboot races the proxy's startup and fails on a
+# connection refused that reads like a configuration error.
+After=proxmox-backup-proxy.service
+Wants=proxmox-backup-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart={{ pbs_host_backup_script_path }}
+# systemd will not start a second instance of a oneshot that is still
+# running, so an upload wedged against B2 would silently swallow every
+# subsequent night. Bound it: a killed run is one missing backup, which the
+# staleness alert reports, rather than an indefinite outage that nothing does.
+TimeoutStartSec={{ pbs_host_backup_timeout }}

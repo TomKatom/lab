@@ -19,6 +19,12 @@
 
 pbs_packages:
   - proxmox-backup-server
+  # The client is what tasks/host_backup.yml's timer runs. It arrives as a
+  # dependency of the server package and PVE recommends it too, so naming it
+  # here changes nothing on this host — it is named so that the one binary
+  # this role schedules a nightly job around is a stated requirement rather
+  # than a package that happens to be pulled in by something else.
+  - proxmox-backup-client
 # proxmox-backup.service is the privileged API daemon; proxmox-backup-proxy
 # is the public-facing one that answers on pbs_api. Both are enabled by the
 # package; asserted here so a host where one was masked converges back.
@@ -139,8 +145,84 @@ pbs_pve_acl_role: DatastoreBackup
 # Client-side encryption key, in PBS's own JSON key format. PVE copies it to
 # /etc/pve/priv/storage/<id>.enc when the storage is added; this copy is kept
 # because proxmox-backup-client needs the same key for the host file-level
-# backups PR 4 adds, and because a restore needs it before /etc/pve exists.
+# backups in tasks/host_backup.yml, and because a restore needs it before
+# /etc/pve exists.
 pbs_encryption_key_path: /etc/proxmox-backup/lab-encryption-key.json
+
+# --- Host file-level backup -------------------------------------------------
+# infra/tofu/backup.tf backs up guest 9000 as a block image. Nothing backs up
+# the machine underneath it, and PVE has no mechanism that would: /etc/pve
+# (which is where the VM definitions themselves live), /etc/wireguard's host
+# key — it never leaves this box and regenerating it invalidates every peer —
+# the network and firewall configuration, and the ZFS layout. Restoring the
+# VM onto a rebuilt host is only worth anything if the host can be rebuilt.
+#
+# So: proxmox-backup-client on a systemd timer, into the same datastore, and
+# therefore under the same prune, verify and GC jobs already defined above —
+# retention for this is not configured here because it is not configured
+# twice.
+#
+# IT AUTHENTICATES AS pbs_pve_user, THE SAME IDENTITY THE PVE STORAGE ENTRY
+# USES. A second PBS user would mean a seventh SOPS value (blocking this on
+# the operator resealing the file) and would buy nothing: both credentials
+# live on this host readable by root, so anyone holding one holds the other.
+# Its DatastoreBackup role is enough — Datastore.Backup covers creating
+# snapshots and reading back the groups this user owns.
+pbs_host_backup_name: lab-host-backup
+pbs_host_backup_script_path: /usr/local/bin/lab-host-backup
+
+# Read by proxmox-backup-client through PBS_PASSWORD_FILE rather than passed
+# as PBS_PASSWORD: a systemd EnvironmentFile would need systemd-compatible
+# quoting of an operator-chosen password, and a command line would put it in
+# `ps`. Written with no trailing newline, so it is exactly the password
+# whether or not the client strips one.
+pbs_host_backup_password_path: /etc/proxmox-backup/lab-host-backup.pw
+
+# Regenerated on every run and archived as its own .pxar — see the script.
+# The script creates this directory; nothing else writes to it.
+pbs_host_backup_facts_dir: /var/lib/lab-host-backup/facts
+
+# The backup group this lands in is host/<id>. PBS ties a group to the
+# auth-id that created it, so changing this starts a new group with its own
+# retention series rather than renaming the existing one.
+pbs_host_backup_id: "{{ inventory_hostname }}"
+
+# Half an hour ahead of infra/tofu/backup.tf's 04:00 vzdump and well ahead of
+# the 06:00 prune, so a night's host backup exists before that night's
+# retention runs.
+pbs_host_backup_schedule: "03:30"
+# ~1 GB read off local NVMe should take minutes. An hour means the upload is
+# wedged, and killing it frees tomorrow's run instead of letting one stuck
+# job block every one after it — systemd will not start a second instance of
+# a oneshot that is still running.
+pbs_host_backup_timeout: 1h
+
+# What this hypervisor *is*, expressed as archives. `name` becomes
+# <name>.pxar inside the snapshot, so it is also what a restore asks for;
+# PBS allows alphanumerics, hyphens and underscores in it, nothing else.
+#
+# The client does not cross mount points (its --all-file-systems defaults to
+# false), which is what keeps 3.6 TB of /tank out of this without a single
+# exclude rule — and it is also why the two PVE entries below are separate:
+# /etc/pve is a FUSE mount, so it would otherwise be skipped silently in the
+# middle of /etc, and /var/lib/pve-cluster is the SQLite behind it.
+pbs_host_backup_sources:
+  - name: etc
+    path: /etc
+  - name: pve-cluster
+    path: /var/lib/pve-cluster
+  - name: root
+    path: /root
+  - name: rebuild-facts
+    path: "{{ pbs_host_backup_facts_dir }}"
+
+# The one mount point crossed on purpose. pmxcfs serves each file's contents
+# out of memory, so /etc/pve reads coherently while the machine is running,
+# whereas the config.db captured by the pve-cluster archive above can be
+# caught mid-write. /etc/pve is therefore the copy to restore from; the raw
+# .db is the fallback for a pmxcfs that will not start at all.
+pbs_host_backup_include_devs:
+  - /etc/pve
 
 # Secrets that cannot be read back cannot be diffed, so this role only writes
 # them when the thing they belong to is created. Set to true for one converge

@@ -1,8 +1,11 @@
 ---
 # Proxmox Backup Server on the hypervisor itself, backed by a Backblaze B2
-# bucket. This role brings up the *destination* only — after it converges
-# nothing is being backed up yet; infra/tofu/backup.tf (PR 3) creates the job
-# that writes to it.
+# bucket. Two thirds of this role build the *destination* — the datastore,
+# its schedules and the PVE storage entry — and infra/tofu/backup.tf owns the
+# nightly vzdump job that writes the k3s VM into it. The exception is
+# tasks/host_backup.yml, which is also a *source*: nothing else can back up
+# the hypervisor's own files, because PVE has no mechanism that backs up the
+# machine PVE runs on.
 #
 # WHY PBS RUNS ON THE PVE HOST. The Proxmox docs advise against it, and the
 # reason they give is a shared failure domain: lose the hypervisor, lose the
@@ -37,9 +40,10 @@
 #      means: update the SOPS value, converge once with
 #      `-e pbs_rotate_secrets=true`, converge again without it.
 #
-# ROLLBACK. `apt remove --purge proxmox-backup-server` plus
+# ROLLBACK. `systemctl disable --now lab-host-backup.timer`, then
+# `apt remove --purge proxmox-backup-server` plus
 # `pvesm remove {{ pbs_pve_storage_id }}` and `zfs destroy` of the cache
-# dataset returns the host to its pre-role state. Nothing in the B2 bucket is
+# dataset, returns the host to its pre-role state. Nothing in the B2 bucket is
 # touched by any of that, which is the point: a rebuilt PBS reattaches the
 # same datastore with --reuse-datastore.
 
@@ -82,3 +86,6 @@
 
 - name: Register the datastore as PVE storage
   ansible.builtin.import_tasks: pve_storage.yml
+
+- name: Schedule the host file-level backup
+  ansible.builtin.import_tasks: host_backup.yml

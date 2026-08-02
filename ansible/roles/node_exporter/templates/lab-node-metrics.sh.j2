@@ -94,8 +94,9 @@ emit_backups() {
     # The *arrs nest backups under manual/ scheduled/ update/, so this walks
     # the tree rather than globbing one level. -printf '%T@' + sort -rn is the
     # newest-file primitive that does not depend on filename ordering. A
-    # missing directory is not an error here: backups/ is created by the
-    # migration runbook, not by roles/virtiofs.
+    # missing directory is not an error here: roles/virtiofs creates backups/
+    # but not the per-app directories under it, which the *arrs create on
+    # their first scheduled backup.
     newest=$(find "${backups_dir}/${app}" -type f -name '*.zip' -printf '%T@\n' 2> /dev/null | sort -rn | head -n 1) || newest=''
     [ -n "$newest" ] || continue
     printf 'media_backup_newest_mtime_seconds{app="%s"} %s\n' "$app" "${newest%%.*}"

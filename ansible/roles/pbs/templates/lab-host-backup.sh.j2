@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+#
+# The hypervisor's own configuration, into the same PBS datastore the k3s
+# VM's nightly vzdump writes to. See pbs_host_backup_* in defaults/main.yml
+# for what is archived and why, and tasks/host_backup.yml for how this is
+# wired up.
+#
+# Everything this needs is resolved at run time rather than baked in at
+# converge time, because this runs unattended at 03:30 and a value that went
+# stale between converges would fail there rather than in the pipeline.
+
+set -eu
+
+# The facts below describe disks, pools and package versions. None of it is
+# secret, but none of it is anyone else's business either, and this also sets
+# the mode of the directory itself on first run.
+umask 077
+
+repository='{{ pbs_host_backup_repository }}'
+facts_dir='{{ pbs_host_backup_facts_dir }}'
+
+# The password for {{ pbs_pve_user }}, written by Ansible from SOPS. Passed as
+# a path, never as a value: a command line is world-readable through ps and
+# an EnvironmentFile would need systemd's quoting rules applied to a password
+# nobody chose with those rules in mind.
+export PBS_PASSWORD_FILE='{{ pbs_host_backup_password_path }}'
+
+# PBS's certificate is self-signed, so the client either pins a fingerprint
+# or asks — and a question under systemd is a hang, not a prompt. Read out of
+# the local PBS on every run rather than rendered in by Ansible: a renewed
+# certificate would otherwise break this at 03:30 and keep it broken until
+# somebody happened to converge. Matched by shape (32 colon-separated hex
+# octets) and not by the label in front of it, exactly as
+# tasks/pve_storage.yml does it.
+PBS_FINGERPRINT=$(proxmox-backup-manager cert info 2> /dev/null \
+  | grep -oE '([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}' \
+  | head -n 1)
+export PBS_FINGERPRINT
+
+if [ -z "$PBS_FINGERPRINT" ]; then
+  echo 'lab-host-backup: no SHA-256 fingerprint in `proxmox-backup-manager cert info`.' >&2
+  echo 'Refusing to back up: without it the client cannot verify PBS.' >&2
+  exit 1
+fi
+
+# --- Rebuild facts -----------------------------------------------------------
+# What has to be in front of you to turn a reseller reinstall back into this
+# machine, and none of which any config file records: which physical disk was
+# which, how the pools were laid out, what was installed. This is the
+# difference between a bare-metal rebuild being mechanical and it being
+# archaeological. Regenerated every run, so tonight's snapshot describes
+# tonight's machine.
+mkdir -p "$facts_dir"
+# -maxdepth 1 -type f: drops a fact whose command has since been removed,
+# without ever recursing and without touching a directory.
+find "$facts_dir" -maxdepth 1 -type f -delete
+
+fact() {
+  local name=$1
+  shift
+  # One missing or failing tool must not cost us /etc. Stderr lands in the
+  # file rather than only in the journal, so the failure is visible in the
+  # restored archive months later, when the journal of that night is gone.
+  "$@" > "${facts_dir}/${name}.txt" 2>&1 || true
+}
+
+fact pveversion pveversion -v
+fact zpool-status zpool status -v
+fact zpool-list zpool list -v
+fact zfs-list zfs list -t all -o name,used,avail,refer,mountpoint,quota,refreservation
+fact zfs-properties zfs get all
+fact disk-by-id ls -l /dev/disk/by-id/
+fact lsblk lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,SERIAL,WWN
+fact pvesm-status pvesm status
+fact packages dpkg-query -W -f '${binary:Package}\t${Version}\n'
+
+# --- The backup --------------------------------------------------------------
+# Archive specs are <name>.pxar:<path>. --keyfile is what makes this
+# client-side encrypted with the same key the PVE storage entry uses, so B2
+# holds ciphertext for the host archives exactly as it does for the VM image;
+# the key was created with --kdf none, so it needs no passphrase and this
+# needs no PBS_ENCRYPTION_PASSWORD.
+#
+# No --change-detection-mode: at this size the default's full re-read costs
+# seconds, while the metadata modes change the on-disk archive format to
+# .mpxar/.ppxar — a restore-path complication bought for nothing here.
+#
+# exec, so the client is the unit's main process: systemd's TimeoutStartSec
+# then acts on the upload itself rather than on a shell waiting for it.
+exec proxmox-backup-client backup \
+{% for source in pbs_host_backup_sources %}
+  {{ source.name }}.pxar:'{{ source.path }}' \
+{% endfor %}
+{% for dev in pbs_host_backup_include_devs %}
+  --include-dev '{{ dev }}' \
+{% endfor %}
+  --repository "$repository" \
+  --backup-type host \
+  --backup-id '{{ pbs_host_backup_id }}' \
+  --keyfile '{{ pbs_encryption_key_path }}'

@@ -30,6 +30,14 @@ pbs_verify_job_args: >-
   --ignore-verified true
   --outdated-after {{ pbs_verify_outdated_after }}
 
+# proxmox-backup-client's repository form is
+# [[username@]server[:port]:]datastore, so a realm-qualified auth-id brings
+# its own @ and the result legitimately carries two of them:
+# pve-backup@pbs@127.0.0.1:8007:lab. Assembled from the same four values
+# tasks/pve_storage.yml builds the `pvesm add` call from, so the two clients
+# of this datastore cannot drift into naming different things.
+pbs_host_backup_repository: "{{ pbs_pve_user }}@{{ pbs_pve_storage_server }}:{{ ports.pbs_api }}:{{ pbs_datastore }}"
+
 # Telegram's Bot API, driven entirely from the query string: no JSON body and
 # no headers, so nothing here depends on how PBS base64-encodes a body or on
 # getting JSON escaping right inside a handlebars template. `url-encode` is

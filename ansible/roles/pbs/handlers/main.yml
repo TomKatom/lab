@@ -1,0 +1,11 @@
+---
+- name: Reload lab-host-backup
+  # Unit files changed on disk: daemon_reload picks them up, and restarting the
+  # timer re-arms it against the new schedule. Restarting a *timer* does not run
+  # its service — and with Persistent= and no missed run to catch up on, systemd
+  # simply waits for the next OnCalendar. Changing the schedule therefore never
+  # costs an unplanned upload.
+  ansible.builtin.systemd:
+    name: "{{ pbs_host_backup_name }}.timer"
+    daemon_reload: true
+    state: restarted
