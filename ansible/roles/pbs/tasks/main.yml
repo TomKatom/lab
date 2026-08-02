@@ -5,7 +5,9 @@
 # nightly vzdump job that writes the k3s VM into it. The exception is
 # tasks/host_backup.yml, which is also a *source*: nothing else can back up
 # the hypervisor's own files, because PVE has no mechanism that backs up the
-# machine PVE runs on.
+# machine PVE runs on. tasks/metrics.yml is neither — it is the reporting
+# layer, and it exists because PBS speaks InfluxDB and Graphite but has no
+# Prometheus endpoint at any version.
 #
 # WHY PBS RUNS ON THE PVE HOST. The Proxmox docs advise against it, and the
 # reason they give is a shared failure domain: lose the hypervisor, lose the
@@ -40,7 +42,10 @@
 #      means: update the SOPS value, converge once with
 #      `-e pbs_rotate_secrets=true`, converge again without it.
 #
-# ROLLBACK. `systemctl disable --now lab-host-backup.timer`, then
+# ROLLBACK. `systemctl disable --now lab-host-backup.timer
+# lab-backup-metrics.timer` plus `rm -f {{ pbs_metrics_textfile_path }}` (an
+# orphaned .prom file keeps being served forever, with numbers that stopped
+# moving), then
 # `apt remove --purge proxmox-backup-server` plus
 # `pvesm remove {{ pbs_pve_storage_id }}` and `zfs destroy` of the cache
 # dataset, returns the host to its pre-role state. Nothing in the B2 bucket is
@@ -89,3 +94,6 @@
 
 - name: Schedule the host file-level backup
   ansible.builtin.import_tasks: host_backup.yml
+
+- name: Export backup telemetry for Prometheus
+  ansible.builtin.import_tasks: metrics.yml

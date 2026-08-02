@@ -1,0 +1,14 @@
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+[Unit]
+Description=Write the PBS backup metrics for node_exporter (last backup, verify, GC, cache, restore drill)
+Documentation=https://github.com/prometheus/node_exporter#textfile-collector
+
+[Service]
+Type=oneshot
+ExecStart={{ pbs_metrics_script_path }}
+# Unlike roles/node_exporter's collector, this one talks to a network service.
+# A wedged TLS connection would otherwise hold the unit active forever, and
+# systemd will not start a second run of a oneshot that is still going — so a
+# single hang would silently freeze these metrics for good. Two minutes is
+# far beyond the sub-second these local API calls take.
+TimeoutStartSec={{ pbs_metrics_timeout }}

@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/pbs) — do not edit by hand.
+#
+# The backup facts nothing on this host exports. PBS can push metrics to
+# InfluxDB or Graphite and to nothing else — there is no Prometheus endpoint
+# on it at any version — so the only way these numbers reach the Prometheus
+# inside the k3s VM is node_exporter's textfile collector, the same route
+# roles/node_exporter uses for ZFS pool capacity.
+#
+# It writes a SECOND .prom file rather than extending that role's script.
+# They fail differently and on different clocks: this one talks to a network
+# service and can hang or be refused, that one runs three local commands. A
+# single file would mean a PBS outage taking ZFS capacity and SMART freshness
+# down with it, since node_exporter treats a file it cannot parse as an error
+# for the whole textfile directory.
+#
+# EMITTING NO SERIES IS THE POINT, not an omission — see the HELP text on
+# each family below. A `0` for "never verified" makes `time() - metric`
+# evaluate to the entire Unix epoch, so the staleness alert fires forever and
+# cannot be cleared by fixing the thing it complains about. Absence is the
+# honest encoding, which is why every staleness rule in
+# clusters/lab/platform/monitoring/rules-backups.yaml carries a paired
+# absent() clause. The one exception is lab_backup_datastore_reachable, which
+# is a boolean and whose 0 means something real.
+#
+# WHAT EACH NUMBER IS MEASURED FROM, since three of them have a plausible
+# wrong source:
+#
+#  * Last backup comes from the SNAPSHOT LIST, not from the task log. What
+#    matters at 03:00 on a bad morning is whether a restorable snapshot
+#    exists, not whether a job once reported success — a snapshot pruned out
+#    from under us has to read as "no recent backup", and it does this way.
+#    Only snapshots carrying index.json.blob are counted: PBS writes that
+#    manifest when a backup FINISHES, so an interrupted upload leaves a
+#    snapshot without one and it must not be mistaken for a success.
+#  * Last verify comes from the TASK LOG, because it is the only place it is
+#    exposed. `proxmox-backup-manager verify-job list` returns the job's
+#    configuration and nothing about its runs (measured — its output has no
+#    last-run-* fields at all); the status the GUI shows comes from
+#    /api2/json/admin/verify, which no CLI subcommand reaches.
+#  * Last GC comes from `garbage-collection list`, which DOES carry
+#    last-run-state and last-run-endtime and is scoped to a store, so it is
+#    preferred over the task log for this one.
+#
+# THE CACHE FAMILY IS NAMED FOR THE CACHE ON PURPOSE. `proxmox-backup-client
+# status` against an S3-backed datastore reports the LOCAL CACHE filesystem —
+# measured on this host: total 68719476736 is exactly pbs_cache_quota (64
+# GiB) and used tracks `zfs get used rpool/pbs-cache` to the byte. It is not
+# the bucket, and calling it lab_backup_datastore_used_bytes (as the phase
+# plan did) would produce a number an operator reads as "bytes in B2" that is
+# wrong by orders of magnitude. PBS does not expose the bucket's size at all;
+# what is in B2 is bounded by the prune policy, not watched by an alert.
+#
+# Written to a temp file and renamed into place, like roles/node_exporter's
+# collector and for the same reason: node_exporter parses every *.prom on
+# every scrape and one half-written file fails the entire textfile collector,
+# including the packaged smartmon and nvme ones. rename(2) inside a directory
+# is atomic, and the EXIT trap means a failure part way through leaves the
+# last good file in place rather than publishing a truncated one.
+
+set -eu
+
+out='{{ pbs_metrics_textfile_path }}'
+tmp="${out}.$$.tmp"
+datastore='{{ pbs_datastore }}'
+repository='{{ pbs_host_backup_repository }}'
+drill_marker='{{ pbs_metrics_restore_drill_marker }}'
+task_limit='{{ pbs_metrics_task_limit }}'
+
+# The same credential file tasks/host_backup.yml writes, for the same PBS
+# user, passed as a path and never as a value — a command line is readable
+# through ps.
+export PBS_PASSWORD_FILE='{{ pbs_host_backup_password_path }}'
+
+# PBS's certificate is self-signed, so the client pins a fingerprint or asks,
+# and a question under systemd is a hang rather than a prompt. Read live on
+# every run rather than baked in at converge: a renewed certificate would
+# otherwise break this at some future 03:30 and keep it broken until somebody
+# happened to converge. Matched by shape, not by the label in front of it,
+# exactly as tasks/pve_storage.yml and lab-host-backup.sh do it.
+PBS_FINGERPRINT=$(proxmox-backup-manager cert info 2> /dev/null \
+  | grep -oE '([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}' \
+  | head -n 1)
+export PBS_FINGERPRINT
+
+# HELP/TYPE are printed unconditionally, ahead of anything that can decline
+# to produce samples: a declared but empty family is valid exposition and
+# keeps the file self-describing on a host where PBS is down.
+emit_datastore() {
+  printf '# HELP lab_backup_datastore_reachable 1 when the PBS datastore answered a status call, 0 when it did not. A real 0, not a staleness sentinel.\n'
+  printf '# TYPE lab_backup_datastore_reachable gauge\n'
+  printf '# HELP lab_backup_cache_used_bytes Bytes used on the local S3 chunk cache filesystem, as PBS itself reports it. NOT the size of the bucket.\n'
+  printf '# TYPE lab_backup_cache_used_bytes gauge\n'
+  printf '# HELP lab_backup_cache_total_bytes Size of the local S3 chunk cache filesystem, i.e. the ZFS quota on it.\n'
+  printf '# TYPE lab_backup_cache_total_bytes gauge\n'
+
+  # No fingerprint means PBS could not be asked for one, which is already the
+  # answer. Returning here rather than calling the client anyway also keeps
+  # this away from the interactive trust prompt, which under a timer is a
+  # process that never exits.
+  if [ -z "$PBS_FINGERPRINT" ]; then
+    printf 'lab_backup_datastore_reachable{datastore="%s"} 0\n' "$datastore"
+    return 0
+  fi
+
+  local status=''
+  # No pipefail anywhere in this script: `set -e` plus a failing head of a
+  # pipeline would abort before the rename and drop every other family too.
+  # Each command absorbs its own failure instead.
+  status=$(proxmox-backup-client status \
+    --repository "$repository" --output-format json 2> /dev/null < /dev/null) || status=''
+
+  if [ -z "$status" ]; then
+    printf 'lab_backup_datastore_reachable{datastore="%s"} 0\n' "$datastore"
+    return 0
+  fi
+  printf 'lab_backup_datastore_reachable{datastore="%s"} 1\n' "$datastore"
+
+  # Every jq expression in this script guards on the value being a number.
+  # jq prints `null` for a missing key, and `lab_backup_cache_used_bytes null`
+  # is a parse error that would take out the packaged collectors' metrics
+  # along with these.
+  printf '%s' "$status" | jq -r --arg ds "$datastore" '
+    select((.used | type) == "number" and (.total | type) == "number")
+    | "lab_backup_cache_used_bytes{datastore=\"\($ds)\"} \(.used)",
+      "lab_backup_cache_total_bytes{datastore=\"\($ds)\"} \(.total)"
+  ' || true
+}
+
+emit_snapshots() {
+  printf '# HELP lab_backup_last_success_timestamp_seconds Backup time of the newest COMPLETE snapshot in each PBS backup group. No series at all when a group has none.\n'
+  printf '# TYPE lab_backup_last_success_timestamp_seconds gauge\n'
+  printf '# HELP lab_backup_last_size_bytes Logical size of that snapshot, before deduplication and compression.\n'
+  printf '# TYPE lab_backup_last_size_bytes gauge\n'
+  printf '# HELP lab_backup_snapshot_count Complete snapshots currently held in each PBS backup group.\n'
+  printf '# TYPE lab_backup_snapshot_count gauge\n'
+
+  [ -n "$PBS_FINGERPRINT" ] || return 0
+
+  local snapshots=''
+  snapshots=$(proxmox-backup-client snapshot list \
+    --repository "$repository" --output-format json 2> /dev/null < /dev/null) || snapshots=''
+  [ -n "$snapshots" ] || return 0
+
+  # index.json.blob is the manifest PBS writes on finish; a snapshot without
+  # one is an upload that did not complete. Filtering happens BEFORE the
+  # grouping, so a group holding only incomplete snapshots produces no series
+  # at all and reads as "never backed up" — which is what it is.
+  printf '%s' "$snapshots" | jq -r --arg ds "$datastore" '
+    map(select([.files[]?.filename] | index("index.json.blob")))
+    | map(select((.["backup-type"] | type) == "string" and (.["backup-id"] | type) == "string"))
+    | group_by(.["backup-type"] + "/" + .["backup-id"])[]
+    | (.[0]["backup-type"] + "/" + .[0]["backup-id"]) as $target
+    | (map(select((.["backup-time"] | type) == "number")) | max_by(.["backup-time"])) as $newest
+    | (
+        if $newest == null then empty
+        else
+          "lab_backup_last_success_timestamp_seconds{datastore=\"\($ds)\",target=\"\($target)\"} \($newest["backup-time"])",
+          (
+            if ($newest.size | type) == "number"
+            then "lab_backup_last_size_bytes{datastore=\"\($ds)\",target=\"\($target)\"} \($newest.size)"
+            else empty
+            end
+          )
+        end
+      ),
+      "lab_backup_snapshot_count{datastore=\"\($ds)\",target=\"\($target)\"} \(length)"
+  ' || true
+}
+
+emit_maintenance() {
+  printf '# HELP lab_backup_verify_last_success_timestamp_seconds End time of the most recent PBS verify task that finished OK. No series until one has.\n'
+  printf '# TYPE lab_backup_verify_last_success_timestamp_seconds gauge\n'
+  printf '# HELP lab_backup_gc_last_success_timestamp_seconds End time of the most recent garbage collection that finished OK. No series until one has.\n'
+  printf '# TYPE lab_backup_gc_last_success_timestamp_seconds gauge\n'
+
+  local tasks=''
+  tasks=$(proxmox-backup-manager task list \
+    --all --limit "$task_limit" --output-format json 2> /dev/null) || tasks=''
+
+  # `verificationjob` is a scheduled run, `verify` a manual one; both count,
+  # because either proves the chunks were read back out of B2 and matched.
+  # Both strings are PBS's own worker types, read out of its GUI bundle
+  # rather than guessed. There is one datastore on this host and the task
+  # list is not reliably scoped to a store, so this is not filtered by one —
+  # the label states which datastore the alert is about, not which store the
+  # task ran against. A second datastore would need this rewritten.
+  #
+  # A run in progress has no `status` and no `endtime`, so it is dropped by
+  # the status filter and cannot produce a half-finished timestamp.
+  if [ -n "$tasks" ]; then
+    printf '%s' "$tasks" | jq -r --arg ds "$datastore" '
+      [
+        .[]
+        | select(.worker_type == "verificationjob" or .worker_type == "verify")
+        | select(.status == "OK")
+        | .endtime
+        | select(type == "number")
+      ]
+      | if length > 0
+        then "lab_backup_verify_last_success_timestamp_seconds{datastore=\"\($ds)\"} \(max)"
+        else empty
+        end
+    ' || true
+  fi
+
+  local gc=''
+  gc=$(proxmox-backup-manager garbage-collection list --output-format json 2> /dev/null) || gc=''
+  if [ -n "$gc" ]; then
+    # last-run-state and last-run-endtime are absent entirely until the first
+    # GC has run — measured on this host before one had. Hence the type
+    # guard rather than a comparison against 0.
+    printf '%s' "$gc" | jq -r --arg ds "$datastore" '
+      .[]
+      | select(.store == $ds)
+      | select(.["last-run-state"] == "OK")
+      | select((.["last-run-endtime"] | type) == "number")
+      | "lab_backup_gc_last_success_timestamp_seconds{datastore=\"\($ds)\"} \(.["last-run-endtime"])"
+    ' || true
+  fi
+}
+
+emit_restore_drill() {
+  printf '# HELP lab_backup_restore_drill_timestamp_seconds Unix mtime of the restore-drill marker, touched by the final step of docs/runbooks/restore.md. Absent until the first drill.\n'
+  printf '# TYPE lab_backup_restore_drill_timestamp_seconds gauge\n'
+
+  # Nothing creates this file except an operator finishing a drill. Ansible
+  # deliberately does not seed it: a seeded marker would say a restore had
+  # been proven when none had, and the entire value of this series is that it
+  # cannot be satisfied by anything other than performing one.
+  [ -f "$drill_marker" ] || return 0
+
+  local mtime=''
+  mtime=$(stat -c %Y "$drill_marker" 2> /dev/null) || mtime=''
+  case $mtime in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  printf 'lab_backup_restore_drill_timestamp_seconds %s\n' "$mtime"
+}
+
+# Refuse to publish anything that is not valid exposition. Every line must be
+# a comment or `name{labels} number`. This is belt and braces over the type
+# guards above and it is worth having: the blast radius of one bad line is
+# not this file, it is every textfile metric on the host — smartmon, nvme,
+# apt and roles/node_exporter's — because node_exporter reports a parse error
+# for the directory as a whole. Failing here keeps the previous good file in
+# place and surfaces as BackupMetricsStale rather than as a silent hole in
+# unrelated metrics.
+publishable() {
+  ! grep -qvE '^(#.*|[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^{}]*\})? -?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)$' "$1"
+}
+
+# 022 so node_exporter, which runs as the unprivileged `prometheus` user, can
+# read what this root-owned unit writes.
+umask 022
+trap 'rm -f "$tmp"' EXIT
+
+{
+  emit_datastore
+  emit_snapshots
+  emit_maintenance
+  emit_restore_drill
+} > "$tmp"
+
+if ! publishable "$tmp"; then
+  echo 'lab-backup-metrics: refusing to publish, output is not valid exposition:' >&2
+  grep -nvE '^(#.*|[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^{}]*\})? -?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?)$' "$tmp" >&2 || true
+  exit 1
+fi
+
+mv -f "$tmp" "$out"

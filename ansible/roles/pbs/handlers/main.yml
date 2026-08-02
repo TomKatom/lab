@@ -9,3 +9,21 @@
     name: "{{ pbs_host_backup_name }}.timer"
     daemon_reload: true
     state: restarted
+
+- name: Reload lab-backup-metrics
+  # Same as above, for the telemetry collector's units. Restarting a timer
+  # does not run its service; the collector's own "run once now" task in
+  # tasks/metrics.yml is what refreshes the numbers on a converge.
+  ansible.builtin.systemd:
+    name: "{{ pbs_metrics_name }}.timer"
+    daemon_reload: true
+    state: restarted
+
+- name: Refresh lab-backup-metrics
+  # Script changed: run the oneshot rather than serving numbers produced by
+  # the previous version of it for up to pbs_metrics_interval. Unlike
+  # lab-host-backup, which this role deliberately gives no handler, running
+  # this costs four local API calls and uploads nothing.
+  ansible.builtin.systemd:
+    name: "{{ pbs_metrics_name }}.service"
+    state: restarted

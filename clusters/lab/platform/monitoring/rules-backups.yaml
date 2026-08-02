@@ -1,0 +1,280 @@
+# Alert rules for the backup tier: the PBS datastore on the hypervisor, the
+# nightly vzdump of the k3s VM, the hypervisor's own file-level backup, and
+# the restore drill that is the only thing proving any of it works.
+#
+# Nothing upstream can produce these. PBS has no Prometheus endpoint at any
+# version — it pushes to InfluxDB or Graphite and to nothing else — so every
+# series below comes from `ansible/roles/pbs`' own textfile collector
+# (`templates/lab-backup-metrics.sh.j2`) via the hypervisor's node_exporter,
+# which is scraped by ./scrapeconfig-pve-node.yaml as `job="pve-node"`.
+#
+# READ ./rules-pve-host.yaml's HEADER FIRST. Four properties are shared with
+# it and are not restated in full here:
+#   * `job="pve-node"` on every rule is load-bearing, not tidiness. The
+#     in-cluster node_exporter DaemonSet emits identically-named series.
+#   * No `release:` label — ../kube-prometheus-stack.yaml sets all five
+#     *SelectorNilUsesHelmValues to false, so every PrometheusRule in every
+#     namespace is picked up and a label here would imply a coupling that
+#     does not exist.
+#   * No angle brackets in annotations. The Telegram receiver runs with
+#     parse_mode HTML and a stray "<" makes the whole notification fail to
+#     send, silently.
+#   * The metric names and label names below are hand-copied from that
+#     collector script and nothing checks the two agree. Rename a label there
+#     and these rules keep evaluating, keep matching nothing, and never fire
+#     again.
+#
+# THE ABSENCE RULE, which is why half of these expressions look redundant.
+# The collector emits NO SERIES AT ALL for a backup that has never happened,
+# a verify that has never run and a drill that has never been performed — a
+# `0` would make `time() - metric` evaluate to the entire Unix epoch, so the
+# alert would fire forever and could not be cleared by fixing the backup.
+# Absence is the honest encoding, but a comparison against an absent series
+# yields an empty vector, so on its own each rule would be silent in exactly
+# the case it exists for: "it never started". Hence a paired `absent()` per
+# expected series, hard-coded — adding a backup target means adding a clause.
+#
+# THE TWO TARGET NAMES ARE A CONTRACT WITH TWO OTHER LAYERS.
+#   host/server — `host` plus roles/pbs' pbs_host_backup_id, which defaults to
+#                 the inventory hostname.
+#   vm/9000     — `vm` plus the guest id in infra/tofu/backup.tf, which is
+#                 var.vm_id.
+# Neither layer validates the other and PBS invents the group name itself
+# from what the client sends. If either is ever wrong the failure is loud and
+# in the safe direction: the absent() clause fires rather than the rule going
+# quiet.
+#
+# EVERY RULE ENDS `and on() up{job="pve-node"} == 1`. During a node_exporter
+# outage every series here is absent at once, PveNodeExporterDown already
+# says so, and eight simultaneous backup alerts would add nothing but noise.
+#
+# WHAT THIS DOES NOT COVER, deliberately:
+#   * B2 itself. `lab_backup_datastore_reachable` proves PBS answered and
+#     opened the datastore, which for an S3 backend is mostly a local cache
+#     operation — it is not proof the bucket is reachable. A B2 outage
+#     surfaces here as a failed backup, i.e. as BackupStale, which is the
+#     honest signal: what matters is whether a snapshot landed.
+#   * rpool capacity. ZfsPoolCapacityHigh in ./rules-pve-host.yaml already
+#     watches the pool that holds both the chunk cache and the sanoid
+#     snapshots, at 0.80 and 0.90. A second pool-capacity rule here would be
+#     a duplicate with a different threshold.
+#   * The sanoid local snapshot tier (ansible/roles/zfs_snapshots). Its
+#     failure mode is a *stale* snapshot set rather than a missing one, and
+#     nothing exports snapshot ages today. It is the tier whose absence costs
+#     least — B2 still holds everything — and it is called out here so that
+#     "backups are monitored" is not read as covering it.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backups
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: backups
+spec:
+  groups:
+    - name: backups
+      rules:
+        # 36 hours, against a nightly schedule: one missed night is 24 h plus
+        # change, so this needs TWO consecutive failures before it fires and
+        # cannot be tripped by a single slow upload or a reboot at 04:00
+        # (infra/tofu/backup.tf sets repeat_missed, which turns a reboot into
+        # a late backup rather than a missing one).
+        #
+        # Critical, unlike MediaBackupStale's warning. The *arr zips it
+        # watches are a convenience whose contents are inside this backup
+        # anyway; these two targets are the entire disaster-recovery position
+        # of the machine. This is the alert the whole backup phase exists to
+        # produce.
+        - alert: BackupStale
+          expr: |-
+            (
+              time() - lab_backup_last_success_timestamp_seconds{job="pve-node"} > 36 * 3600
+              or
+              absent(lab_backup_last_success_timestamp_seconds{job="pve-node", target="vm/9000"})
+              or
+              absent(lab_backup_last_success_timestamp_seconds{job="pve-node", target="host/server"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: No recent PBS backup for {{ $labels.target }}
+            description: >-
+              The newest complete snapshot for {{ $labels.target }} in the lab
+              datastore is more than 36 hours old, or there is none at all.
+              Two consecutive nightly runs have
+              therefore failed. Check "systemctl status lab-host-backup" on
+              the host for host/server, or the vzdump task log in the Proxmox
+              UI for vm/9000. Only snapshots carrying a finished manifest
+              count, so an interrupted upload reads as no backup.
+
+        # 10 days against a weekly schedule (roles/pbs sets sun 07:00), so
+        # one skipped Sunday is tolerated and two are not. Verification is
+        # what turns "a snapshot exists" into "its chunks read back out of B2
+        # and matched their checksums" — without it a corrupt datastore looks
+        # perfectly healthy right up until a restore.
+        - alert: PbsVerifyStale
+          expr: |-
+            (
+              time() - lab_backup_verify_last_success_timestamp_seconds{job="pve-node"} > 10 * 86400
+              or
+              absent(lab_backup_verify_last_success_timestamp_seconds{job="pve-node", datastore="lab"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: PBS has not verified the lab datastore in over 10 days
+            description: >-
+              No verify task has finished OK for more than 10 days, or none
+              ever has. Run "proxmox-backup-manager verify-job run lab-verify"
+              on the host and read the task log. Until this clears, nothing
+              has confirmed the chunks in B2 are still readable and intact.
+
+        # Also 10 days against a weekly schedule (sat 02:00). GC is what
+        # actually frees the chunks a prune unreferenced; if it stops, the
+        # bucket grows without limit and the bill grows with it, while
+        # everything else keeps looking fine.
+        - alert: PbsGcStale
+          expr: |-
+            (
+              time() - lab_backup_gc_last_success_timestamp_seconds{job="pve-node"} > 10 * 86400
+              or
+              absent(lab_backup_gc_last_success_timestamp_seconds{job="pve-node", datastore="lab"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: PBS has not garbage-collected the lab datastore in over 10 days
+            description: >-
+              No garbage collection has finished OK for more than 10 days, or
+              none ever has. Pruned snapshots keep occupying B2 until it runs.
+              Check "proxmox-backup-manager garbage-collection list" on the
+              host; note GC on an S3 datastore costs API calls, so it is
+              scheduled weekly on purpose.
+
+        # The one rule here whose 0 is a real value rather than a sentinel:
+        # the collector emits 0 when it could not get a status out of PBS at
+        # all. 30m of it means more than one collector run has failed, not a
+        # single unlucky moment during a PBS restart.
+        - alert: PbsDatastoreUnreachable
+          expr: |-
+            (
+              lab_backup_datastore_reachable{job="pve-node"} == 0
+              or
+              absent(lab_backup_datastore_reachable{job="pve-node", datastore="lab"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: The PBS datastore is not answering on the Proxmox host
+            description: >-
+              proxmox-backup-client could not read the status of the
+              {{ $labels.datastore }} datastore for 30 minutes. Backups are
+              failing now, not in 36 hours. Check "systemctl status
+              proxmox-backup-proxy proxmox-backup" on the host, then the
+              credential and certificate fingerprint the client uses. This
+              says nothing about B2 itself — an S3 datastore answers a status
+              call out of its local cache.
+
+        # 85 % of the chunk cache, which is a real signal and not a permanent
+        # one: PBS caps the cache with an LRU of its own, measured on this
+        # host at 4095 chunks (roughly 16 GiB) against a 64 GiB ZFS quota, so
+        # in normal operation it evicts long before this. Sustained above 85 %
+        # means eviction is not keeping up or something else is writing into
+        # the dataset — and the failure it leads to is a backup that cannot
+        # write, because the quota is a hard wall.
+        #
+        # This needs its own metric rather than node_filesystem_avail_bytes:
+        # Debian patches node_exporter's mount-point exclusion to cover /mnt,
+        # and the cache is mounted at /mnt/pbs-cache. Confirmed by query — the
+        # host reports no filesystem series for it at all.
+        - alert: PbsCacheDiskHigh
+          expr: |-
+            (
+              lab_backup_cache_used_bytes{job="pve-node"}
+              /
+              lab_backup_cache_total_bytes{job="pve-node"}
+            ) > 0.85
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: The PBS chunk cache is over 85 percent full
+            description: >-
+              The local S3 chunk cache for {{ $labels.datastore }} is at
+              {{ $value | humanizePercentage }} of its quota. PBS evicts from
+              this cache itself, so this should not happen; check
+              "zfs list -o space rpool/pbs-cache" on the host for whether
+              something other than PBS is using the dataset. A full cache
+              stops backups, it does not slow them down.
+
+        # 180 days. A backup that has never been restored is a hypothesis,
+        # and this is the only rule in the file that cannot be satisfied by a
+        # machine — the marker is touched by the last step of the restore
+        # drill in docs/runbooks/restore.md and by nothing else.
+        #
+        # IT FIRES IMMEDIATELY ON A HOST WHERE NO DRILL HAS EVER BEEN RUN,
+        # and that is intended rather than an oversight: the absent() case is
+        # the strongest form of the thing it is warning about. Ansible
+        # deliberately does not seed the marker — a seeded file would clear
+        # this alert by asserting something that had not happened.
+        - alert: RestoreDrillOverdue
+          expr: |-
+            (
+              time() - lab_backup_restore_drill_timestamp_seconds{job="pve-node"} > 180 * 86400
+              or
+              absent(lab_backup_restore_drill_timestamp_seconds{job="pve-node"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: No restore has been drilled in the last 180 days
+            description: >-
+              The restore drill marker on the Proxmox host is over 180 days
+              old, or has never been written. Every other alert in this group
+              watches whether backups are being TAKEN; only a drill shows they
+              can be given back. Follow the restore runbook, which ends by
+              touching the marker.
+
+        # Everything above is read out of one file that one timer writes. If
+        # that timer stops, the timestamps freeze — which still trips
+        # BackupStale eventually, because they are absolute — but the
+        # reachable gauge and the cache reading freeze at whatever they last
+        # were and stop meaning anything. An hour is four missed runs at the
+        # collector's 15-minute interval.
+        #
+        # The `file` label is node_exporter's FULL PATH to the .prom file, not
+        # its basename. The chart's own NodeTextFileCollectorScrapeError does
+        # not cover this host: like every upstream node-exporter rule it is
+        # scoped job="node-exporter", and the hypervisor is job="pve-node".
+        - alert: BackupMetricsStale
+          expr: |-
+            (
+              time() - node_textfile_mtime_seconds{job="pve-node", file="/var/lib/prometheus/node-exporter/lab-backup.prom"} > 3600
+              or
+              absent(node_textfile_mtime_seconds{job="pve-node", file="/var/lib/prometheus/node-exporter/lab-backup.prom"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: The backup metrics collector has stopped publishing
+            description: >-
+              lab-backup.prom has not been rewritten in over an hour, so every
+              other alert in this group is reading frozen numbers. Check
+              "systemctl status lab-backup-metrics.service lab-backup-metrics.timer"
+              on the host. The collector refuses to publish output that is not
+              valid exposition, so a failing run leaves the previous file in
+              place and shows up here rather than as a parse error taking out
+              the host's other textfile metrics.
