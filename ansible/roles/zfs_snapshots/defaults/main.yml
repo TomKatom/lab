@@ -1,0 +1,118 @@
+---
+# Role-private vars, prefixed zfs_snapshots_* so they cannot collide with
+# another role's defaults.
+
+# sanoid is a single Perl script plus its config parser. It hard-depends on
+# pv, lzop and mbuffer, which belong to syncoid — its replication half, which
+# this role does not use and does not configure. There is no build of the
+# package without them and they are a few hundred KiB, so they are accepted
+# rather than worked around.
+zfs_snapshots_packages:
+  - sanoid
+
+# The package ships no /etc/sanoid at all — confirmed against the .deb's own
+# file list, not assumed. It ships the units, /usr/sbin/sanoid, and the
+# read-only defaults template below, and leaves the directory to the admin.
+zfs_snapshots_config_dir: /etc/sanoid
+zfs_snapshots_config_path: /etc/sanoid/sanoid.conf
+
+# Shipped by the package, never edited: sanoid dies if it is missing or
+# older than the minimum version the script requires. Read here only so the
+# retention comment below can point at something concrete.
+zfs_snapshots_defaults_path: /usr/share/sanoid/sanoid.defaults.conf
+
+# The packaged units. sanoid.timer is OnCalendar=*:0/15 Persistent=true;
+# sanoid.service is the Type=oneshot that takes snapshots and pulls in
+# sanoid-prune.service behind it. Both carry
+# ConditionFileNotEmpty=/etc/sanoid/sanoid.conf, which is why the config is
+# rendered before either is touched — see tasks/configure.yml.
+zfs_snapshots_timer: sanoid.timer
+zfs_snapshots_prune_service: sanoid-prune.service
+
+# The name of the template every section in the rendered config inherits
+# from. Local to this role; sanoid resolves `use_template = lab` against a
+# [template_lab] section in the same file.
+zfs_snapshots_template_name: lab
+
+# Retention, in snapshots kept per type. 24 hourly / 7 daily / 4 weekly is
+# the rollback tier and nothing more: undo the last day at hourly
+# resolution, the last week at daily resolution, the last month at weekly
+# resolution. Anything older than that is what PBS and B2 are for — these
+# snapshots live on the pool they protect and do not survive losing it.
+#
+# EVERY TYPE IS LISTED, INCLUDING THE ZEROS, AND THAT IS LOAD-BEARING.
+# zfs_snapshots_defaults_path ships a [template_default] carrying
+# `hourly = 48`, `daily = 90` and `monthly = 6`, and sanoid seeds every
+# section with those before any template or section-local value is merged
+# over the top (init() in /usr/sbin/sanoid). A config that sets only the
+# three types it wants therefore inherits six monthly snapshots per dataset
+# and holds them for half a year, on the pool this tier is supposed to be
+# cheap on — while looking, in the file, exactly like a config that does not.
+# Setting a type to 0 both stops taking it and immediately prunes any that
+# already exist.
+zfs_snapshots_retention:
+  frequently: 0
+  hourly: 24
+  daily: 7
+  weekly: 4
+  monthly: 0
+  yearly: 0
+
+# Host filesystems to snapshot, named explicitly because nothing derives
+# them. rpool/ROOT/pve-1 is the hypervisor's root filesystem: with no IPMI
+# and no console on this box, it is what makes a bad `apt upgrade` or a
+# broken /etc edit a rollback from the PVE boot menu instead of a reseller
+# ticket.
+#
+# Deliberately absent, each for its own reason:
+#   rpool, rpool/ROOT, rpool/data   container datasets, 96K each, no data
+#   rpool/pbs-cache                 PBS's S3 chunk cache. Reconstructible
+#                                   from B2 by definition, and the one
+#                                   dataset here designed to churn. Also
+#                                   named in zfs_snapshots_forbidden below,
+#                                   so widening this list cannot pull it in
+#                                   by accident.
+#   rpool/var-lib-vz                ISO and container-template store;
+#                                   re-downloadable, and not config.
+#   tank/*                          the media pool — 2.75 TB of
+#                                   re-downloadable content on a
+#                                   non-redundant stripe. Snapshotting it
+#                                   would hold deleted media forever on the
+#                                   pool that has the least room for it.
+zfs_snapshots_filesystems:
+  - rpool/ROOT/pve-1
+
+# Guests whose virtual disks are snapshotted. Which *disks* is deliberately
+# not stated here: tasks/datasets.yml reads it out of `qm config` and takes
+# exactly the ones PVE itself is told to back up (i.e. not backup=0).
+#
+# Two reasons that is worth the extra resolution step:
+#   - The zvol suffix is allocation order, not the scsi index.
+#     vm-9000-disk-2 is scsi2 today by coincidence; detach and re-add a disk
+#     and the numbering moves. An exclusion list keyed on that name is one
+#     ordinary PVE operation away from protecting the wrong disk while still
+#     looking correct.
+#   - PR 2 of this phase moved the monitoring PVCs onto scsi2 with
+#     backup=0 specifically to keep Prometheus/Loki churn out of the nightly
+#     upload. Snapshotting that zvol would put the same churn straight back
+#     onto rpool. Deriving from the flag means the two layers cannot drift
+#     apart, in either direction.
+#
+# 9001 (ci-runner) is absent on purpose, for the same reason
+# infra/tofu/backup.tf names 9000 alone: it is deliberately stateless and
+# re-registers itself from GH_RUNNER_PAT. This restates the guest id rather
+# than reading it from config/lab.yml because the id lives in
+# infra/tofu/variables.tf as `vm_id`, where it is the value that identifies
+# the VM to the provider — moving it is a change to VM identity, not a
+# tidy-up, and not one worth making from a snapshot role.
+zfs_snapshots_guests:
+  - 9000
+
+# Datasets that must never appear in the rendered config, asserted in
+# tasks/datasets.yml rather than left to the allow-list above to imply.
+# Both lists already exclude these by construction; the point of restating
+# them is that a later edit which widens the selection — a `recursive = yes`
+# on rpool, a second entry in zfs_snapshots_filesystems — fails the converge
+# instead of quietly filling the pool with snapshots of a chunk cache.
+zfs_snapshots_forbidden:
+  - rpool/pbs-cache

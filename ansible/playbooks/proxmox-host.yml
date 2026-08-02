@@ -27,7 +27,13 @@
 # encryption key and the five other credentials in
 # group_vars/proxmox_host.sops.yml must exist before it can converge at all,
 # so it asserts they do and stops the play rather than half-provisioning a
-# backup destination.
+# backup destination; zfs_snapshots appends last and, like most of the list
+# above, has no ordering dependency on the role before it — it reads `qm
+# config` for the guests it snapshots, so its one real precondition is that
+# Tofu has already created those VMs, which layer 1 does before Ansible runs
+# at all (docs/runbooks/provision-new-server.md). Being after pbs is
+# convenient rather than required: rpool/pbs-cache is on that role's
+# forbidden list whether or not the dataset exists yet.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -63,3 +69,4 @@
     - zfs_arc
     - node_exporter
     - pbs
+    - zfs_snapshots

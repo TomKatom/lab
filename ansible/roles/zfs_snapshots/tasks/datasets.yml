@@ -1,0 +1,151 @@
+---
+# Works out which datasets go into the rendered config, and refuses to
+# render one it cannot stand behind.
+#
+# The host filesystems come from zfs_snapshots_filesystems verbatim. The
+# guest disks are derived, because the alternative — writing vm-9000-disk-0
+# and vm-9000-disk-1 into a list by hand — encodes an allocation order that
+# PVE is free to change, and gets it wrong silently when it does. See
+# zfs_snapshots_guests in defaults/main.yml for the full reasoning.
+#
+# Everything here is read-only. Nothing is created, and nothing is written
+# until tasks/configure.yml.
+
+- name: Read the PVE configuration of each snapshotted guest
+  # check_mode: false so a --check run resolves the same datasets a real one
+  # would, instead of skipping and leaving every register below undefined.
+  ansible.builtin.command:
+    cmd: qm config {{ guest }}
+  register: zfs_snapshots_guest_config
+  changed_when: false
+  check_mode: false
+  loop: "{{ zfs_snapshots_guests }}"
+  loop_control:
+    loop_var: guest
+
+- name: Select the guest volumes PVE is told to back up
+  # `qm config` prints one line per device as `<bus><n>: <volid>,<opt>=<v>,…`.
+  #
+  # The three filters, in order and each load-bearing:
+  #   - the bus pattern keeps disk devices and drops everything else in the
+  #     file, including `unused<n>:` — a detached disk, which is not part of
+  #     the running guest's state and has no `backup` flag to honour;
+  #   - media=cdrom drops the cloud-init drive (ide2 here), which PVE
+  #     regenerates from the VM config on every boot and which carries no
+  #     state worth a snapshot;
+  #   - backup=0 is the flag PR 2 set on the monitoring disk. Absent means
+  #     included, which is PVE's own default for a disk, so this rejects
+  #     only what is explicitly opted out.
+  ansible.builtin.set_fact:
+    zfs_snapshots_volids: >-
+      {{ zfs_snapshots_guest_config.results
+         | map(attribute='stdout_lines') | flatten
+         | select('match', '(scsi|virtio|sata|ide|efidisk|tpmstate)[0-9]+:')
+         | reject('search', 'media=cdrom')
+         | reject('search', ',backup=0(,|$)')
+         | map('regex_replace', '^[a-z]+[0-9]+:\s*', '')
+         | map('regex_replace', ',.*$', '')
+         | list }}
+
+- name: Resolve each guest volume to its device path
+  # `pvesm path` is the supported way to turn a volid into a path without
+  # this role having to know how storage.cfg maps `local-zfs` onto
+  # rpool/data. It is also what makes the next task's check meaningful: a
+  # volume on a non-ZFS storage comes back as a plain file path, and is
+  # then visibly not something this tier can protect.
+  ansible.builtin.command:
+    cmd: pvesm path {{ volid }}
+  register: zfs_snapshots_volume_paths
+  changed_when: false
+  check_mode: false
+  loop: "{{ zfs_snapshots_volids }}"
+  loop_control:
+    loop_var: volid
+
+- name: Split the resolved volumes into zvols and everything else
+  ansible.builtin.set_fact:
+    zfs_snapshots_zvols: >-
+      {{ zfs_snapshots_volume_paths.results | map(attribute='stdout') | map('trim')
+         | select('match', '/dev/zvol/')
+         | map('regex_replace', '^/dev/zvol/', '') | list }}
+    zfs_snapshots_unprotectable: >-
+      {{ zfs_snapshots_volume_paths.results | map(attribute='stdout') | map('trim')
+         | reject('match', '/dev/zvol/') | list }}
+
+- name: Assert every backed-up guest disk lives on ZFS
+  # A guest disk on a directory or LVM storage cannot be snapshotted by this
+  # tier at all. That is a legitimate thing to do to this server — it is not
+  # a legitimate thing to do silently, because the result is a disk that
+  # every layer above assumes is covered and is not.
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_unprotectable | length == 0
+    fail_msg: >-
+      These guest volumes are marked for backup but are not on a ZFS
+      storage, so no snapshot can cover them:
+      {{ zfs_snapshots_unprotectable | join(', ') }}. Either move them onto
+      local-zfs, or drop their guest from zfs_snapshots_guests and record
+      why — do not leave this passing by accident.
+    success_msg: >-
+      All {{ zfs_snapshots_zvols | length }} backed-up guest disks are zvols
+      on ZFS.
+
+- name: Assemble the dataset list
+  # Sorted so the rendered file is byte-stable between converges: `qm config`
+  # emits devices in its own order, and an unsorted list would rewrite
+  # sanoid.conf — and report a change — every time PVE reorders anything.
+  ansible.builtin.set_fact:
+    zfs_snapshots_selected: >-
+      {{ (zfs_snapshots_filesystems + zfs_snapshots_zvols) | unique | sort }}
+
+- name: List the ZFS datasets that exist on this host
+  ansible.builtin.command:
+    cmd: zfs list -H -o name -t filesystem,volume
+  register: zfs_snapshots_existing
+  changed_when: false
+  check_mode: false
+
+- name: Assert every selected dataset exists
+  # This is the check that stands in for sanoid not having one. A section
+  # naming a dataset that does not exist makes sanoid warn once per run and
+  # exit 0 — so the timer stays green, `systemctl status` stays green, and
+  # the dataset is simply never snapshotted. A typo in
+  # zfs_snapshots_filesystems is exactly that shape, and would otherwise be
+  # found by someone looking for a snapshot that was never taken.
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_selected | difference(zfs_snapshots_existing.stdout_lines) | length == 0
+    fail_msg: >-
+      These datasets are configured for snapshots but do not exist on this
+      host:
+      {{ zfs_snapshots_selected | difference(zfs_snapshots_existing.stdout_lines) | join(', ') }}.
+      sanoid would only warn about this and still exit 0, so it is refused
+      here instead.
+    success_msg: >-
+      All {{ zfs_snapshots_selected | length }} selected datasets exist.
+
+- name: Assert no forbidden dataset was selected
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_selected | intersect(zfs_snapshots_forbidden) | length == 0
+    fail_msg: >-
+      {{ zfs_snapshots_selected | intersect(zfs_snapshots_forbidden) | join(', ') }}
+      must never be snapshotted — see zfs_snapshots_forbidden in
+      defaults/main.yml for why each entry is on that list.
+    success_msg: No dataset on the forbidden list was selected.
+
+- name: Assert at least one guest disk was found
+  # Every guest disk being backup=0, or zfs_snapshots_guests being emptied by
+  # an override, converges to "host filesystems only" without complaint —
+  # a working config that protects none of the data this tier exists for.
+  ansible.builtin.assert:
+    that:
+      - zfs_snapshots_zvols | length > 0
+    fail_msg: >-
+      No backed-up disks were found for guest(s)
+      {{ zfs_snapshots_guests | join(', ') }}. Either every disk is marked
+      backup=0, or the guest list is wrong — snapshotting the host
+      filesystems alone would leave the k3s VM unprotected by this tier.
+    success_msg: >-
+      Snapshotting {{ zfs_snapshots_selected | length }} datasets:
+      {{ zfs_snapshots_selected | join(', ') }}.

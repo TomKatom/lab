@@ -1,0 +1,60 @@
+---
+# The local snapshot tier: sanoid taking hourly/daily/weekly ZFS snapshots
+# of the hypervisor's root filesystem and of the k3s VM's backed-up disks,
+# on rpool.
+#
+# SNAPSHOTS ARE NOT BACKUPS, and this role is not the backup. They live on
+# the pool they protect, so the failure they cover is the common one — a bad
+# upgrade, a deleted file, a broken config, a botched migration — and not
+# the one roles/pbs covers, which is losing the machine. Both tiers exist
+# because they fail differently: this one is instant, free and local; that
+# one is slow, offsite and survives the box. Do not let this role's
+# existence be read as "rpool is protected".
+#
+# WHY sanoid RATHER THAN A TIMER AND A SHELL LOOP. Taking a snapshot is one
+# zfs command; deciding which of forty to destroy is not, and that is the
+# half that goes wrong silently. sanoid is in Debian trixie's main, is a
+# single Perl script, and — the property that actually matters here — only
+# ever considers snapshots whose name begins with `autosnap`
+# (`if ($snapname =~ /^autosnap/)`, getsnaps() in /usr/sbin/sanoid). PVE's
+# vzdump takes its own temporary ZFS snapshot on these same zvols every
+# night at 04:00; sanoid cannot see it, cannot prune it, and cannot race it.
+# A hand-rolled `zfs list -t snapshot | tail -n +N | xargs zfs destroy` has
+# no such property, and the night it runs while vzdump holds a snapshot is
+# the night the backup fails.
+#
+# THE TWO SILENT-FAILURE MODES THIS ROLE IS BUILT AROUND. Neither produces
+# an error, and PR 6's telemetry does not exist yet:
+#   1. Both packaged units carry
+#      ConditionFileNotEmpty=/etc/sanoid/sanoid.conf. With no config, they
+#      are *skipped* — and systemd reports a skipped unit as a success. A
+#      host with sanoid installed, its timer enabled, `systemctl status`
+#      green and no config takes no snapshots at all, forever.
+#   2. A `zfs snapshot` that fails is a `warn` inside sanoid, not a `die`
+#      (take_snapshots(), same file). The run continues, the unit exits 0,
+#      and the only trace is a line in the journal. A dataset named in the
+#      config that does not exist is therefore invisible.
+# tasks/datasets.yml answers both: every dataset is resolved or asserted to
+# exist before it is written into the config, and tasks/configure.yml proves
+# after the fact that a snapshot actually landed on each one.
+#
+# THE PACKAGED CRON JOB IS NOT A SECOND SCHEDULE. /etc/cron.d/sanoid is a
+# dpkg conffile that runs sanoid every 15 minutes — but only
+# `if [ ! -d /run/systemd/system ]`, i.e. never on this host. It is left in
+# place rather than removed: it changes nothing here, and deleting a
+# conffile means fighting dpkg on every upgrade.
+#
+# ROLLBACK. `systemctl disable --now sanoid.timer` stops new snapshots;
+# existing ones are unaffected and are destroyed with
+# `zfs list -t snapshot -o name -H | grep @autosnap_ | xargs -r -n1 zfs destroy`.
+# Removing the package leaves them too — nothing here is destructive on the
+# way out.
+
+- name: Install sanoid
+  ansible.builtin.import_tasks: install.yml
+
+- name: Resolve the datasets to snapshot
+  ansible.builtin.import_tasks: datasets.yml
+
+- name: Configure sanoid and enable its timer
+  ansible.builtin.import_tasks: configure.yml

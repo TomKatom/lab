@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: zfs_snapshots
+  author: tomkatom
+  description: Local ZFS snapshot tier on rpool via sanoid — the rollback half of the backup strategy
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []
