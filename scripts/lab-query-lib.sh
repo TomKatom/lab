@@ -72,21 +72,31 @@ urlencode() {
 # Print the UTC RFC3339 timestamp that a `--since` shorthand (30m, 6h, 7d)
 # points back to, or return 1 if the shorthand is malformed.
 #
-# GNU date does not understand the single-letter units at all: `date -d -1h` is
-# an "invalid date" error, not an hour ago. Only the spelled-out forms work, so
-# expand the unit here rather than handing the shorthand to date.
+# The arithmetic happens in bash rather than in date's own relative-time
+# parser, because those parsers are where GNU and BSD diverge most and this
+# has to run on both: CI and the lab host are GNU coreutils, the operator's
+# laptop is macOS. GNU has no `-v`, BSD has no `-d`, and BSD's `-v` unit
+# letters are a trap of their own (`m` is months; minutes are `M`).
+#
+# That leaves exactly one divergence — formatting an epoch — instead of a
+# whole date grammar. GNU spells it `-d @<epoch>`; BSD spells it
+# `-r <epoch>`, and on GNU `-r` means "reference file", so the fallback
+# order matters: GNU's form is tried first and fails cleanly on BSD, whereas
+# BSD's form on GNU would stat a file named after the epoch.
 lab_since_start() {
-  local n unit
+  local n secs epoch
   [[ $1 =~ ^([0-9]+)([smhdw])$ ]] || return 1
   n=${BASH_REMATCH[1]}
   case ${BASH_REMATCH[2]} in
-    s) unit=seconds ;;
-    m) unit=minutes ;;
-    h) unit=hours ;;
-    d) unit=days ;;
-    w) unit=weeks ;;
+    s) secs=1 ;;
+    m) secs=60 ;;
+    h) secs=3600 ;;
+    d) secs=86400 ;;
+    w) secs=604800 ;;
   esac
-  date -u -d "${n} ${unit} ago" +%Y-%m-%dT%H:%M:%SZ
+  epoch=$(($(date -u +%s) - n * secs))
+  date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ 2> /dev/null ||
+    date -u -r "${epoch}" +%Y-%m-%dT%H:%M:%SZ
 }
 
 # GET an API-server service-proxy path and print the response body.
