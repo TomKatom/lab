@@ -2,7 +2,9 @@
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
 Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
-`media-common` config, discovered the same way `platform/` is —
+`media-common` config — plus `filebrowser`, which is here but deliberately
+not in the `media` namespace (see [The `share` namespace](#the-share-namespace)) —
+discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
 Authelia, cert-manager and external-dns already exist) whose `source.path`
@@ -43,6 +45,28 @@ trade: the whole suite is one coupled trust domain anyway (they all talk
 to each other's ClusterIP Services by design), so the usual argument for
 namespace-per-component — blast-radius isolation between components that
 don't trust each other — doesn't buy anything here.
+
+## The `share` namespace
+
+`filebrowser` is the one Application in this directory whose
+`destination.namespace` is not `media`, and the argument above is exactly why:
+it is the one app here that consumes none of `media-common`'s Secrets, so the
+re-encryption cost that keeps the media stack together simply isn't charged.
+What it does have is the property that argument assumes away — it is not part
+of the same trust domain. Its `/public` routes are reachable from the open
+internet with no session, which makes it the one service here where "a bug in
+this process" and "a pod that can read the media namespace's Secrets" must not
+be the same sentence. So it gets `share`, created by
+[`filebrowser-config.yaml`](filebrowser-config.yaml) at wave `"0"` under the
+same first-syncer rule `media-common` follows.
+
+The namespace boundary is a Secret boundary and nothing more, though —
+Kubernetes does not firewall namespaces from each other. The control that
+actually confines this pod is
+[`filebrowser/networkpolicy.yaml`](filebrowser/networkpolicy.yaml): ingress
+from the `traefik` namespace only, egress to DNS only. Read its comment block
+before changing anything about how that app authenticates, because the app
+trusts a header and the policy is the only reason that is safe.
 
 ## Identity: everything runs as 1000:1000
 
@@ -231,8 +255,8 @@ Authelia-side change: `access_control.default_policy: deny` plus one rule
 for `*.tomkatom.com` at `two_factor` (`platform/authelia.yaml`) applies to
 any hostname under the zone, new or old.
 
-**Two Ingresses here deliberately carry no annotation at all**, and both
-for the same reason — they are the two hosts aimed at people who hold a
+**Three Ingresses here deliberately carry no annotation at all.** The first
+two are for the same reason — they are the hosts aimed at people who hold a
 Plex account and no Authelia identity, so forward-auth would lock out
 exactly the audience they exist for. An un-annotated Ingress means Traefik
 never consults the middleware for that host.
@@ -245,6 +269,14 @@ never consults the middleware for that host.
   separate one: a homepage widget renders what the credential it holds
   returns, so a queue counter on an unauthenticated page is a library
   inventory.
+- **FileBrowser, `share.tomkatom.com`** — the third is a different case: the
+  audience is anyone holding a link, and there is no account for them to hold
+  at all. What makes that safe is not the app but the *path*: this Ingress
+  publishes `/public` and nothing else, so `share.tomkatom.com/` has no route
+  at Traefik and 404s before reaching the pod, while the same Service's browse
+  UI is published separately on `files.tomkatom.com` **with** the annotation.
+  Two Ingresses, one Service, and the exclusion lives at the router where an
+  app-level auth bug cannot undo it. Widening this path is not a tuning change.
 
 Everything else admin-facing gets the annotation. Note the apex is also
 the one host here that Authelia's `*.tomkatom.com` rule would *not* match
@@ -406,11 +438,15 @@ deferred to Phase 8.
   carries `syncOptions: [CreateNamespace=true]` — the same first-syncer
   rule `authelia-config.yaml` follows for the `authelia` namespace. Every
   other app's Secret/ConfigMap consumption assumes it already exists.
+- **`filebrowser-config` — wave `"0"`.** The same rule for the *other*
+  namespace this directory owns: it is the only Application carrying
+  `CreateNamespace=true` for `share`, and its NetworkPolicy has to exist
+  before the pod it constrains starts listening.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`), together with
-  `recyclarr-config`'s and `homepage-config`'s own kustomize-source
-  Applications. The two exporters share the wave with the apps they scrape
+  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`, `filebrowser`),
+  together with `recyclarr-config`'s and `homepage-config`'s own
+  kustomize-source Applications. The two exporters share the wave with the apps they scrape
   rather than trailing them: neither probes its target at startup, so a
   target that is not up yet costs a failed scrape, not a crash loop.
 - **`recyclarr` and `homepage` charts — wave `"2"`**, one wave after their
@@ -447,6 +483,11 @@ only exists where there's:
   CI's kustomize-build step actually builds and validates these, since it
   only skips a directory when it can detect a ksops `SecretGenerator`
   inside it.
+- **A plain resource the chart cannot render** — `filebrowser`, which holds
+  one NetworkPolicy. `app-template` has no values key for one, and it needs
+  the namespace anyway, so the overlay is the only home for it. Note what is
+  *not* in there: FileBrowser's `config.yaml` stays in the chart Application's
+  `configMaps:` precisely because of the drift window below.
 - **A ksops Secret to decrypt** — `media-common`, the one directory in
   this stack that CI's kustomize step deliberately skips building (no
   `SOPS_AGE_KEY` in that job), the same way every platform `-config`
@@ -489,9 +530,10 @@ kubectl -n argocd get applications
 # every app Synced/Healthy: apps, media-common, deluge, unpackerr, prowlarr,
 # flaresolverr, sonarr, radarr, bazarr, recyclarr(+-config), plex, tautulli,
 # seerr, maintainerr, homepage(+-config), arr-settings(+-config),
-# exportarr, plex-exporter
+# exportarr, plex-exporter, filebrowser(+-config)
 
 kubectl -n media get pods
+kubectl -n share get pods   # filebrowser, the one app outside `media`
 ```
 
 Every Deployment pod reads `1/1 Running`. Recyclarr and arr-settings are

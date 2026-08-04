@@ -1,0 +1,69 @@
+# FileBrowser has no authentication of its own here — the password login is
+# off and `auth.methods.proxy` believes whatever `Remote-User` header arrives
+# (see ../filebrowser.yaml). The Ingress annotation makes that safe for traffic
+# that comes *through* Traefik, because Traefik overwrites the header from
+# Authelia's reply. It does nothing at all for traffic that never touches
+# Traefik: the Service is an ordinary ClusterIP, so without this policy any pod
+# in the cluster can
+#
+#   curl -H 'Remote-User: whoever' http://filebrowser.share:8080/
+#
+# and be created on the spot as a user with `admin` and `share` — `setupProxyUser`
+# auto-creates any username the header carries, and this deployment grants both
+# permissions by default. The neighbours are the `media` namespace — Deluge,
+# the *arrs, FlareSolverr — which exist to parse hostile input from indexers
+# and trackers, and what they would gain is a browsable read of /data/torrents
+# plus the ability to mint public share links for it.
+#
+# This is the second NetworkPolicy in the repo. The first,
+# ../../platform/monitoring/networkpolicy-grafana.yaml, exists for the identical
+# reason and its comment block explains the two pieces not repeated here: why a
+# source-IP whitelist inside the application cannot substitute (every pod in
+# the cluster draws from one flannel CIDR, so a range wide enough to admit
+# Traefik admits the attacker), and why kubelet's probes need no rule (k3s's
+# policy controller is kube-router, which prepends an `--src-type LOCAL` accept
+# to every pod's ingress chain).
+#
+# `kubernetes.io/metadata.name` is the label the API server stamps on every
+# Namespace itself, not something the traefik or kube-system overlays opt into.
+#
+# Egress is denied by default here, unlike Grafana. FileBrowser needs nothing
+# outbound once `disableUpdateCheck` is set — no OIDC provider, no OnlyOffice,
+# no update endpoint — so the only rule is DNS, and a compromised /public
+# handler has nowhere to call home to. Selecting a pod for a policy type denies
+# everything not listed, so adding an integration later means adding a rule
+# here in the same commit.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: filebrowser-allow-traefik
+  namespace: share
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: filebrowser
+      app.kubernetes.io/instance: filebrowser
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        # The container port, which is also the Service port here —
+        # NetworkPolicy is enforced after kube-proxy has already rewritten the
+        # destination, so it is the container port that has to be named.
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

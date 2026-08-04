@@ -30,8 +30,8 @@
 # (docs/sources/alert/_index.md, "Alerting rule example" and "Ruler storage").
 #
 # ⚠ THE THRESHOLDS BELOW ARE GUESSES. Nothing in this repo has a week of log
-# baseline to calibrate against, so 10 / 0 / 50 are starting points chosen to
-# be quiet rather than correct. Each expression should be pasted into Grafana
+# baseline to calibrate against, so 10 / 0 / 500 / 50 are starting points chosen
+# to be quiet rather than correct. Each expression should be pasted into Grafana
 # Explore against the Loki datasource and watched over real traffic before it
 # is trusted; expect to move MediaAppErrorBurst in particular, since "error"
 # means something different in every application in that namespace.
@@ -69,6 +69,20 @@
 # it, but the notification would arrive five minutes after the process died
 # for no benefit. The 10m window is what bounds how long the alert stays
 # firing afterwards.
+#
+# PublicShareRequestSpike is the only rule here watching a hostname the whole
+# internet can reach (clusters/lab/apps/filebrowser.yaml). It counts FileBrowser's
+# own API request log, which goes to stdout by default and already excludes the
+# noise that would otherwise dominate the count: FBQ's default `apiFilter` is
+# `^/health|^/favicon.ico|^/static|^/public/static`, so the kubelet probes and
+# every JavaScript and CSS fetch a share page makes are absent, and what is left
+# is roughly one line per meaningful action. That is why the threshold can be a
+# flat count rather than a rate — a legitimate recipient opening one link
+# produces single digits.
+#
+# It is scoped to `{namespace="share"}` rather than added to
+# MediaAppErrorBurst's selector below because that rule is hardcoded to
+# `{namespace="media"}` and would never have seen this app.
 #
 # AutheliaAuthFailureSpike matches on the message text rather than a level,
 # because Alloy ships raw lines with no parsing stage — there is no `level`
@@ -139,6 +153,27 @@ data:
                 cgroup memory limit. Query
                 '{job="systemd-journal"} |= "Killed process"' in Grafana
                 Explore for the process name and its RSS at the time.
+
+          - alert: PublicShareRequestSpike
+            expr: |
+              sum by (pod) (
+                count_over_time(
+                  {namespace="share"} |= "/public/" [15m]
+                )
+              ) > 500
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: Unusual volume of public share requests
+              description: >-
+                {{ $value }} requests to /public were logged in the last 15
+                minutes. Normal traffic is one recipient fetching one link, so
+                a sustained rate means a share link has been reposted somewhere
+                public, or the hostname is being scanned. Find the share in the
+                FileBrowser UI on files.tomkatom.com and revoke it if the link
+                has escaped; the per-share download cap should already have
+                stopped the actual transfers.
 
           - alert: MediaAppErrorBurst
             expr: |

@@ -1,0 +1,35 @@
+# filebrowser-config — the `share` namespace and the NetworkPolicy that has to
+# exist before anything in it starts listening.
+#
+# Wave 0 within apps/, so CreateNamespace lives here rather than on
+# ./filebrowser.yaml — the same first-syncer rule media-common.yaml follows for
+# `media` and authelia-config.yaml follows one directory up. Exactly one
+# Application per namespace may carry it (see ./README.md "Sync waves").
+#
+# `share` is the first namespace in this directory outside `media`, and that is
+# deliberate rather than incidental — see ./README.md "One `media` namespace,
+# not one per app" for the shared-Secret argument that keeps the media stack
+# together and why a public-facing process is exactly the case that argument
+# does not cover.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: filebrowser-config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps/filebrowser
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: share
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

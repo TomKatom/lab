@@ -8,15 +8,18 @@ everything here is reconciled from git; nothing is applied by hand.
 - `platform/` — cert-manager, external-dns, Traefik, Authelia, ksops-encrypted
   secrets, and a placeholder `monitoring/` namespace (Phase 5, live — see
   [`platform/README.md`](platform/README.md)). Everything is synced and
-  healthy except external-dns, which runs `--dry-run` on purpose until the
-  zone moves off the old server
-  ([`docs/runbooks/dns-cutover.md`](../../docs/runbooks/dns-cutover.md)).
+  healthy, external-dns included — it published the zone for real once
+  [`docs/runbooks/dns-cutover.md`](../../docs/runbooks/dns-cutover.md) ran
+  and no longer carries `--dry-run`.
 - `apps/` — the media stack: Deluge, Prowlarr, FlareSolverr, Sonarr,
   Radarr, Bazarr, Unpackerr, Recyclarr, Plex, Tautulli, Seerr, Maintainerr
   and Homepage, each an `Application` against the shared `bjw-s/app-template`
   chart with inline values, all in one `media` namespace (Phase 6, live —
   see [`apps/README.md`](apps/README.md)). Homepage holds the apex,
-  `tomkatom.com`; everything else lives on a subdomain of it.
+  `tomkatom.com`; everything else lives on a subdomain of it. `filebrowser`
+  (Phase 9) is the one app here outside `media` — it sits in its own `share`
+  namespace, for the reason recorded in
+  [`apps/README.md`](apps/README.md#the-share-namespace).
 
 `root-app` does not watch `apps/` itself. `platform/apps.yaml` — an
 ordinary top-level `platform/*.yaml` manifest, so `root-app` picks it up
