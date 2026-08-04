@@ -37,6 +37,20 @@ a label nothing sets matches zero streams forever with no error:
 inside the cluster, so `{job="systemd-journal"}` is the k3s VM. The host is
 covered by metrics only (`job="pve-node"`); there are no host logs to query.
 
+**Traefik logs every request that failed, and only those.** The access log is
+JSON on the same stream as Traefik's own logfmt application log, so `| json |
+__error__=""` is what separates them, and it is filtered to HTTP status
+400-599 — a request that succeeded is not there and its absence proves
+nothing. `RequestHost`, `RequestPath`, `DownstreamStatus`, `ClientHost` and
+`ServiceName` are the fields worth filtering on (`ClientHost` is the bare IP,
+`ClientAddr` carries the source port too), and it is the real client rather
+than a proxy. This is the only place a request to the public
+`files.tomkatom.com` hostname is attributable to an IP.
+
+```
+scripts/logql.sh --since 6h '{namespace="traefik"} | json | __error__=""'
+```
+
 ## Start here, always
 
 `scripts/promql.sh --alerts` before anything else. If it is quiet the lab is

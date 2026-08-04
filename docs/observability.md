@@ -499,6 +499,63 @@ It is the only drop in the pipeline, and it is counted rather than silent —
 `loki_process_dropped_lines_total{reason="deluge_rpc_handshake"}` should sit at
 9/min, and any other rate means the handshake changed, not the logging.
 
+## The Traefik access log
+
+The one log in this cluster that is *configured* rather than merely
+collected. [`traefik.yaml`](../clusters/lab/platform/traefik.yaml) sets
+`accessLog.enabled: true`, `format: json` and
+`filters.statusCodes: "400-599"`, which means:
+
+- **Only failures are logged.** A 2xx or 3xx through `:443` leaves no trace
+  here — see [Deliberately not monitored](#deliberately-not-monitored). What
+  is kept is what a scanner, a broken route, a rate-limited client (429) or a
+  failing backend produces.
+- **JSON, because Alloy does not parse.** Lines reach Loki verbatim, so the
+  structure has to be in the line itself. Traefik's own application log is
+  logfmt and shares the same stdout, which is what makes the parser the
+  filter between them:
+
+```bash
+# the access log only — the app log fails `| json` and drops out
+scripts/logql.sh '{namespace="traefik"} | json | __error__=""'
+
+# who is hitting the public FileBrowser hostname, and with what
+scripts/logql.sh '{namespace="traefik"} | json | __error__=""
+  | RequestHost="files.tomkatom.com"'
+
+# 5xx from one backend, newest first
+scripts/logql.sh '{namespace="traefik"} | json | __error__=""
+  | DownstreamStatus>=500'
+```
+
+- **Headers are dropped** (`fields.headers.defaultMode: drop`, the chart
+  default, left alone deliberately). Keeping them would put Authelia session
+  cookies and *arr API keys into Loki, which is the difference between an
+  access log and a credential store.
+- **`ClientHost` is a real client address** (`ClientAddr` is the same with
+  the source port), not a proxy's — that is what
+  binding `:443` by `hostPort` bought (see
+  [`architecture.md`](architecture.md)); under klipper servicelb every
+  request appeared to come from the same pod.
+
+Volume is small by construction: a few thousand lines a day at the current
+error rate, against Loki's ~1 GiB/day and 10 Gi/30 d budget, so nothing in
+[Sizing and retention](#sizing-and-retention) needed adjusting. Removing the
+`statusCodes` filter is what would change that — every request through the
+edge becomes a line, several times the cluster's entire log volume — so treat
+that filter as the reason this is affordable rather than as a tuning knob.
+
+**A note on 408s.** Authelia used to log ~1.1k `Request timeout occurred
+while handling request from client` lines a day, all with the Traefik pod as
+the TCP peer, none of them a real failure: Traefik pools upstream connections
+and reaps them at `idleConnTimeout` (90 s), while Authelia's server gave up on
+the same idle connection far sooner (read 6 s, idle 30 s) and answered 408 to
+a client that had stopped listening. `configMap.server.timeouts` in
+[`authelia.yaml`](../clusters/lab/platform/authelia.yaml) now sets read
+120 s / idle 150 s so that **the side owning the connection pool is the side
+that closes** — a client-side close is silent. Raise Traefik's
+`idleConnTimeout` above 120 s and those two numbers have to move first.
+
 ## The four dashboards
 
 Grafana carries 29. Twenty-five of them arrive with kube-prometheus-stack
@@ -853,6 +910,19 @@ Each of these is a decision, not a gap. Revisit them on purpose.
   [Metric alerts — backups](#metric-alerts--backups) is not read as covering
   it. Closing it means emitting a newest-`autosnap_`-per-dataset timestamp
   from a textfile collector first.
+- **Successful requests through Traefik.** The access log is filtered to
+  `statusCodes: 400-599` ([The Traefik access log](#the-traefik-access-log)),
+  so there is no per-request record of anything that worked — no traffic
+  graph, no "who downloaded that share and when", no latency histogram from
+  the edge. The reason is volume: unfiltered, one line per request through
+  `:443` is several times this cluster's entire log budget, spent on data
+  that is only ever read after something has already gone wrong. The
+  successful half of the one hostname where it would matter is still covered
+  by FileBrowser's own log under `{namespace="share"}`, which is what
+  `PublicShareRequestSpike` counts. If a real traffic question ever appears,
+  the shape of the answer is Traefik's own Prometheus metrics — aggregate and
+  cheap, and the chart will render a ServiceMonitor for them (it renders none
+  today) — not a wider log filter.
 - **Argo CD's own metrics.** Argo self-manages and its sync state is visible
   in its UI; a failed sync surfaces as the *symptom* — a missing or stale
   object — through the rules above. Worth adding the ServiceMonitor when
@@ -886,6 +956,16 @@ curl -s -H 'X-Scope-OrgID: fake' localhost:3100/loki/api/v1/rules
 # Alloy is shipping both sources — expect the pod-log labels and the journal
 curl -s -G localhost:3100/loki/api/v1/label/job/values
 curl -s -G localhost:3100/loki/api/v1/label/namespace/values
+
+# the Traefik access log is on, filtered, and reaching Loki. The first two
+# are the flags Traefik was actually started with; the third must return JSON
+# lines and nothing below 400.
+kubectl -n traefik get deploy traefik \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep accesslog
+scripts/logql.sh --since 1h '{namespace="traefik"} | json | __error__=""'
+
+# and the 408s are gone: this should trend to zero after the Authelia rollout
+scripts/logql.sh --since 1h '{namespace="authelia"} |= "Request timeout occurred"'
 
 # the NetworkPolicy: Grafana must NOT answer a pod in another namespace
 kubectl -n media run netpol-probe --rm -i --restart=Never \

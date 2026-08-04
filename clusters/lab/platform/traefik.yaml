@@ -123,6 +123,45 @@ spec:
           # Also a chart default, restated for the same reason: Phase 6 app
           # Ingresses omit ingressClassName and rely on being defaulted here.
           isDefaultClass: true
+        # Access logs, and only the ones worth keeping. Two questions made
+        # this necessary at once: files.tomkatom.com is now reachable by the
+        # whole internet with no request-level record anywhere in front of it
+        # (../apps/filebrowser.yaml), and Authelia answers a 408 every minute
+        # or two whose only clue is that the TCP peer is this pod — see the
+        # `server.timeouts` note in ./authelia.yaml. Neither question can be
+        # answered from a log Traefik does not write.
+        #
+        # `filters.statusCodes` is what keeps it affordable. Unfiltered, every
+        # request through :443 becomes a Loki line — every Grafana poll, every
+        # *arr API call, every Plex request — which is several times this
+        # cluster's whole current log volume, for data nobody reads. 400-599
+        # keeps what a scanner, a broken route or a rate-limited client
+        # produces and drops the rest. The trade is real and deliberate: a
+        # *successful* request to the public hostname leaves no trace here,
+        # and stays visible only in the app's own log under
+        # `{namespace="share"}`, which is what PublicShareRequestSpike
+        # (./monitoring/loki-rules.yaml) already counts.
+        #
+        # JSON rather than the chart's default CLF because ./alloy.yaml ships
+        # lines verbatim with no parsing stage — the structure has to survive
+        # into Loki to be queryable at all. `{namespace="traefik"} | json |
+        # __error__=""` then selects exactly the access log (Traefik's own app
+        # log is logfmt and fails the parser, which is the filter), and
+        # DownstreamStatus, RequestHost, RequestPath and ClientAddr become
+        # real fields. Nothing in Alloy changes for this, and nothing keys on
+        # Traefik log *text*, so the existing stream is unaffected.
+        #
+        # Two chart defaults are load-bearing and left alone rather than
+        # restated, because both are already the safe direction:
+        # `fields.headers.defaultMode: drop` is the line between an access log
+        # and a credential leak — headers would put every Authelia session
+        # cookie and every *arr API key into Loki — and `addInternals: false`
+        # keeps Traefik's own ping/dashboard handlers out of the count.
+        accessLog:
+          enabled: true
+          format: json
+          filters:
+            statusCodes: "400-599"
         providers:
           kubernetesCRD:
             # Lets an Ingress/IngressRoute in any namespace reference a
