@@ -35,7 +35,7 @@ spec:
       # helm chart version; it and the role default both resolve to
       # depName=argo-cd/datasource=helm, so the "helm charts" packageRule
       # groups their bumps into one PR — no hand-sync drift.
-      targetRevision: "10.2.2"
+      targetRevision: "10.2.3"
       helm:
         releaseName: argo-cd
         valueFiles:

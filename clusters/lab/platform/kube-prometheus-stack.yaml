@@ -119,7 +119,7 @@ spec:
   source:
     repoURL: https://prometheus-community.github.io/helm-charts
     chart: kube-prometheus-stack
-    targetRevision: 88.0.1
+    targetRevision: 88.1.4
     helm:
       valuesObject:
         # Control-plane components k3s does not expose separately — see the
