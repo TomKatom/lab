@@ -18,8 +18,9 @@ Cluster platform services, synced before any media app depends on them:
 - `traefik.yaml` + `traefik-config.yaml` + `traefik/` — ingress controller on
   `:443` (Pod `hostPort`; no klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
   wildcard `Certificate`, because Traefik's default `TLSStore` can only read
-  a Secret from its own namespace. **Implemented (Phase 5).** See "Exposing a
-  service" below.
+  a Secret from its own namespace. Also carries the one per-source-IP
+  `rateLimit` every router on `:443` sits behind. **Implemented (Phase 5).**
+  See "Exposing a service" and "Rate limiting" below.
 - `authelia.yaml` + `authelia-config.yaml` + `authelia/` — forward-auth
   (file users + TOTP, SQLite) in front of the *arr/Deluge UIs.
   **Implemented (Phase 5).** See "Protecting a service with forward-auth"
@@ -123,6 +124,13 @@ three-piece convention:
   Secret. **Not** scanned by `root-app` directly — pulled in only via the
   sibling `<component>-config.yaml` Application.
 
+There is one deliberate exception to the third piece: Traefik's `ratelimit`
+`Middleware` is declared in `traefik.yaml` itself, via the chart's
+`extraObjects`, rather than in `traefik/`. It is the one CR a chart value
+*references*, and an unresolvable reference takes the whole edge down rather
+than degrading — "Rate limiting" below has the detail. Do not "tidy" it into
+the overlay.
+
 `apps.yaml` is the one file here that is none of those three: it is a
 top-level Application like the first kind, but its source is a *directory
 of Applications* (`clusters/lab/apps`) rather than a Helm chart, so it
@@ -208,9 +216,10 @@ Four consequences worth knowing:
   servicelb — which is what answered a `LoadBalancer` Service here before —
   MASQUERADEs unconditionally and replaced the source address of every
   external request with its own Pod's. Per-client middlewares (`rateLimit`,
-  `ipAllowList`, `inFlightReq`) are therefore meaningful now, and can be
-  applied to *every* router at once via `ports.websecure.http.middlewares`
-  rather than per-Ingress. The cost: `updateStrategy` is inverted to
+  `ipAllowList`, `inFlightReq`) are therefore meaningful now, and
+  `ports.websecure.http.middlewares` applies them to *every* router at once
+  rather than per-Ingress — see "Rate limiting" below for the one that is
+  switched on. The cost: `updateStrategy` is inverted to
   `maxUnavailable: 1` / `maxSurge: 0` (two Pods cannot share a hostPort), so
   a Traefik rollout is a seconds-long `:443` outage. Note this covers only
   traffic through Traefik — Plex `:32400`, the torrent port and WireGuard are
@@ -225,6 +234,31 @@ Four consequences worth knowing:
   address, because that status field is exactly where external-dns reads
   the target it publishes. Both halves of that setting are load-bearing —
   see "DNS records from Ingresses (inert)" below.
+
+## Rate limiting
+
+Every router on `:443` is behind one per-source-IP token bucket — 100 r/s
+sustained, 300 burst — with no opt-in required from an Ingress. It is
+`ports.websecure.http.middlewares` in `traefik.yaml` pointing at a
+`Middleware` defined a few lines below it under `extraObjects`. Both keys are
+commented in place; the two things to know before touching either:
+
+- **The `Middleware` is in the chart half on purpose**, breaking the
+  three-piece convention in "Component layout" above. An entrypoint
+  middleware that cannot be resolved does not degrade — Traefik fails the
+  whole router build (`middleware %q does not exist`) and every hostname in
+  the lab serves 404. Keeping the reference and the object in one
+  `Application` means they land in one sync, and means neither can be
+  removed without seeing the other.
+- **It buckets on the remote address**, which only became a real client IP
+  when the `hostPort` change above took klipper out of the path. Enabling
+  this beforehand would have rate-limited the entire internet as one client.
+
+The limit is deliberately loose: it exists for volumetric abuse — scanners,
+credential stuffing, a shared link being hammered — while a slow, patient
+login attack is Authelia's regulation to handle. It does **not** cover
+anything that bypasses Traefik: Plex `:32400`, the torrent port, WireGuard.
+Those would need host nftables rules.
 
 ## Protecting a service with forward-auth
 

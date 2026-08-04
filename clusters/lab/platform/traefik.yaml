@@ -60,6 +60,22 @@ spec:
             # The container port stays the chart's 8443; `hostPort` and the
             # `exposedPort: 443` default are what make it :443 externally.
             hostPort: 443
+            http:
+              # Entrypoint middlewares apply to *every* router on :443 —
+              # every Ingress in this cluster and every one added later, with
+              # no per-app annotation. They also run ahead of a router's own
+              # middlewares, so brute-force traffic is shed before it reaches
+              # Authelia rather than after.
+              #
+              # The `traefik-` prefix is the CR's namespace: the
+              # kubernetescrd provider names a Middleware
+              # <namespace>-<name>@kubernetescrd. It is defined under
+              # `extraObjects` at the bottom of this file, and the reason it
+              # lives there rather than in the sibling ./traefik/ overlay is
+              # written out at that key — it is a safety property, not a
+              # style choice.
+              middlewares:
+                - traefik-ratelimit@kubernetescrd
         service:
           spec:
             # NOT the chart's default (LoadBalancer), and the difference is
@@ -152,6 +168,66 @@ spec:
               # Traefik logs the missing Secret and falls back to its
               # built-in self-signed cert.
               secretName: wildcard-tomkatom-tls
+        # The one CR in this component that is deliberately NOT in the
+        # sibling ./traefik/ overlay, against the three-piece convention
+        # ../README.md documents. The reason is that an entrypoint
+        # middleware reference is not a soft dependency:
+        # BuildMiddlewareChain fails the whole router build with
+        # `middleware %q does not exist`
+        # (pkg/server/middleware/middlewares.go, v3.7.6), and a router that
+        # fails to build serves 404. So a moment where the Deployment
+        # carries the reference above and this object is absent is a moment
+        # where *every* hostname in the lab is down — not the graceful
+        # degradation the missing-cert case above gets.
+        #
+        # ./traefik/ is applied by traefik-config.yaml at sync-wave 2, two
+        # waves after this chart, so putting it there would guarantee that
+        # window on every bootstrap. Keeping it here makes the reference and
+        # the referent one Argo Application and one sync, and — the part
+        # that matters longer than the bootstrap — makes it impossible to
+        # delete or rename this CR without editing the line that depends on
+        # it.
+        extraObjects:
+          - apiVersion: traefik.io/v1alpha1
+            kind: Middleware
+            metadata:
+              name: ratelimit
+              namespace: traefik
+            spec:
+              rateLimit:
+                # Token bucket per source: `average` per `period` is the
+                # refill rate, `burst` the depth. No `sourceCriterion`, which
+                # means the default — the request's remote address. That
+                # default is only meaningful because `ports.websecure.hostPort`
+                # above stopped klipper masquerading it; before that this
+                # would have bucketed the entire internet as one client and
+                # let a single abuser lock everybody out.
+                #
+                # Reading the remote address rather than X-Forwarded-For is
+                # also what makes it unspoofable here: Traefik is the edge,
+                # `forwardedHeaders.trustedIPs` is empty, so an inbound
+                # X-Forwarded-For is overwritten, never trusted.
+                #
+                # Deliberately loose. The threat this answers is volumetric —
+                # credential stuffing, scanners, a shared link being hammered
+                # — and 100 r/s sustained from one address already makes all
+                # of those impractical, while a slow, patient login attack is
+                # Authelia's own regulation to handle (see
+                # ./monitoring/loki-rules.yaml, AutheliaAuthFailureSpike).
+                # The failure mode of guessing too low is self-inflicted 429s
+                # on a heavy Grafana dashboard, discovered by something
+                # breaking; burst 300 covers a hard refresh with room to
+                # spare. Tighten once there is real traffic to calibrate
+                # against.
+                #
+                # In-memory and per-instance, so the numbers only mean what
+                # they say at one replica — which the `hostPort` above
+                # already forces on a single-node cluster, since a second Pod
+                # could not bind :443. Scaling out would need the `redis`
+                # block to share counters.
+                average: 100
+                period: 1s
+                burst: 300
   destination:
     server: https://kubernetes.default.svc
     namespace: traefik
