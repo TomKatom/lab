@@ -27,11 +27,13 @@ spec:
         ports:
           web:
             expose:
-              # Keep :80 off the Service, and therefore off the node: every
-              # LoadBalancer port klipper sees becomes a hostPort, and only
-              # :443 is DNAT'd from the public IP. HTTP→HTTPS redirection is
-              # not this cluster's job — there is no reachable plaintext
-              # port to redirect from.
+              # Keep :80 off the Service. It is also kept off the node by
+              # omission — `hostPort` is unset here, and since the Service is
+              # no longer a LoadBalancer (see `service.spec.type` below) a
+              # hostPort is now the only thing that binds a node port at all.
+              # HTTP→HTTPS redirection is not this cluster's job: there is no
+              # reachable plaintext port to redirect from, and only :443 is
+              # DNAT'd from the public IP.
               #
               # `ports.web: null` would drop the entrypoint outright and is
               # what the chart's own docs suggest, but Argo CD strips null
@@ -41,32 +43,66 @@ spec:
               # The container keeps an unexposed :8000 listener; nothing
               # routes to it.
               default: false
+          websecure:
+            # Bind :443 on the node from the Pod itself, replacing the
+            # hostPort klipper used to open on this cluster's behalf. This is
+            # what puts Traefik behind the existing :443 DNAT at 10.10.10.10
+            # now that the Service is a plain ClusterIP.
+            #
+            # The point of the switch is the source address. The CNI portmap
+            # plugin DNATs a hostPort to the Pod without masquerading traffic
+            # that arrives from off-node, so Traefik finally sees the real
+            # client IP — which klipper unconditionally overwrote (the long
+            # note under `service.spec.type` below has the detail). That is
+            # the prerequisite for any per-client middleware: rateLimit,
+            # ipAllowList, inFlightReq.
+            #
+            # The container port stays the chart's 8443; `hostPort` and the
+            # `exposedPort: 443` default are what make it :443 externally.
+            hostPort: 443
         service:
           spec:
-            # The chart's own default, restated because it is load-bearing
-            # and Renovate bumps this chart unattended: k3s ships klipper
-            # servicelb (only `traefik` is in k3s_disable_components), which
-            # answers a LoadBalancer Service by binding its ports on the
-            # node — that is what puts Traefik behind the existing
-            # :443 DNAT at 10.10.10.10.
+            # NOT the chart's default (LoadBalancer), and the difference is
+            # load-bearing — Renovate bumps this chart unattended, so this is
+            # the note that has to survive.
             #
-            # ⚠ Consequence worth knowing before writing any per-client rule:
-            # klipper's forwarder MASQUERADEs unconditionally — its `entry`
+            # k3s ships klipper servicelb (only `traefik` is in
+            # k3s_disable_components), which answers a LoadBalancer Service
+            # by binding its ports on the node via a per-Service DaemonSet.
+            # That used to be what put Traefik behind the :443 DNAT — but
+            # klipper's forwarder MASQUERADEs unconditionally: its `entry`
             # script pairs every `-j DNAT` with a `-j MASQUERADE` on the way
-            # out, with no externalTrafficPolicy branch. So Traefik sees the
-            # svclb Pod's address as the source of *every* external request
-            # and the real client IP never reaches this cluster. Nothing in
-            # front sets `X-Forwarded-For` either, since Traefik is the edge.
+            # out, with no externalTrafficPolicy branch. Traefik therefore
+            # saw the svclb Pod's address as the source of *every* external
+            # request, and the real client IP never reached this cluster.
+            # Nothing in front sets `X-Forwarded-For` either, since Traefik
+            # is the edge.
             #
-            # Any Traefik middleware keyed on the client — rateLimit,
-            # ipAllowList, inFlightReq — therefore treats the whole internet
-            # as one client, which turns a per-IP limit into a global one
-            # that a single abuser can trip for everybody. Making those work
-            # needs a real source of client IP first: either a proxy in
-            # front whose header Traefik is configured to trust, or a load
-            # balancer that preserves the source address (klipper cannot).
-            # Until then, per-client rules belong in the app, not here.
-            type: LoadBalancer
+            # Consequences, both of which this cluster now needs to not have:
+            # any middleware keyed on the client (rateLimit, ipAllowList,
+            # inFlightReq) treated the whole internet as one client, so a
+            # per-IP limit was really a global one a single abuser could trip
+            # for everybody; and access logs carried no attacker address, so
+            # a public unauthenticated endpoint had no forensic value at all.
+            #
+            # ClusterIP takes klipper out of the path entirely, and
+            # `ports.websecure.hostPort` above opens :443 on the node
+            # directly instead. Nothing in this repo dials this Service —
+            # it is kept (rather than `service.enabled: false`) as the stable
+            # in-cluster address and as a target for a future ServiceMonitor;
+            # the chart renders none today.
+            type: ClusterIP
+        updateStrategy:
+          rollingUpdate:
+            # The chart defaults to maxUnavailable 0 / maxSurge 1, which
+            # cannot work with a hostPort: the surged Pod would have to bind
+            # :443 on a node where the outgoing Pod still holds it, so it
+            # would sit Pending and the rollout would never complete.
+            # Inverting the pair makes every Traefik rollout a brief outage
+            # of :443 — seconds, and the honest cost of seeing client IPs on
+            # a single-node cluster.
+            maxUnavailable: 1
+            maxSurge: 0
         ingressClass:
           # Also a chart default, restated for the same reason: Phase 6 app
           # Ingresses omit ingressClassName and rely on being defaulted here.
