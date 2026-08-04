@@ -96,8 +96,13 @@ spec:
             #
             # Traefik pools upstream connections and reaps them at
             # `serversTransport.forwardingTimeouts.idleConnTimeout` — 90s, its
-            # default, and not set anywhere in this repo because chart 41.1.1
-            # exposes no values key for the global serversTransport. Authelia's
+            # built-in default, and not set anywhere in this repo: the chart
+            # exposes no values key for the *global* serversTransport (its only
+            # `serversTransport` values are the Traefik Hub multi-cluster
+            # children's, and this lab runs no Hub), so overriding it would
+            # mean an `additionalArguments` static flag. No chart version is
+            # named here on purpose — Renovate bumps ./traefik.yaml unattended
+            # and the gap is not version-specific. Authelia's
             # fasthttp server arms a far shorter deadline on that same idle
             # connection (chart defaults: read 6s, idle 30s), so it is always
             # the side that gives up first — and giving up means answering 408
