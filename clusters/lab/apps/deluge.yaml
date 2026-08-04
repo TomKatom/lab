@@ -213,7 +213,7 @@ spec:
                 image:
                   repository: ghcr.io/tobbez/deluge_exporter
                   # renovate: datasource=docker depName=ghcr.io/tobbez/deluge_exporter
-                  tag: "2.4.0@sha256:2aeab50aac50415da7c72fc934740329110988d011d9c592a00dd2eee2d87aa2"
+                  tag: "2.4.0@sha256:d1af9f7b17009d0308a842db9bead73230a10ca4d72bb5fe5f5b228d346364f0"
                 env:
                   DELUGE_CONFIG_DIR: /config
                   DELUGE_HOST: 127.0.0.1
