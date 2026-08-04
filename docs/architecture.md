@@ -114,7 +114,7 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
 | Config mgmt | **Ansible** (+ `community.sops`) | WireGuard, NAT/DNAT, OS hardening, ZFS, k3s bootstrap |
 | Mgmt access | **WireGuard** (on host) | SSH/PVE/k8s APIs private; no public SSH |
 | Single-IP sharing | **nftables NAT/DNAT** (Ansible `network-nat`) | Forwards 443/32400/torrent to VM; masquerades egress |
-| Cluster | **k3s** (single node, bundled Traefik disabled) | Lightweight k8s; Traefik managed via Argo, bound to `:443` by Pod `hostPort` so it sees real client IPs (klipper servicelb masqueraded them; no MetalLB) |
+| Cluster | **k3s** (single node, bundled Traefik disabled) | Lightweight k8s; Traefik managed via Argo, bound to `:443` by Pod `hostPort` so it sees real client IPs (klipper servicelb masqueraded them; no MetalLB), with a per-source-IP `rateLimit` on the entrypoint covering every router |
 | GitOps | **Argo CD** (app-of-apps) | UI + drift/sync visibility |
 | Packaging | **Helm** (`bjw-s/app-template`) + **Kustomize** (secrets only) | DRY across near-identical apps; ksops needs Kustomize |
 | Secrets | **SOPS + age** + **ksops** | One key for k8s + Tofu + Ansible |
