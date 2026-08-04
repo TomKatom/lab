@@ -21,7 +21,7 @@ argocd_helm_sha256: "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45f
 # "helm charts" packageRule groupName, so future chart bumps land together
 # in one PR instead of silently drifting apart.
 # renovate: datasource=helm depName=argo-cd registryUrl=https://argoproj.github.io/argo-helm
-argocd_chart_version: "10.2.2"
+argocd_chart_version: "10.2.3"
 # argo-cd chart 10.1.4 bundles Argo CD app version v3.4.5 (upstream
 # Chart.yaml appVersion, confirmed 2026-07-23) — informational only, not
 # consumed by this role.
