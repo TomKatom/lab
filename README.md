@@ -53,14 +53,16 @@ k3s VM into Proxmox Backup Server, and a nightly file-level backup of the
 hypervisor itself — all client-side encrypted into a Backblaze B2 bucket for
 about $0.25/month ([`docs/backups.md`](docs/backups.md)).
 
-Three things are deliberately still pending:
+**Phase 9 — Outbound file sharing** is live in its own `share` namespace:
+FileBrowser Quantum browses `/data/torrents` in place behind Authelia on
+`files.tomkatom.com`, and hands out expiring, download-capped links on the
+separate public hostname `share.tomkatom.com`. Recipients need no account.
+See [`docs/runbooks/sharing.md`](docs/runbooks/sharing.md).
 
-- **Public DNS has not moved.** `tomkatom.com` and the `sonarr./radarr./
-  prowlarr./deluge.` CNAMEs still resolve to the old server, and
-  external-dns runs `--dry-run` so it writes nothing. Every new hostname is
-  NXDOMAIN publicly and is reached over WireGuard only. Moving the zone is
-  a separate, operator-triggered runbook —
-  [`docs/runbooks/dns-cutover.md`](docs/runbooks/dns-cutover.md).
+The DNS cutover has since run: external-dns writes for real, and every
+hostname above resolves publicly to `145.239.3.55`. One thing is
+deliberately still pending:
+
 - **The first restore drill has not been run.** Everything in Phase 8 is
   live and alerting, but `RestoreDrillOverdue` fires until a real restore
   has been performed and its final step touches the marker — deliberately,

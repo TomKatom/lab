@@ -1,0 +1,334 @@
+# FileBrowser Quantum — the outbound file-sharing service. One pod, one
+# Service, two Ingresses, and the split between those two Ingresses is the
+# whole security design:
+#
+#   files.tomkatom.com   path /        behind authelia-forwardauth — the picker
+#   share.tomkatom.com   path /public  no middleware at all       — the delivery
+#
+# Recipients need no account and the operator provisions nothing per person: a
+# share is a high-entropy hash with a mandatory expiry and a download cap. What
+# keeps the browse API off the public hostname is that **Traefik has no route
+# for it** — `share.tomkatom.com/` 404s at the router, before the app is
+# reached — so an application-level auth bug cannot re-expose it. That works
+# because FBQ puts every unauthenticated route under one prefix: at
+# v1.5.0-stable `backend/http/httpRouter.go` mounts `publicRoutes` at
+# `/public/`, and the share page (`/public/share/`), its JavaScript and CSS
+# (`/public/static/`) and the public API (`/public/api/`) are all inside it.
+# The only root-level asset a recipient's browser asks for is `/favicon.svg`,
+# which 404s harmlessly.
+#
+# Wave 1: after filebrowser-config (wave 0) has created the `share` namespace
+# and the NetworkPolicy that makes the proxy-auth trust below safe.
+#
+# Accepted blast radius, stated plainly: the public endpoint is backed by a
+# process that can read /data/torrents. A bug in its /public handlers means
+# someone can enumerate the torrent tree — learn what is being downloaded. The
+# mount is read-only, the source is declared read-only, and the pod is
+# network-isolated, so that is the ceiling: disclosure of filenames, never
+# write access, never lateral movement.
+#
+# On the CVE history: FBQ has had two consecutive incomplete fixes for share
+# *password* bypass (CVE-2026-27611, GHSA-525j-95gf-766f) — the tokenised
+# download URL leaked via /public/api/share/info without the password. This
+# deployment treats the share hash as the only access control and a per-share
+# password as defence-in-depth, so that bug class is a non-event here.
+# Renovate tracks the pin regardless.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: filebrowser
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # The house 1000:1000 block (../apps/README.md "Identity"). No
+        # exception needed: the `-slim` image's own Dockerfile does
+        # `adduser -D -s /bin/true -u 1000 filebrowser` followed by `USER
+        # filebrowser`, so it already starts unprivileged at this digest —
+        # unlike Deluge's LSIO image, which is this repo's one documented
+        # root-start exception.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: docker.io/gtstef/filebrowser
+                  # The `-slim` variant, not the default: slim omits ffmpeg
+                  # and the media-preview toolchain, which `disablePreviews`
+                  # below turns off anyway. Nothing is lost and a public-facing
+                  # process stops carrying a media parser it never calls.
+                  # renovate: datasource=docker depName=docker.io/gtstef/filebrowser
+                  tag: "1.5.0-stable-slim@sha256:2d3657f33c1bfe8f524b27a219d4995ba213a1fdff442139a66edb2dbcf8b84b"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                  readOnlyRootFilesystem: true
+                  allowPrivilegeEscalation: false
+                env:
+                  # The image bakes FILEBROWSER_CONFIG=/home/filebrowser/data/
+                  # config.yaml and starts from whatever it finds there; if the
+                  # path does not exist the binary exits fatally rather than
+                  # falling back (backend/cmd/cli.go). Point it at the
+                  # ConfigMap below instead — the baked-in file is still on the
+                  # image, so forgetting this line boots a working FileBrowser
+                  # serving the *wrong* configuration, which is the failure
+                  # mode worth spending a comment on.
+                  - name: FILEBROWSER_CONFIG
+                    value: /etc/filebrowser/config.yaml
+                  # The database path is declared here rather than as
+                  # `server.database` in the config file because it is also the
+                  # value `SetDefaults` stats at startup: with the image's
+                  # default still in place, every boot logs a "database file
+                  # could not be found" warning about a path nothing will ever
+                  # use. One declaration, no permanent log noise.
+                  - name: FILEBROWSER_DATABASE
+                    value: /config/filebrowser.db
+                probes:
+                  # GET /health is registered on the root mux with no auth
+                  # wrapper (httpRouter.go), so a kubelet probe needs no
+                  # Remote-User header and is unaffected by the proxy-auth
+                  # configuration below.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 8080
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 8080
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 8080
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    # Archive streaming is CPU-bound (gzip on the way out), so
+                    # the ceiling is generous. The memory figure is sized for
+                    # the *index*, not for serving: FBQ walks the whole source
+                    # tree at startup and keeps it addressable, and
+                    # /data/torrents is the largest tree in the cluster. 1Gi
+                    # would probably do; 2Gi is cheap on a 128 GB host and an
+                    # OOM kill here would page via KernelOOMKill for no reason.
+                    cpu: "2"
+                    memory: 2Gi
+        # Declared in the chart's own `configMaps:` rather than in the
+        # filebrowser/ overlay next door, so app-template stamps its
+        # `checksum/configMaps` pod annotation and a config edit actually
+        # restarts the pod. An externally-owned ConfigMap syncs green in Argo
+        # while the running pod keeps the old bytes (../apps/README.md
+        # "Kustomize `-config` dirs").
+        #
+        # FBQ parses this with `yaml.DisallowUnknownField()` — a typo'd key is
+        # a hard startup failure, not a silently ignored line. The valid
+        # top-level keys are exactly: server, auth, integrations, frontend,
+        # userDefaults, http.
+        configMaps:
+          config:
+            data:
+              config.yaml: |
+                server:
+                  port: 8080
+                  # Load-bearing. The share link a recipient receives is built
+                  # from this, so without it a share created while browsing
+                  # files.tomkatom.com generates a link on files. — which sits
+                  # behind Authelia and is useless to the person it was sent to.
+                  externalUrl: https://share.tomkatom.com
+                  cacheDir: /cache
+                  disablePreviews: true
+                  disableUpdateCheck: true
+                  # Nothing here speaks WebDAV, and /dav is a whole second
+                  # authentication surface (Basic auth carrying a JWT).
+                  disableWebDAV: true
+                  # GB, and it binds in exactly one place: a plain GET of a
+                  # folder share streams the archive straight to the response
+                  # with no limit and no temp file, while a HEAD or a Range
+                  # request spools the entire archive to cacheDir first and is
+                  # refused with 413 above this size (backend/http/archive.go
+                  # BuildAndStreamArchive). So this is a disk guard on /cache,
+                  # not a policy on how large a share may be — ordinary browser
+                  # downloads of any size are unaffected. Keep it under the
+                  # emptyDir sizeLimit below.
+                  maxArchiveSize: 10
+                  sources:
+                    - path: /data/torrents
+                      name: torrents
+                      config:
+                        # The application-level half of send-only. The kernel
+                        # half is `readOnly: true` on the hostPath mount below;
+                        # this one also removes the write actions from the UI
+                        # and returns errors from the API rather than letting a
+                        # request reach a filesystem that will refuse it.
+                        readOnly: true
+                        defaultEnabled: true
+                auth:
+                  methods:
+                    # Off entirely: there is no second identity store here and
+                    # no login form to brute-force. This also suppresses FBQ's
+                    # bootstrap admin, which `quickSetup` only creates when
+                    # password or noauth is enabled — the operator's account is
+                    # instead created on first arrival by the proxy path below.
+                    password:
+                      enabled: false
+                    proxy:
+                      enabled: true
+                      # Authelia already lists Remote-User in its middleware's
+                      # authResponseHeaders (../../platform/authelia/
+                      # middleware-forwardauth.yaml), so nothing changes there.
+                      # Traefik *overwrites* this header from Authelia's reply
+                      # for traffic on files.tomkatom.com; it does nothing for
+                      # traffic that never passes through Traefik, which is
+                      # what the NetworkPolicy in ./filebrowser/ exists for.
+                      # Exactly the Grafana arrangement, for exactly the same
+                      # reason.
+                      header: Remote-User
+                frontend:
+                  name: tomkatom share
+                userDefaults:
+                  account:
+                    permissions:
+                      # `admin` and `share` are both required and neither
+                      # implies the other: creating a share is gated on
+                      # Permissions.Share by `withPermShare` (backend/http/
+                      # middleware.go) regardless of admin. Granting them to
+                      # every proxy-authenticated user rather than to one named
+                      # account is the same call kube-prometheus-stack.yaml
+                      # makes for Grafana (`auto_assign_org_role: Admin`): the
+                      # only door into this app is Authelia's two_factor ACL,
+                      # and the Authelia user database is the operator alone.
+                      #
+                      # Admin here cannot rewrite this configuration — FBQ
+                      # registers GET routes for /api/settings and no PUT or
+                      # POST, so the config stays git-owned.
+                      admin: true
+                      share: true
+                      download: true
+                      # modify / create / delete are left at their `false`
+                      # defaults. Redundant against two layers of read-only,
+                      # and that is the point: send-only should be true even if
+                      # one of the other two layers is misconfigured.
+                http:
+                  # The only two values FBQ consults are x-forwarded-for and
+                  # x-real-ip (backend/http/middleware.go). Trusting the first
+                  # is what makes its own auth rate limiter and its access logs
+                  # see the real client address — which is a real address only
+                  # because Traefik binds :443 by hostPort (see
+                  # ../platform/traefik.yaml).
+                  trustedHeaders:
+                    - X-Forwarded-For
+        service:
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 8080
+        # Two Ingresses, one Service. Neither carries an ingressClassName or a
+        # tls: block — Traefik is the default IngressClass and its default
+        # TLSStore already serves the wildcard certificate for both hosts
+        # (../platform/README.md "Exposing a service").
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: files.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+          # Deliberately un-annotated, and deliberately not `path: /`. This is
+          # the delivery endpoint: anyone with a link, no account, no session.
+          # Authelia's `*.tomkatom.com → two_factor` rule does not reach it
+          # because that rule only applies where the middleware annotation is
+          # present, so no Authelia-side change is needed — or wanted.
+          public:
+            hosts:
+              - host: share.tomkatom.com
+                paths:
+                  - path: /public
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # The share records and the user account. No storageClassName, so
+          # the cluster default local-path applies and this lands on the VM
+          # disk that the nightly vzdump of guest 9000 already captures — per
+          # docs/backups.md "Adding a backup target", nothing to do.
+          config:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 2Gi
+            globalMounts:
+              - path: /config
+          # cacheDir holds two things: the rebuildable sqlite index of
+          # /data/torrents (cacheDir/sql/index_all.db) and the archive spool
+          # (cacheDir/downloads). Neither is worth backing up and the second is
+          # the only thing here that can grow without bound, so an emptyDir
+          # with a real ceiling beats a PVC: local-path enforces no quota at
+          # all, while kubelet evicts a pod that exceeds an emptyDir
+          # sizeLimit. The cost is a full re-index of the torrent tree on every
+          # pod restart.
+          #
+          # It is not on local-path-ephemeral / scsi2 on purpose: that disk is
+          # 40 GB with 26 GB already claimed by the Prometheus, Alertmanager
+          # and Loki PVCs, so an archive spool there would fill the monitoring
+          # stack's disk rather than this app's.
+          cache:
+            type: emptyDir
+            sizeLimit: 12Gi
+            globalMounts:
+              - path: /cache
+          # readOnlyRootFilesystem above makes the image's own WORKDIR
+          # unwritable, so the config file cannot live at its baked-in path;
+          # it is mounted here and pointed at by FILEBROWSER_CONFIG.
+          config-file:
+            type: configMap
+            name: filebrowser
+            globalMounts:
+              - path: /etc/filebrowser/config.yaml
+                subPath: config.yaml
+                readOnly: true
+          # Identical container path, house rule (../apps/README.md "The /data
+          # mount"). `readOnly: true` is the send-only guarantee at the kernel
+          # level, independent of any application-side setting — and the
+          # narrowing to /data/torrents rather than /data means the media
+          # libraries are not reachable from a public-facing process at all.
+          data:
+            type: hostPath
+            hostPath: /data/torrents
+            hostPathType: Directory
+            globalMounts:
+              - path: /data/torrents
+                readOnly: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: share
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

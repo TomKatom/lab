@@ -107,6 +107,12 @@ ServiceMonitor or a hand-written CR.
   into one job, making `up{job="exportarr"}` unable to say which exporter is
   down. Deluge and the Plex exporter keep the default: one Service each,
   nothing to collapse.
+- **Not the `share` namespace.** FileBrowser
+  ([`apps/filebrowser.yaml`](../clusters/lab/apps/filebrowser.yaml)) exposes
+  no metrics endpoint and renders no ServiceMonitor, so it is watched through
+  its logs alone — `PublicShareRequestSpike` under
+  [Log alerts](#log-alerts) below. Alloy already tails every pod in every
+  namespace, so collection needed no change at all.
 
 A standalone `ServiceMonitor`, `PodMonitor`, `Probe`, `PrometheusRule` or
 `ScrapeConfig` is picked up **with no `release` label and in any namespace**,
@@ -379,9 +385,10 @@ group `lab-logs`, evaluated by Loki's ruler rather than by Prometheus.
 | `AutheliaAuthFailureSpike` | warning | over 10 failed authentications in 15m, sustained 5m | Grafana Explore: `{namespace="authelia"} \|= "Unsuccessful"`. Authelia's own regulation already bans repeat offenders, so this is a visibility signal, not an action item — unless the rate is sustained. |
 | `KernelOOMKill` | critical | any OOM kill in the node journal in the last 10m (no `for:` — it is an event, not a state) | `{job="systemd-journal"} \|= "Killed process"` gives the process and its RSS. Covers both host-wide OOM and a container exceeding its cgroup limit; if it is a container, raise the limit or find the leak. |
 | `MediaAppErrorBurst` | warning | over 50 bracketed `error`/`fatal` lines from one media app in 15m, sustained 10m | `{namespace="media", app="<app>"}` in Explore. The bracketed level pattern matches the *arrs and Deluge; apps that format levels differently are invisible to this rule. |
+| `PublicShareRequestSpike` | warning | over 500 `/public` requests to FileBrowser in 15m, sustained 10m | `{namespace="share"} \|= "/public/"` in Explore. This is the only log alert watching a hostname the whole internet can reach. A share link reposted somewhere public and a scan look the same from here — open the share list on `files.tomkatom.com` and revoke anything that has escaped. The per-share download cap should already have stopped the transfers themselves; see [`runbooks/sharing.md`](runbooks/sharing.md). FileBrowser's own `apiFilter` already excludes `/public/static`, so asset fetches are not in the count. |
 
-> ⚠ **The three log thresholds — 10, 0 and 50 — are guesses.** Nothing had a
-> week of log baseline to calibrate against when they were written. Paste
+> ⚠ **The four log thresholds — 10, 0, 50 and 500 — are guesses.** Nothing had
+> a week of log baseline to calibrate against when they were written. Paste
 > each expression into Grafana Explore against the Loki datasource, watch it
 > over real traffic, and move it. `MediaAppErrorBurst` in particular will
 > need moving, because "error" means something different in every

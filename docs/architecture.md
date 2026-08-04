@@ -13,10 +13,10 @@ virtiofs share and k3s, and the Argo CD platform layer (cert-manager,
 Traefik, Authelia, external-dns). The media stack in
 [`clusters/lab/apps/`](../clusters/lab/apps/) is deployed and reconciling;
 **migrating the old server's state onto it is operator work in progress**
-([`docs/runbooks/media-migration.md`](runbooks/media-migration.md)), and
-**public DNS still points at the old server** — external-dns stays
-`--dry-run` until the separate, operator-triggered
-[`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md). Every apply
+([`docs/runbooks/media-migration.md`](runbooks/media-migration.md)).
+**Public DNS has moved** — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md)
+has run, external-dns no longer carries `--dry-run`, and it owns and writes
+every Ingress hostname in the zone for real. Every apply
 goes through the gated CI pipeline described in
 [CI/CD](#cicd--gitops-flow) below; the first Tofu apply was the one manual,
 operator-run step (dead-man switch, see
@@ -96,13 +96,15 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
      └─ Argo CD  ←──────── pulls git (single source of truth) ── reconciles:
           platform/                       apps/ (media ns, Helm app-template)
            ├─ cert-manager (DNS-01, wildcard+apex)   ├─ media-common (shared secrets/env)
-           ├─ external-dns (Cloudflare, --dry-run)   ├─ plex      (direct-play, own port)
-           ├─ traefik (ingress :443)                 ├─ prowlarr / flaresolverr (indexers)
+           ├─ external-dns (Cloudflare, live)        ├─ plex      (direct-play, own port)
+           ├─ traefik (ingress :443, hostPort)       ├─ prowlarr / flaresolverr (indexers)
            ├─ authelia (auth.tomkatom.com)           ├─ sonarr / radarr / bazarr
            ├─ ksops secrets (kustomize)              ├─ deluge (OVH IP via NAT, torrent port)
            └─ monitoring (metrics + logs + alerts)   ├─ unpackerr / recyclarr
                                                      ├─ seerr (requests) / maintainerr
                                                      └─ tautulli / homepage (apex + www)
+                                                    apps/ (share ns)
+                                                     └─ filebrowser (files. + share.)
 ```
 
 ## Tooling
@@ -361,16 +363,15 @@ Each phase is its own PR. Full detail and current status in
    Phase 2 deliberately leaves this out, since the VM has no OS config yet.
 4. **Bootstrap Argo CD** — Helm install + ksops patch, `root-app.yaml`.
 5. **Platform apps** *(done)* — cert-manager, external-dns, Traefik,
-   Authelia. All live. external-dns runs `--dry-run` until the zone moves
-   off the old server — [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md).
+   Authelia. All live, external-dns writing for real since
+   [`docs/runbooks/dns-cutover.md`](runbooks/dns-cutover.md) ran.
 6. **Media apps** *(current)* — deployed and reconciling from
    [`clusters/lab/apps/`](../clusters/lab/apps/): Deluge, Prowlarr,
    FlareSolverr, Sonarr, Radarr, Bazarr, Unpackerr, Recyclarr, Plex,
    Tautulli, Seerr, Maintainerr, Homepage, all in one `media` namespace on the
    shared `/data` tree. What remains is **state migration** from the old
    server (operator-executed —
-   [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)) and,
-   separately and later, the **public DNS cutover**.
+   [`docs/runbooks/media-migration.md`](runbooks/media-migration.md)).
 7. **Observability** — kube-prometheus-stack (Prometheus, Alertmanager,
    Grafana), Loki + Alloy for logs, `prometheus-pve-exporter` and the
    hypervisor's own `node_exporter` for the layer below Kubernetes, alerting
@@ -386,6 +387,15 @@ Each phase is its own PR. Full detail and current status in
    [`docs/backups.md`](backups.md). Restores:
    [`docs/runbooks/restore.md`](runbooks/restore.md) and
    [`docs/runbooks/disaster-recovery.md`](runbooks/disaster-recovery.md).
+9. **Outbound file sharing** — FileBrowser Quantum in its own `share`
+   namespace, browsing `/data/torrents` in place (read-only) behind Authelia
+   on `files.tomkatom.com`, and serving expiring, download-capped links to
+   people with no account on `share.tomkatom.com`. The split is enforced at
+   Traefik, not in the app: only `/public` is routed on the public hostname,
+   so the browse API has no route there at all. A NetworkPolicy restricts
+   ingress to the `traefik` namespace, which is what makes trusting
+   `Remote-User` safe. Procedure and sharing policy:
+   [`docs/runbooks/sharing.md`](runbooks/sharing.md).
 
 ## Verification
 
