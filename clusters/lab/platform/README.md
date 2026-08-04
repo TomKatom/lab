@@ -16,7 +16,7 @@ Cluster platform services, synced before any media app depends on them:
   deliberately inert** — it runs with `--dry-run` until the DNS cutover. See
   "DNS records from Ingresses (inert)" below.
 - `traefik.yaml` + `traefik-config.yaml` + `traefik/` — ingress controller on
-  `:443` (klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
+  `:443` (Pod `hostPort`; no klipper servicelb, no MetalLB). Owns the real `*.tomkatom.com`
   wildcard `Certificate`, because Traefik's default `TLSStore` can only read
   a Secret from its own namespace. **Implemented (Phase 5).** See "Exposing a
   service" below.
@@ -197,12 +197,24 @@ because Homepage's Ingress is `tomkatom.com` itself
 covered by the same Secret with no cert-manager change; a `<x>.<y>.tomkatom
 .com` two-label host would not be, and would need its own `Certificate`.
 
-Three consequences worth knowing:
+Four consequences worth knowing:
 
-- **There is no `:80`.** Only the `websecure` entrypoint is published on the
-  Service, so klipper binds `:443` on the node and nothing else — matching
-  the DNAT rules, which forward `443` and not `80`. Nothing redirects
-  plaintext HTTP because nothing can reach it.
+- **There is no `:80`.** Only the `websecure` entrypoint carries a
+  `hostPort`, so `:443` is the only port bound on the node — matching the
+  DNAT rules, which forward `443` and not `80`. Nothing redirects plaintext
+  HTTP because nothing can reach it.
+- **Traefik sees the real client IP.** The Service is a plain `ClusterIP` and
+  `ports.websecure.hostPort: 443` binds the node directly, because klipper
+  servicelb — which is what answered a `LoadBalancer` Service here before —
+  MASQUERADEs unconditionally and replaced the source address of every
+  external request with its own Pod's. Per-client middlewares (`rateLimit`,
+  `ipAllowList`, `inFlightReq`) are therefore meaningful now, and can be
+  applied to *every* router at once via `ports.websecure.http.middlewares`
+  rather than per-Ingress. The cost: `updateStrategy` is inverted to
+  `maxUnavailable: 1` / `maxSurge: 0` (two Pods cannot share a hostPort), so
+  a Traefik rollout is a seconds-long `:443` outage. Note this covers only
+  traffic through Traefik — Plex `:32400`, the torrent port and WireGuard are
+  DNAT'd straight past it.
 - **Cross-namespace `Middleware` references work** (`allowCrossNamespace`),
   which is how an app opts into Authelia forward-auth:
   `traefik.ingress.kubernetes.io/router.middlewares:
@@ -364,9 +376,10 @@ Three settings worth knowing before that day:
   fills in either way.
 
 **The target is fixed in `traefik.yaml`, not here.** Left at chart defaults,
-Traefik copies its own LoadBalancer address into every Ingress status —
-`10.10.10.10`, since klipper binds the node — and external-dns would publish
-RFC1918 space into a public zone. So `traefik.yaml` sets
+Traefik copies its own Service address into every Ingress status — RFC1918
+space either way, `10.10.10.10` back when klipper answered a `LoadBalancer`
+Service and the ClusterIP now — and external-dns would publish that into a
+public zone. So `traefik.yaml` sets
 `providers.kubernetesIngress.publishedService.enabled: false` **and**
 `ingressEndpoint.ip: 145.239.3.55`. Both, in that combination: Traefik's
 `updateIngressStatus` returns early on `publishedService` and never looks at
