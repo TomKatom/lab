@@ -209,6 +209,24 @@ spec:
               # a pod-level property, so a failing one here would pull deluged
               # out of its own Service endpoints and break every *arr's
               # download client over a metrics problem.
+              #
+              # This sidecar is also why deluged logs nine WARNING lines a
+              # minute, forever, and it is not worth re-diagnosing. Each scrape
+              # opens one RPC connection (measured: 1,440 "Deluge Client
+              # connection made" a day against this 1m interval), and inside it
+              # deluge-client's protocol-version detection sends three headers
+              # deluged cannot parse — the reported versions are 120 and 68,
+              # i.e. first bytes 0x78 (zlib) and 0x44 ('D') — each of which
+              # costs a three-line WARNING burst from `deluge.transfer`. The
+              # scrape then returns correct metrics regardless, which is why
+              # this is noise and not an outage.
+              #
+              # Nothing here fixes it: the exporter exposes no way to skip the
+              # probe, and raising LOG_LEVEL is the wrong lever twice over — it
+              # is this container's level, not deluged's, and lowering deluged's
+              # own would hide its real warnings along with these.
+              # ../platform/alloy.yaml drops those three exact messages on the
+              # way into Loki instead, leaving this pod's own log complete.
               metrics:
                 image:
                   repository: ghcr.io/tobbez/deluge_exporter
