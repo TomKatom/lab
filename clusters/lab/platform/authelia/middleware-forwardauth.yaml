@@ -12,6 +12,18 @@ spec:
   forwardAuth:
     address: http://authelia.authelia.svc.cluster.local:9091/api/authz/forward-auth
     trustForwardHeader: true
+    # Unset means unlimited, and Traefik buffers the whole authz response in
+    # memory on *every* request to *every* protected router — which is what it
+    # warns about ~100x/day. This endpoint's responses carry no body worth the
+    # name: 200 with the Remote-* headers below, or 401/302 whose payload is
+    # the Location header. 4 KiB is far above anything Authelia emits here
+    # while capping the buffer at ~1 MB even at the entrypoint rateLimit's
+    # burst of 300 concurrent requests (../traefik.yaml).
+    #
+    # Erring generous on purpose: over the limit Traefik fails the request 500,
+    # so guessing too low takes down every authenticated route at once, whereas
+    # guessing too high still bounds the memory this exists to bound.
+    maxResponseBodySize: 4096
     authResponseHeaders:
       - Remote-User
       - Remote-Groups
