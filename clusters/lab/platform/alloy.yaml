@@ -62,6 +62,26 @@
 # and only matches `^@(.+)$` — i.e. it fires only when the first rule left `app`
 # empty, so `app.kubernetes.io/name` wins where it exists and the legacy `app`
 # label fills in behind it. Rule order is therefore load-bearing.
+#
+# `loki.process "pod_logs"` sits between that source and the write, and it is
+# the only thing in this repo that deletes a log line before it is stored, so
+# the scoping is deliberate rather than convenient. Deluge's RPC daemon answers
+# a failed protocol-version handshake with three WARNING lines from the
+# `deluge.transfer` logger, and the metrics sidecar's deluge-client fails that
+# handshake three times on every 1m scrape before connecting cleanly — a
+# measured 12,960 lines a day, which is 100% of everything Deluge logs above
+# INFO and ~20% of the media namespace's entire log volume. See
+# ../apps/deluge.yaml for the root cause; nothing is wrong with the daemon.
+#
+# Three things keep this from hiding a real fault. The `stage.match` selector
+# pins it to Deluge's own container, so no other app can reach the drop at all
+# (non-matching entries pass through `action = "keep"` untouched). Each
+# expression matches a whole message including the logger name and level, not a
+# keyword, so a different warning from the same logger — or the same words from
+# any other Deluge subsystem — still ships. And the drops are counted:
+# `loki_process_dropped_lines_total{reason="deluge_rpc_handshake"}` should track
+# 9/min, and a jump means the handshake is failing more often than the scrape,
+# which is a real signal this makes visible rather than buries.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -130,7 +150,33 @@ spec:
 
               loki.source.kubernetes "pods" {
                 targets    = discovery.relabel.pod_logs.output
+                forward_to = [loki.process.pod_logs.receiver]
+              }
+
+              loki.process "pod_logs" {
                 forward_to = [loki.write.default.receiver]
+
+                // The deluge_exporter sidecar's handshake noise, dropped whole
+                // message by whole message. See this file's header before
+                // widening any of these three.
+                stage.match {
+                  selector = "{app=\"deluge\", container=\"app\"}"
+
+                  stage.drop {
+                    expression          = "\\[WARNING \\]\\[deluge\\.transfer +:[0-9]+\\] Error occurred when parsing message header: Received invalid protocol version: [0-9]+\\. PROTOCOL_VERSION is 1\\.\\."
+                    drop_counter_reason = "deluge_rpc_handshake"
+                  }
+
+                  stage.drop {
+                    expression          = "\\[WARNING \\]\\[deluge\\.transfer +:[0-9]+\\] This version of Deluge cannot communicate with the sender of this data\\."
+                    drop_counter_reason = "deluge_rpc_handshake"
+                  }
+
+                  stage.drop {
+                    expression          = "\\[WARNING \\]\\[deluge\\.transfer +:[0-9]+\\] Failed to decompress \\(0 bytes\\) and load serialized data with rencode: Error -5 while decompressing data: incomplete or truncated stream"
+                    drop_counter_reason = "deluge_rpc_handshake"
+                  }
+                }
               }
 
               loki.source.journal "host" {

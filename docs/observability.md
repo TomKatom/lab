@@ -487,6 +487,18 @@ streams forever with no error:
 `app` comes from `app.kubernetes.io/name`, falling back to the legacy `app`
 pod label.
 
+Three log messages never reach Loki. Deluge's metrics sidecar fails an RPC
+protocol-version handshake three times on every scrape, and deluged answers
+each failure with three `deluge.transfer` WARNING lines — 12,960 a day,
+measured, which is 100% of what Deluge logs above INFO and none of it a fault.
+Alloy's `loki.process` stage drops those three exact messages for that one
+container; see [`alloy.yaml`](../clusters/lab/platform/alloy.yaml) for the
+scoping and [`deluge.yaml`](../clusters/lab/apps/deluge.yaml) for the cause.
+
+It is the only drop in the pipeline, and it is counted rather than silent —
+`loki_process_dropped_lines_total{reason="deluge_rpc_handshake"}` should sit at
+9/min, and any other rate means the handshake changed, not the logging.
+
 ## The four dashboards
 
 Grafana carries 29. Twenty-five of them arrive with kube-prometheus-stack
