@@ -85,6 +85,54 @@ spec:
           extraConfigs:
             - /extra-config/session.yaml
 
+          server:
+            # ~1.1k lines a day of `Request timeout occurred while handling
+            # request from client` with a 408, for `GET /` — about 85% of
+            # everything Authelia logs as an error, and every one of them from
+            # the same TCP peer: the Traefik pod (confirmed against
+            # kube_pod_info across two pod rotations). Nothing is failing.
+            # It is the two ends of an idle keep-alive connection disagreeing
+            # about which of them closes it.
+            #
+            # Traefik pools upstream connections and reaps them at
+            # `serversTransport.forwardingTimeouts.idleConnTimeout` — 90s, its
+            # built-in default, and not set anywhere in this repo: the chart
+            # exposes no values key for the *global* serversTransport (its only
+            # `serversTransport` values are the Traefik Hub multi-cluster
+            # children's, and this lab runs no Hub), so overriding it would
+            # mean an `additionalArguments` static flag. No chart version is
+            # named here on purpose — Renovate bumps ./traefik.yaml unattended
+            # and the gap is not version-specific. Authelia's
+            # fasthttp server arms a far shorter deadline on that same idle
+            # connection (chart defaults: read 6s, idle 30s), so it is always
+            # the side that gives up first — and giving up means answering 408
+            # to a client that has stopped listening, then logging it. Traefik
+            # discards the response and dials again, which is why this has only
+            # ever been noise, and why it survived this long.
+            #
+            # The fix is an ordering, not a number: the side that OWNS the
+            # connection pool has to be the side that closes, because a
+            # client-side close is silent and a server-side one is an error
+            # report nobody reads. Both deadlines have to clear 90s rather than
+            # just `idle` — fasthttp chooses between them by whether any bytes
+            # of the next request have arrived, and the 6s that matches the
+            # observed timing says it is `read` arming on the idle connection
+            # here. 30s and 60s of headroom respectively; if Traefik's
+            # idleConnTimeout is ever raised above 120s, these move first.
+            #
+            # The alternative was lowering that idleConnTimeout instead, which
+            # would fix the same race for every upstream at once — but it is a
+            # static-config flag applied to every backend in the cluster to
+            # quiet one of them, so it stays scoped here.
+            #
+            # A 120s read timeout is not slowloris exposure: the Service is
+            # ClusterIP, Traefik buffers the request before forwarding it, and
+            # the :443 entrypoint rate-limits per source IP
+            # (./traefik.yaml, `extraObjects`).
+            timeouts:
+              read: "120 seconds"
+              idle: "150 seconds"
+
           identity_validation:
             reset_password:
               secret:
