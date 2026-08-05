@@ -99,6 +99,54 @@
 # already bans an attacker after a handful of failures. This exists so a
 # sustained attempt is visible in Telegram rather than only in a log nobody
 # reads.
+#
+# TraefikMiddlewareMissing exists because on 2026-08-04 at 20:04:05 UTC a
+# single configuration rebuild left all 28 routers referencing
+# `authelia-forwardauth@kubernetescrd` or `traefik-ratelimit@kubernetescrd`
+# logging `middleware "…" does not exist`. Traefik does not serve such a router
+# with the middleware skipped — it drops the router entirely, so while that
+# state holds every host behind Authelia answers 404 and the per-source rate
+# limit in front of the public share hostname is gone with it. That is the
+# front door being down rather than degraded, hence `severity: critical` where
+# most of this file is warnings.
+#
+# The threshold is a bare `> 0` because a count carries no information here.
+# Across the 30 days Loki retains, `{namespace="traefik"} |= "does not exist"`
+# returns nothing but two such bursts — the 28 lines above and 32 more at
+# 22:50:28 the same evening — each stamped within a single second, and no
+# unrelated Traefik message in the window contains the phrase at all. The
+# second burst is the informative one: it came from a freshly scheduled pod
+# (a chart bump rolled the Deployment), which is what says this is a race
+# while a full configuration is assembled from cold, recurring on restarts
+# rather than a one-off. So the count is never the question — one occurrence
+# is already abnormal, and the only question is whether it clears.
+#
+# The second filter, `|= "middleware"`, narrows nothing today. It is there so
+# that if Traefik later logs some other `does not exist` (a missing service or
+# TLS store, which want a different response) this rule keeps meaning what its
+# name says.
+#
+# `for: 15m` is what separates the harmless case from the dangerous one, and it
+# works only because it is LONGER than the range in the expression. A single
+# burst makes count_over_time(...[10m]) non-zero for exactly the ten minutes the
+# window takes to slide past it — five minutes short of the `for` — so a reload
+# that self-heals on the next rebuild, which is what both 2026-08-04 bursts
+# were, can never page. Firing requires a matching line at least every ten
+# minutes for a continuous quarter hour: successive rebuilds that all still
+# fail to resolve the middleware, i.e. the state has stuck. Widening the range
+# to 15m or beyond, or shortening the `for`, would have paged twice in under
+# three hours for two events that fixed themselves — so it is the range <
+# `for` relationship that has to survive a retune, not the threshold.
+#
+# What this rule cannot see is a wedged config that has stopped being rebuilt.
+# Traefik logs this at rebuild time, not per request, and its Kubernetes
+# providers rebuild on watched-object changes rather than on a timer: the
+# informers do resync every 10 minutes (pkg/provider/kubernetes/crd/client.go,
+# `resyncPeriod = 10 * time.Minute`), but the shared event handler drops resync
+# updates whose object did not actually change (pkg/provider/kubernetes/k8s/
+# event_handler.go, OnUpdate → objChanged), so a resync on its own emits no
+# event and re-logs nothing. This is a detector for an error that keeps
+# recurring; silence from it is not by itself proof the routers came back.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -193,3 +241,32 @@ data:
                 *arrs and Deluge; applications in this namespace that format
                 levels differently are invisible to this rule, so treat it as
                 a floor and not a guarantee.
+
+          - alert: TraefikMiddlewareMissing
+            expr: |
+              sum by (namespace, pod) (
+                count_over_time(
+                  {namespace="traefik"}
+                    |= "does not exist"
+                    |= "middleware"
+                  [10m]
+                )
+              ) > 0
+            for: 15m
+            labels:
+              severity: critical
+            annotations:
+              summary: Traefik is dropping routers with an unresolvable middleware
+              description: >-
+                {{ $labels.pod }} has been logging 'middleware ... does not
+                exist' across successive config rebuilds for 15 minutes
+                ({{ $value }} lines in the last 10). Traefik disables a router
+                whose middleware chain will not resolve, so every host behind
+                authelia-forwardauth answers 404 while this lasts, and
+                traefik-ratelimit is off the routers that reference it. Check
+                that the Middleware objects exist in the traefik and authelia
+                namespaces, then make Traefik rebuild its configuration; every
+                occurrence so far has been a provider race on a cold config
+                build that cleared itself on the next rebuild. Query
+                '{namespace="traefik"} |= "does not exist"' in Grafana Explore
+                for the affected routers.
