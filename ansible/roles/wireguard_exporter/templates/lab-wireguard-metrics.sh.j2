@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# Managed by Ansible (roles/wireguard_exporter) — do not edit by hand.
+#
+# Per-peer WireGuard telemetry for node_exporter's textfile collector. See
+# roles/wireguard_exporter/defaults/main.yml for why this is forty lines of
+# shell rather than MindFlavor/prometheus_wireguard_exporter (short version:
+# that project has published no release artifact since 2022 and none of its
+# fifteen releases carries one at all, so there is nothing to checksum-pin).
+#
+# TWO SOURCES, JOINED ON THE PUBLIC KEY.
+#
+#   `wg show all dump` gives the numbers but identifies a peer only by its
+#   public key, which is not something an operator can read. Its output is
+#   tab-separated with the interface name prepended to every line, and two
+#   kinds of line share that stream — per wg(8):
+#     interface: <iface> <private-key> <public-key> <listen-port> <fwmark>
+#     peer:      <iface> <public-key> <preshared-key> <endpoint> <allowed-ips>
+#                <latest-handshake> <transfer-rx> <transfer-tx>
+#                <persistent-keepalive>
+#   Four fields after the name versus eight, and persistent-keepalive is
+#   always printed ("off" when unset), so a non-empty ninth field is what
+#   tells a peer line from an interface line. NOTE THE FIRST FORM CARRIES THE
+#   INTERFACE'S PRIVATE KEY: nothing below may print a whole line.
+#
+#   /etc/wireguard/<iface>.conf supplies the name, from the bare `# <name>`
+#   comment roles/wireguard has always rendered as the first line of each
+#   [Peer] block. THAT DIRECTION IS DELIBERATE: this collector adapts to the
+#   config file's existing bytes, rather than the config file being reshaped
+#   into the `# friendly_name = <name>` form MindFlavor's exporter parses.
+#   Re-rendering wg0.conf restarts wg-quick@wg0, which is the only way into
+#   this machine once restrict_management is true, and there is no console
+#   behind it — so a format change there is a real risk, and it would have
+#   bought compatibility with an exporter that defaults/main.yml shows cannot
+#   be installed here at all. If it ever can be, the change is this file's
+#   `friendly_name*=*` case arm plus one line in wg.conf.j2, made on purpose
+#   and on its own.
+#
+#   The parse below deliberately looks at only two line kinds, a comment and
+#   `PublicKey =`; the same files also hold `PrivateKey` and `PresharedKey`
+#   lines and no code path here reads them. Because the name is now an
+#   unstructured comment, only the FIRST comment inside a [Peer] block is
+#   read and only inside one: a comment before [Interface] (the "managed by
+#   Ansible" header) or inside it (the `Table = off` note) is not a peer
+#   name, and neither is a second comment someone adds by hand under the
+#   first.
+#
+# WHY TWO NON-UPSTREAM lab_wireguard_* GAUGES EXIST.
+#
+#   `wg show` reports NOTHING AT ALL for an interface that is down — no line,
+#   no error. So "wg1 is down" and "the collector never ran" are the same
+#   observation from Prometheus' side, and an alert written as absent() over
+#   the peer series cannot tell them apart. Worse, this repo ships wg1 with
+#   zero guest peers, so absent() over the peer series is also the NORMAL
+#   state of a correct host and such an alert would fire from the day it
+#   merged. lab_wireguard_interface_up is emitted for every interface in
+#   wireguard_instances whether or not the kernel reports it, so a down
+#   interface is a hard 0, and lab_wireguard_peers_configured says how many
+#   peers the rendered config expects — which is what makes "the tunnel is
+#   up but nobody has ever connected" distinguishable from "the tunnel is
+#   gone". See clusters/lab/platform/monitoring/rules-wireguard.yaml.
+#
+# A PEER THAT HAS NEVER HANDSHAKEN REPORTS 0, not absence — the opposite of
+# this repo's other collectors, and it is `wg`'s encoding rather than a
+# choice made here. It is preserved verbatim because rewriting it to absence
+# would break compatibility with the upstream exporter, and because 0 is
+# genuinely distinguishable here (an epoch timestamp is never plausibly 0).
+# The cost is that every rule doing `time() - handshake` must carry a
+# `> 0` guard or it reports an age of fifty-odd years forever.
+#
+# Everything is written to a temp file in the same directory and renamed into
+# place, for the reason roles/node_exporter's collector states: node_exporter
+# parses these files on every scrape and a half-written one is a parse error
+# that fails the whole textfile collector, not just this file. The EXIT trap
+# means a failure partway through leaves the last good file untouched.
+#
+# The rename is also gated on the file PARSING — see validate_exposition at
+# the bottom. Atomicity alone only rules out a half-written file; it says
+# nothing about one that is complete and malformed, which costs exactly the
+# same whole textfile directory.
+
+set -eu
+
+out='{{ wireguard_exporter_textfile_path }}'
+tmp="${out}.$$.tmp"
+config_dir='{{ wireguard_exporter_config_dir }}'
+interfaces=({{ wireguard_exporter_interfaces | map('quote') | join(' ') }})
+
+# Captured once. Both emit functions walk it, and re-walking a string costs
+# nothing next to running `wg` twice and risking two different answers.
+dump=$(wg show all dump 2> /dev/null) || dump=''
+
+declare -A friendly=()
+declare -A configured=()
+
+is_uint() {
+  case ${1-} in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Peer name and peer count, per interface, from the rendered configs.
+load_config() {
+  local iface conf line body key name in_peer
+  for iface in "${interfaces[@]}"; do
+    configured["$iface"]=0
+    conf="${config_dir}/${iface}.conf"
+    [ -r "$conf" ] || continue
+    name=''
+    in_peer=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in
+        # Quoted so bash reads "[Peer]" as five literal characters; unquoted,
+        # the brackets are a character class and this matches a single P, e or
+        # r. Any section header clears the pending name, so a name can never
+        # leak from one [Peer] block into the next — or out of [Interface],
+        # whose own comment is not a peer name.
+        '['*)
+          name=''
+          in_peer=0
+          case $line in
+            '[Peer]'*)
+              in_peer=1
+              configured["$iface"]=$((configured["$iface"] + 1))
+              ;;
+          esac
+          ;;
+        '#'*)
+          # `[ -z "$name" ]` is what makes it the FIRST comment in the block
+          # and not the last. wg.conf.j2 renders exactly one, so this only
+          # decides what a hand-edited file means — and "the name is the line
+          # under [Peer]" is the rule a reader would guess.
+          if [ "$in_peer" -eq 1 ] && [ -z "$name" ]; then
+            body=${line#\#}
+            # Both ends, one character at a time, because `${body# }` strips a
+            # single leading space and an indented comment is legal here. The
+            # padding has to go: it is invisible in the config and would
+            # otherwise split one peer's series in two the day someone
+            # reindents the file.
+            while :; do
+              case $body in
+                ' '* | $'\t'*) body=${body#?} ;;
+                *' ' | *$'\t') body=${body%?} ;;
+                *) break ;;
+              esac
+            done
+            # roles/wireguard asserts peer names are safe as label values,
+            # but this file is read from DISK and a hand edit bypasses that
+            # assert completely. A `"` or `\` in a label value is invalid
+            # exposition and node_exporter fails the WHOLE textfile directory
+            # on one parse error, so a peer that loses its name here is a far
+            # cheaper outcome than ZFS capacity, SMART and the backup metrics
+            # disappearing with it.
+            case $body in
+              *'"'* | *\\*) body='' ;;
+            esac
+            name=$body
+          fi
+          ;;
+        # `PrivateKey` does not match this pattern, which is the only reason
+        # an [Interface] block is safe to walk with the same loop.
+        PublicKey*=*)
+          key=${line#*=}
+          key=${key// /}
+          # KEYED BY INTERFACE AND public key, not by public key alone.
+          # roles/wireguard asserts public keys are unique across every
+          # instance, so on a host this repo converged the two spellings pick
+          # the same name — but this collector reads /etc/wireguard off DISK,
+          # where a hand-edited config bypasses that assert exactly the way it
+          # bypasses the peer-name allowlist a few lines up. A key shared by
+          # two interfaces would then label the first tunnel's metrics with
+          # the second tunnel's peer name, silently and in the direction that
+          # matters: WireguardExitPeerTransferHigh is scoped to wg1 and reads
+          # friendly_name, so a mislabel is a guest's traffic attributed to
+          # an operator or the reverse.
+          #
+          # `|` is the separator because it cannot occur in a public key,
+          # which is base64. The composite is only ever built and looked up,
+          # never split, so that one fact is enough: two different
+          # (interface, key) pairs cannot collide on one composite no matter
+          # what an interface name contains.
+          [ -n "$key" ] && [ -n "$name" ] && friendly["${iface}|${key}"]=$name
+          name=''
+          ;;
+      esac
+    done < "$conf"
+  done
+}
+
+# EVERY FAMILY IS EMITTED WHOLE — its HELP, then its TYPE, then all of its
+# samples, then the next family. The exposition format allows the parser
+# node_exporter uses to cope with interleaved families, but "allows" is not a
+# guarantee worth taking here: a file this collector cannot get right is not
+# a missing WireGuard metric, it is a parse error that fails the WHOLE
+# textfile directory and takes ZFS capacity, SMART and the backup metrics
+# with it. Hence the per-family buffers below rather than three printf calls
+# inside one loop.
+#
+# HELP/TYPE are printed unconditionally, before anything that can decline to
+# produce samples: a family that is declared but empty is valid exposition,
+# and it keeps the file self-describing on a host where wg is not installed
+# or every interface is down.
+emit_interfaces() {
+  local iface
+  declare -A seen=()
+  if [ -n "$dump" ]; then
+    # Only the first field matters here: `wg show all dump` prints the
+    # interface name on peer lines too, so every kind of line is evidence the
+    # interface exists. Everything after it is discarded into `_` — which on
+    # an interface line is that interface's PRIVATE KEY.
+    while IFS=$'\t' read -r iface _; do
+      [ -n "$iface" ] || continue
+      seen["$iface"]=1
+    done <<< "$dump"
+  fi
+
+  printf '# HELP lab_wireguard_interface_up 1 if wg reports this interface, 0 if it is configured but down.\n'
+  printf '# TYPE lab_wireguard_interface_up gauge\n'
+  for iface in "${interfaces[@]}"; do
+    printf 'lab_wireguard_interface_up{interface="%s"} %d\n' "$iface" "${seen[$iface]:-0}"
+  done
+
+  printf '# HELP lab_wireguard_peers_configured Peers in this interface rendered config, whether or not any has ever connected.\n'
+  printf '# TYPE lab_wireguard_peers_configured gauge\n'
+  for iface in "${interfaces[@]}"; do
+    printf 'lab_wireguard_peers_configured{interface="%s"} %d\n' "$iface" "${configured[$iface]:-0}"
+  done
+}
+
+emit_peers() {
+  local iface public_key handshake rx tx keepalive labels name
+  local -a sent=() received=() latest=()
+  # A counter, rather than bash's array-length expansion (dollar, brace,
+  # hash, name) at each printf below. That is a TEMPLATE constraint and not
+  # shell taste: Jinja reads brace-then-hash as the opening of a comment, so
+  # that expansion ANYWHERE in this file — including inside a shell comment
+  # like this one — makes ansible.builtin.template fail with "Missing end of
+  # comment tag" and the role never renders. It fails at converge time and
+  # not at lint time, because neither yamllint nor ansible-lint parses a
+  # template body. All three arrays are appended to in the same breath, so
+  # one counter describes all three.
+  local peers=0
+
+  if [ -n "$dump" ]; then
+    # wg(8)'s peer line, field by field:
+    #   iface  public-key  preshared-key  endpoint  allowed-ips
+    #   latest-handshake  transfer-rx  transfer-tx  persistent-keepalive
+    # The three `_` in the middle are the preshared key, the endpoint and the
+    # allowed IPs, discarded by position rather than named and then unused:
+    # the first must never be published and the other two are labels this
+    # collector deliberately does not emit (defaults/main.yml says why).
+    while IFS=$'\t' read -r iface public_key _ _ _ handshake rx tx keepalive; do
+      # Skips the interface lines, which is also what keeps the private key
+      # they carry out of everything below.
+      [ -n "$keepalive" ] || continue
+      if ! is_uint "$handshake" || ! is_uint "$rx" || ! is_uint "$tx"; then
+        continue
+      fi
+
+      labels=$(printf 'interface="%s",public_key="%s"' "$iface" "$public_key")
+      # Emitted only when known, matching upstream: a peer present in the
+      # kernel but not in the rendered config (added by hand, never by this
+      # repo) gets no name rather than a misleading one.
+      name=${friendly["${iface}|${public_key}"]:-}
+      [ -z "$name" ] || labels="${labels},friendly_name=\"${name}\""
+
+      # transfer-tx is what the host SENT to the peer, i.e. the peer
+      # DOWNLOADING — the direction that runs up the OVH bill on the exit
+      # tunnel. Named from the host's point of view because that is
+      # upstream's naming, and reversing it here would make the same series
+      # mean opposite things before and after a swap.
+      sent+=("wireguard_sent_bytes_total{${labels}} ${tx}")
+      received+=("wireguard_received_bytes_total{${labels}} ${rx}")
+      latest+=("wireguard_latest_handshake_seconds{${labels}} ${handshake}")
+      peers=$((peers + 1))
+    done <<< "$dump"
+  fi
+
+  printf '# HELP wireguard_sent_bytes_total Bytes sent by this host to the peer, i.e. the peer download.\n'
+  printf '# TYPE wireguard_sent_bytes_total counter\n'
+  [ "$peers" -eq 0 ] || printf '%s\n' "${sent[@]}"
+
+  printf '# HELP wireguard_received_bytes_total Bytes received by this host from the peer, i.e. the peer upload.\n'
+  printf '# TYPE wireguard_received_bytes_total counter\n'
+  [ "$peers" -eq 0 ] || printf '%s\n' "${received[@]}"
+
+  # The suffix lies, upstream and here alike: the value is the Unix time of
+  # the last completed handshake, not an age, and 0 means never.
+  printf '# HELP wireguard_latest_handshake_seconds Unix time of the last completed handshake; 0 if there has never been one.\n'
+  printf '# TYPE wireguard_latest_handshake_seconds gauge\n'
+  [ "$peers" -eq 0 ] || printf '%s\n' "${latest[@]}"
+}
+
+# THE RENAME IS A PUBLICATION, so the file is checked before it happens.
+#
+# The temp-file-and-rename above only buys atomicity: it stops node_exporter
+# reading a half-written file. It does nothing about a file that is complete
+# and wrong, and a complete-and-wrong file is the expensive failure here —
+# node_exporter aborts the WHOLE textfile directory on one parse error, so a
+# malformed line in this file takes ZFS capacity, SMART and the backup
+# metrics down with it. Everything upstream of here is written to make that
+# unreachable (peer names carrying `"` or `\` are blanked on the way in,
+# non-numeric counters are skipped, interface lines never reach a printf);
+# this is the check that those all held, rather than the assumption.
+#
+# DELIBERATELY STRICTER THAN THE EXPOSITION FORMAT. A label value may
+# legally carry an escaped quote or backslash; nothing here ever emits one,
+# because the parse blanks any name containing either. So the grammar below
+# forbids them outright, and a `\` reaching this point is reported rather
+# than passed through — "the emitter started producing a shape it has never
+# produced" is as much a bug as invalid output, and the two are hard to tell
+# apart from the far end of a Prometheus query. The cost of the strictness
+# is one refused publish and an alert; the cost of guessing wrong in the
+# permissive direction is every other textfile metric on the host.
+#
+# On rejection the file is kept as ${out}.rejected for inspection, and the
+# JOURNAL GETS ONLY A LINE NUMBER. That asymmetry is the point: this runs
+# precisely when the file holds something no code path was supposed to be
+# able to put there, which is the worst moment to echo its bytes into a log
+# that CI pastes into job summaries. `.rejected` is not `.prom`, so
+# node_exporter's glob does not read it, and 0600 keeps it to root.
+validate_exposition() {
+  local file=$1 line bad=0 lineno=0
+  local metric='[a-zA-Z_:][a-zA-Z0-9_:]*'
+  local lname='[a-zA-Z_][a-zA-Z0-9_]*'
+  # `[^"\\]` reads as "neither a quote nor a backslash" whether the engine
+  # takes the pair as an escape or as two literals inside the bracket — the
+  # one spelling that means the same thing under both readings.
+  local lval='"[^"\\]*"'
+  local num='[+-]?([0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?|Inf|NaN)'
+  # `[{]` and `[}]` rather than escaped braces: an unescaped `{` opens an
+  # interval in ERE and the escape is the part engines disagree about.
+  local sample="^${metric}([{]${lname}=${lval}(,${lname}=${lval})*[}])? ${num}\$"
+  local help="^# HELP ${metric} .+\$"
+  local type="^# TYPE ${metric} (counter|gauge|histogram|summary|untyped)\$"
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    if [[ $line =~ $sample ]] || [[ $line =~ $help ]] || [[ $line =~ $type ]]; then
+      continue
+    fi
+    printf 'lab-wireguard-metrics: line %d is not exposition this collector is allowed to publish\n' \
+      "$lineno" >&2
+    bad=$((bad + 1))
+  done < "$file"
+
+  # An empty file is a valid no-op to a parser and a total loss of telemetry
+  # to an operator: every family here prints its HELP and TYPE
+  # unconditionally, so zero lines means the emitters did not run at all.
+  if [ "$lineno" -eq 0 ]; then
+    printf 'lab-wireguard-metrics: refusing to publish an empty file\n' >&2
+    bad=$((bad + 1))
+  fi
+
+  [ "$bad" -eq 0 ]
+}
+
+# 022 so node_exporter, which runs as the unprivileged `prometheus` user, can
+# read what this root-owned unit writes.
+umask 022
+trap 'rm -f "$tmp"' EXIT
+
+load_config
+
+{
+  emit_interfaces
+  emit_peers
+} > "$tmp"
+
+if ! validate_exposition "$tmp"; then
+  # Not the rename. The previous good file keeps its contents AND its mtime,
+  # which is what WireguardMetricsStale reads
+  # (clusters/lab/platform/monitoring/rules-wireguard.yaml) — so a collector
+  # that has started producing garbage surfaces as a stale-metrics alert
+  # instead of as a parse error that silences the rest of the host.
+  #
+  # Written through a redirect under umask 077 rather than copied, so the
+  # file is 0600 from the moment it exists — a cp would create it 0644 and
+  # chmod it afterwards, leaving a window. Best-effort (`|| true`): failing
+  # to preserve the evidence must not turn into a different exit path, the
+  # refusal stands either way.
+  rm -f "${out}.rejected" || true
+  (umask 077 && cat "$tmp" > "${out}.rejected") || true
+  printf 'lab-wireguard-metrics: %s left unchanged; the rejected output is at %s.rejected\n' \
+    "$out" "$out" >&2
+  exit 1
+fi
+
+mv -f "$tmp" "$out"
+
+# A .rejected left over from an earlier run sits next to a file that is now
+# fresh and correct, which reads as a live fault that is not one. The run
+# that fixed it is the one that knows it is gone.
+rm -f "${out}.rejected"

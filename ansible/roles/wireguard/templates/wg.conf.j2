@@ -15,6 +15,23 @@ Table = off
 {% for peer in item.peers %}
 
 [Peer]
+{# This bare comment is no longer decoration: roles/wireguard_exporter parses
+   it back out to put a readable name on that peer's metrics, so its shape is
+   an interface between two roles and tasks/main.yml asserts every peer name
+   can survive the round trip.
+
+   REJECTED: `# friendly_name = {{ peer.name }}`, the key=value form
+   MindFlavor/prometheus_wireguard_exporter's config parser reads (it splits
+   a comment on the first `=` and discards one without any). That would make
+   these configs drop-in compatible with an exporter that
+   roles/wireguard_exporter/defaults/main.yml demonstrates cannot be
+   installed here at all — and it would cost wg0.conf's byte-identity, which
+   is what keeps the next converge from restarting the sole management tunnel
+   on a host with no console and restrict_management already true. A real
+   restart of the only way in, to be compatible with something unobtainable.
+   If that exporter ever becomes installable, the reformat is one line here
+   plus one `case` arm in the collector, done deliberately and not while
+   also changing something else. #}
 # {{ peer.name }}
 PublicKey = {{ peer.public_key }}
 {% if peer.name in (wireguard_peer_psks | default({})) %}

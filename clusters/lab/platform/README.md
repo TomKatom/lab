@@ -93,7 +93,7 @@ Two things about that are worth stating explicitly, because both are easy to
   sidecar writes each key out under that name. It is the one coupling here
   that crosses from the chart half to the config half, and it fails silently:
   rename the key and Grafana just serves its built-in home page. See
-  [`docs/observability.md`](../../../docs/observability.md#the-four-dashboards).
+  [`docs/observability.md`](../../../docs/observability.md#the-five-dashboards).
 
 `ServerSideApply=true` on `kube-prometheus-stack.yaml` is not optional. The
 chart ships ~4.4 MB of CRDs across ten objects, six of them individually

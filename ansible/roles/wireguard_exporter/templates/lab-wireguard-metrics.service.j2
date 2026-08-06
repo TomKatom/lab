@@ -1,0 +1,12 @@
+# Managed by Ansible (roles/wireguard_exporter) — do not edit by hand.
+[Unit]
+Description=Write the per-peer WireGuard metrics for node_exporter (transfer, last handshake)
+Documentation=https://github.com/prometheus/node_exporter#textfile-collector
+
+[Service]
+Type=oneshot
+ExecStart={{ wireguard_exporter_script_path }}
+# No TimeoutStartSec, unlike roles/pbs' collector. That one talks to a network
+# service and needed a bound so a wedged connection could not freeze its
+# metrics forever; this one makes a netlink call and reads two local files,
+# neither of which can block.

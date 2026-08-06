@@ -1,0 +1,11 @@
+# Managed by Ansible (roles/wireguard_exporter) — do not edit by hand.
+[Unit]
+Description=Run {{ wireguard_exporter_name }} every {{ wireguard_exporter_interval }}
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec={{ wireguard_exporter_interval }}
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -349,6 +349,13 @@ misremembered:
 Either way the symptom is the same and misleading: Plex looks down, from that
 client only, while tunnelled.
 
+And from your side, the **WireGuard** dashboard in Grafana (uid
+`lab-wireguard`) shows the peer by the `name` you gave it in §3 — connected
+or not, and what it has pulled through the tunnel. That is the only view of
+this; nothing else records who is using a guest config. It updates once a
+minute. See
+[`docs/observability.md`](../observability.md#metric-alerts--wireguard).
+
 ## 7. Revoke
 
 Delete the peer's entry from `wireguard_exit_peers`, delete its key from
@@ -463,11 +470,14 @@ IP, not a misconfiguration.
 real round trip and it is added to every request. Fine for streaming and
 browsing; noticeable in video calls and unusable for anything twitchy.
 
-**Nothing expires.** There is no key lifetime, no session limit, no usage
-cap and no per-peer disable. A config works until someone deletes the peer
-and a converge runs (§7). Treat every handover as permanent until you
-revoke it, and keep `wireguard_exit_peers` short enough that you recognise
-every name in it.
+**Nothing expires, and the usage alert does not stop anyone.** There is no
+key lifetime, no session limit, no usage cap and no per-peer disable. A
+config works until someone deletes the peer and a converge runs (§7).
+`WireguardExitPeerTransferHigh` will tell you a guest has pulled more than
+500 GiB in a day, which is a tripwire for a config in more hands than
+intended — but it is a *notification*, not enforcement, and acting on it is
+still §7. Treat every handover as permanent until you revoke it, and keep
+`wireguard_exit_peers` short enough that you recognise every name in it.
 
 **Guests reach nothing in the lab, and this is not adjustable per guest.**
 The isolation is one block of nftables rules keyed on the `wg1` interface

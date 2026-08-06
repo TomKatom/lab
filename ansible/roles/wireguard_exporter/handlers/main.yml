@@ -1,0 +1,19 @@
+---
+- name: Reload lab-wireguard-metrics
+  # Unit files changed on disk: daemon_reload picks them up, and restarting
+  # the timer re-arms it against the new schedule. Restarting the *timer* also
+  # re-evaluates OnBootSec, which on an already-booted host has elapsed, so
+  # the collector runs once straight after — no separate refresh needed for
+  # this path. Same shape as roles/node_exporter's handler of the same name.
+  ansible.builtin.systemd:
+    name: "{{ wireguard_exporter_name }}.timer"
+    daemon_reload: true
+    state: restarted
+
+- name: Refresh lab-wireguard-metrics
+  # Script changed: run the oneshot now rather than publishing metrics from
+  # the old script for up to wireguard_exporter_interval. `state: restarted`
+  # is the documented way to invoke a Type=oneshot unit on demand.
+  ansible.builtin.systemd:
+    name: "{{ wireguard_exporter_name }}.service"
+    state: restarted

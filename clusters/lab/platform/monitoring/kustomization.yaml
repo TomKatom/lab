@@ -12,12 +12,12 @@ kind: Kustomization
 generators:
   - secret-generator.yaml
 
-# Everything this overlay applies that is not a Secret. The four
-# PrometheusRules and the five ConfigMaps are plain objects with no kustomize
-# transformation of any kind — `loki-rules` and all four dashboards in
+# Everything this overlay applies that is not a Secret. The five
+# PrometheusRules and the six ConfigMaps are plain objects with no kustomize
+# transformation of any kind — `loki-rules` and all five dashboards in
 # particular must keep their exact names and labels, because ../loki.yaml mounts
 # the first by name and Grafana's sidecar selects the dashboards by their
-# `grafana_dashboard: "1"` label. A `configMapGenerator` would rename all five
+# `grafana_dashboard: "1"` label. A `configMapGenerator` would rename all six
 # with a content hash and break every coupling, which is why they are listed
 # here as resources instead.
 resources:
@@ -30,10 +30,12 @@ resources:
   - rules-cluster.yaml
   - rules-media.yaml
   - rules-backups.yaml
+  - rules-wireguard.yaml
   - loki-rules.yaml
   - dashboard-node-exporter-full.yaml
   - dashboard-media.yaml
   - dashboard-backups.yaml
+  - dashboard-wireguard.yaml
   # Also named by ../kube-prometheus-stack.yaml's default_home_dashboard_path,
   # via the on-disk filename its data key becomes — see that file's header.
   - dashboard-lab-overview.yaml

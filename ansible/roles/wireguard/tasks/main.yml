@@ -140,6 +140,48 @@
     success_msg: No interface name, peer address, peer name or peer public key is shared between instances.
   run_once: true
 
+- name: Assert every peer name survives the round trip through the rendered config
+  # A peer `name` used to be a comment nothing read. It is now data: the
+  # template renders it as the `# <name>` comment opening each [Peer] block
+  # and roles/wireguard_exporter parses it back out to label that peer's
+  # metrics. The dangerous characters are the ones that break THAT format,
+  # re-derived for it rather than carried over from the key=value form the
+  # template's own comment records as rejected:
+  #   - `"` and `\` and a newline end up inside a Prometheus label value,
+  #     where all three must be escaped. Unescaped, the .prom file is invalid
+  #     exposition — and node_exporter fails the WHOLE textfile directory on
+  #     a parse error, so one bad peer name takes ZFS capacity, SMART and the
+  #     backup metrics down with it. This is the severe one.
+  #   - leading and trailing space is stripped on the way back out (the
+  #     collector cannot tell `# alice` from the `# ` separator), so two names
+  #     differing only in padding would silently collapse onto one series.
+  #   - the name is also the filename scripts/wg-exit-peer.sh writes a guest
+  #     config to, so `/` and a leading `.` or `-` are hostile there for
+  #     reasons that have nothing to do with metrics.
+  # `=` is deliberately NOT in that list any more: nothing splits on it now.
+  # The pattern is unchanged and stays the one scripts/wg-exit-peer.sh
+  # enforces when it issues a guest peer — an allowlist covers all four
+  # concerns at once and does not have to be re-audited when the parse
+  # changes — restated here because a peer can also be added by hand straight
+  # into group_vars/all.yml.
+  #
+  # `wireguard_all_peer_names` comes from vars/main.yml, which is also where
+  # the uniqueness assert above reads it from. It is one definition on
+  # purpose: this check and that one have to be looking at the same list, and
+  # a task-scoped copy here would be a second expression to keep in step by
+  # hand — the kind that drifts silently, since a check running over a
+  # narrower list than it claims still reports success.
+  ansible.builtin.assert:
+    that:
+      - wireguard_all_peer_names | select('match', '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') | list | length == wireguard_all_peer_names | length
+    fail_msg: >-
+      Every peer name must start with a letter or digit and contain only
+      letters, digits, dot, dash and underscore — it is rendered into the
+      interface config and read back as a Prometheus label. Got:
+      {{ wireguard_all_peer_names }}.
+    success_msg: Every peer name is safe as a config comment and a metric label.
+  run_once: true
+
 - name: Install wireguard-tools
   ansible.builtin.apt:
     name: wireguard-tools
@@ -244,6 +286,17 @@
   # wg0.conf's own bytes, which re-renders and bounces the management tunnel
   # on a host with no console — so the reference is kept true from this end
   # instead, by only ever extending the name to the right.
+  #
+  # That byte-identity has now survived four changes — a second instance,
+  # dual-stack addressing, per-peer metrics and this comment — and per-peer
+  # metrics is the one that nearly broke it. Naming a peer in its metrics
+  # needs the name to reach roles/wireguard_exporter somehow, and rendering
+  # it in the upstream exporter's `# friendly_name = <name>` form was the
+  # obvious way; templates/wg.conf.j2 records why that was rejected in favour
+  # of teaching the collector to read the `# <name>` this already rendered.
+  # The rule it comes down to: whatever wants a fact out of this file adapts
+  # to the file, because re-rendering it restarts wg0, and wg0 is the only
+  # way into a machine with no console once restrict_management is true.
   #
   # The rendered file embeds the private key (and any peer PresharedKey) —
   # no_log so --diff can't leak either, plus `diff: false` so that the

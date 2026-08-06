@@ -91,6 +91,18 @@ wireguard_peers:
     address: 10.10.20.3/32        # unique /32 inside network.wireguard_subnet
 ```
 
+`name` must start with a letter or digit and hold only letters, digits, dot,
+dash and underscore — `roles/wireguard` asserts it and stops the play
+otherwise. It is no longer only a comment: the role renders it into
+`wg0.conf` as the `# my-laptop` line above each `[Peer]`, and
+`roles/wireguard_exporter` reads that line back to label the peer's
+Prometheus series (see
+[`docs/observability.md`](../observability.md#metric-alerts--wireguard)).
+A quote or a backslash in the name would make the metrics file invalid
+exposition, which node_exporter fails *wholesale* — taking ZFS, SMART and the
+backup metrics down with it. Leading or trailing spaces are stripped on the
+way back, so two names differing only in padding would land on one series.
+
 ```sh
 # ansible/inventory/group_vars/proxmox_host.sops.yml — encrypted; edit via sops
 sops ansible/inventory/group_vars/proxmox_host.sops.yml
