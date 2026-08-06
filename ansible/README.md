@@ -41,8 +41,8 @@ Layout:
 |---|---|---|
 | `pve_repos` | swaps the subscriber-only PVE/Ceph/PBS enterprise apt sources for the free ones. **Runs first**, before any other role's apt tasks | `proxmox-host.yml` |
 | `pve_firewall` | the host-side firewall backend and the sysctl the Proxmox filter firewall needs | `proxmox-host.yml` |
-| `wireguard` | one wg-quick interface per `wireguard_instances` entry (today only `wg0`, the management tunnel) — each interface's host key is generated in place and never leaves the box | `proxmox-host.yml` |
-| `network_nat` | single-IP NAT/DNAT in nftables (a different hook from the filter firewall Tofu owns) | `proxmox-host.yml` |
+| `wireguard` | one wg-quick interface per `wireguard_instances` entry — `wg0`, the management tunnel, and `wg1`, the guest exit VPN — each interface's host key generated in place and never leaving the box | `proxmox-host.yml` |
+| `network_nat` | single-IP NAT/DNAT in nftables (a different hook from the filter firewall Tofu owns), plus the forward-chain rules that isolate `wg1` from the lab | `proxmox-host.yml` |
 | `hardening` | SSH, `fail2ban`, `unattended-upgrades`, sysctl, `auditd`. Runs on the host *and* the guests, switched by `hardening_is_pve_host` | `proxmox-host.yml`, `hardening-vms.yml` |
 | `zfs_tank` | the `tank` HDD stripe and its datasets | `proxmox-host.yml` |
 | `pve_permissions` | the `Terraform` PVE role, user and ACL that Tofu's API token inherits — including the guest-agent grant, which self-gates until the agents answer | `proxmox-host.yml` |
@@ -131,8 +131,10 @@ execute it against the live server itself).
    installs `wireguard-tools`, generates each interface's private key **in
    place** (it's created with `wg genkey` directly on the host and never
    leaves it — see `roles/wireguard/tasks/main.yml`), and brings up every
-   entry in `wireguard_instances` — today just `wg0`. Note the printed host
-   public key.
+   entry in `wireguard_instances` — `wg0`, the management tunnel this
+   bootstrap is about, and `wg1`, the guest exit VPN (which ships with no
+   peers, so it listens and nothing can connect). Note the printed host
+   public key for `wg0`; they are printed per interface.
 2. Add your own peer: generate a keypair and a preshared key locally (`wg
    genkey | tee privatekey | wg pubkey > publickey`, `wg genpsk` — keep
    `privatekey` off this repo entirely), add an entry to `wireguard_peers`

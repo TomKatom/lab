@@ -8,6 +8,11 @@
 # Prerequisite: bring up your own WireGuard peer locally first, using a
 # config that matches an entry in group_vars/all.yml's wireguard_peers —
 # see docs/runbooks/wireguard-peer.md.
+#
+# One play at the very bottom is not part of that gate: it checks the guest
+# exit tunnel's segmentation, which has nothing to do with lockout. It is
+# last on purpose — a broken exit tunnel must not be able to stop the plays
+# above from reporting, and the anti-lockout ordering above is unchanged.
 
 - name: Confirm the host's WireGuard interface has a live peer handshake
   hosts: proxmox_host
@@ -65,3 +70,153 @@
   tasks:
     - name: Ping k3s-node directly
       ansible.builtin.ping:
+
+- name: Confirm the guest exit tunnel is up and still walled off from the lab
+  # Deliberately NOT part of the anti-lockout gate above, and deliberately
+  # last: a failure here means the guest exit VPN's segmentation is wrong,
+  # which is a different emergency from losing management access, and
+  # running last keeps it from pre-empting anything the gate has to say.
+  #
+  # This play is the only automated test of that segmentation anywhere in
+  # the repo — nothing else reads the live nftables ruleset. Without it the
+  # isolation rules could be deleted, reordered behind a wider accept, or
+  # rendered with an empty interface name (which silently no-ops every one
+  # of them while the tunnel keeps forwarding), and every converge would
+  # still report green.
+  hosts: proxmox_host
+  gather_facts: false
+  vars_files:
+    - ../../config/lab.yml
+  tasks:
+    - name: Read the exit tunnel's listen port
+      # Doubles as the interface-exists check: `wg show` on an interface
+      # that isn't up exits non-zero and fails the play here. No handshake
+      # assertion, unlike wg0 above — this tunnel is expected to ship with
+      # no peers at all, and "nobody has connected" is its correct state.
+      ansible.builtin.command: wg show {{ wireguard_exit_interface }} listen-port
+      register: wg_exit_listen_port
+      changed_when: false
+
+    - name: Assert the exit tunnel listens on its declared port
+      ansible.builtin.assert:
+        that:
+          - wg_exit_listen_port.stdout | trim | int == ports.wireguard_exit | int
+        fail_msg: >-
+          {{ wireguard_exit_interface }} is listening on
+          {{ wg_exit_listen_port.stdout | trim }}, not
+          {{ ports.wireguard_exit }} — the interface and the port opened by
+          infra/tofu's firewall rule disagree, so no guest can reach it.
+        success_msg: >-
+          {{ wireguard_exit_interface }} is up on
+          {{ ports.wireguard_exit }}/udp.
+
+    - name: Read the live lab-nat ruleset
+      ansible.builtin.command: /usr/sbin/nft list table ip {{ network_nat_table }}
+      register: wg_exit_nft_ruleset
+      changed_when: false
+
+    - name: Assert the exit tunnel's isolation rules are loaded
+      # Five substrings, each covering a different way the isolation can go
+      # away while everything else still looks fine:
+      #   - the guest-to-guest drop, which is also the cheapest proof the
+      #     block rendered with a real interface name rather than an empty
+      #     one;
+      #   - the catch-all drop that closes the block, without which the
+      #     chain's `policy accept` lets a guest anywhere;
+      #   - the negated destination set on the internet accept. If that
+      #     accept were ever widened to a plain `accept`, both drops above
+      #     would still be present and both would be unreachable — this is
+      #     the only one of the three that notices.
+      # The last two cover the same two failures in the *other* direction,
+      # which the three above cannot see because every one of them matches
+      # `iifname`:
+      #   - the reverse catch-all drop, without which a new connection from
+      #     the k3s VM to a guest's tunnel address is permitted by the
+      #     chain's `policy accept` again, exactly as it was before that
+      #     rule existed. This is the one that regresses silently: nothing a
+      #     guest does breaks, so no one finds out;
+      #   - the state match that lets replies back down the tunnel. Widen it
+      #     to a bare `oifname ... accept` and the reverse drop below it
+      #     stays present and becomes unreachable — the same trap the
+      #     negated set catches on the egress side.
+      ansible.builtin.assert:
+        that:
+          - wireguard_exit_missing_rules | length == 0
+        fail_msg: >-
+          The {{ network_nat_table }} forward chain is missing
+          {{ wireguard_exit_missing_rules }}. Guests on
+          {{ wireguard_exit_interface }} are no longer isolated from the
+          lab — that chain's policy is accept, so anything the block does
+          not drop is permitted. Fix roles/network_nat and re-converge
+          before handing anyone an exit-tunnel config.
+        success_msg: >-
+          {{ wireguard_exit_interface }} isolation rules are present in
+          {{ network_nat_table }}.
+      vars:
+        wireguard_exit_isolation_rules:
+          - 'iifname "{{ wireguard_exit_interface }}" oifname "{{ wireguard_exit_interface }}" drop'
+          - 'iifname "{{ wireguard_exit_interface }}" drop'
+          - "ip daddr != {"
+          - 'oifname "{{ wireguard_exit_interface }}" ct state established,related accept'
+          - 'oifname "{{ wireguard_exit_interface }}" drop'
+        wireguard_exit_missing_rules: "{{ wireguard_exit_isolation_rules | reject('in', wg_exit_nft_ruleset.stdout) | list }}"
+
+    - name: Read the live ip6 lab-nat ruleset
+      ansible.builtin.command: /usr/sbin/nft list table ip6 {{ network_nat_table }}
+      register: wg_exit_nft_ruleset_v6
+      changed_when: false
+
+    - name: Assert the exit tunnel's IPv6 drops are loaded
+      # The second of the two mechanisms that make `::/0` a blackhole rather
+      # than a leak. The sysctl below is the one that actually stops the
+      # packet — this table only ever sees traffic if that knob gets flipped
+      # — which is exactly why it is checked separately: a converge that
+      # rendered the ip6 table and a host whose sysctl is still 0 both look
+      # identical from a packet's point of view, and the only moment the
+      # difference matters is the one where nobody is watching.
+      ansible.builtin.assert:
+        that:
+          - wireguard_exit_missing_rules_v6 | length == 0
+        fail_msg: >-
+          The ip6 {{ network_nat_table }} forward chain is missing
+          {{ wireguard_exit_missing_rules_v6 }}. If
+          net.ipv6.conf.all.forwarding is ever set to 1, a guest's IPv6 would
+          be forwarded past every isolation rule — the ip table is IPv4-only
+          and PVE's forward_policy is ACCEPT.
+        success_msg: >-
+          {{ wireguard_exit_interface }} IPv6 drops are present in
+          ip6 {{ network_nat_table }}.
+      vars:
+        wireguard_exit_isolation_rules_v6:
+          - 'iifname "{{ wireguard_exit_interface }}" drop'
+          - 'oifname "{{ wireguard_exit_interface }}" drop'
+        wireguard_exit_missing_rules_v6: "{{ wireguard_exit_isolation_rules_v6 | reject('in', wg_exit_nft_ruleset_v6.stdout) | list }}"
+
+    - name: Read net.ipv6.conf.all.forwarding
+      ansible.builtin.command: sysctl -n net.ipv6.conf.all.forwarding
+      register: wg_exit_ipv6_forwarding
+      changed_when: false
+
+    - name: Assert the host forwards no IPv6
+      # The exit tunnel hands its clients a ULA so they can take `::/0` and
+      # stop routing IPv6-capable destinations around the tunnel. Nothing
+      # carries that IPv6 anywhere: the host drops it in ip6_forward, before
+      # any nftables hook, so clients fall back to IPv4 through this
+      # server's country. Real IPv6 egress is deliberately out of scope; a
+      # deterministic blackhole is the whole requirement.
+      #
+      # roles/network_nat now pins this sysctl on every converge, so this
+      # asserts that the converge took rather than that a kernel default
+      # survived — it catches a drop-in or a manual `sysctl -w` landing after
+      # the converge, which is the only way it can be 1 now.
+      ansible.builtin.assert:
+        that:
+          - wg_exit_ipv6_forwarding.stdout | trim == "0"
+        fail_msg: >-
+          net.ipv6.conf.all.forwarding is
+          {{ wg_exit_ipv6_forwarding.stdout | trim }}, not 0, despite
+          roles/network_nat pinning it to 0 — something set it after the last
+          converge. The ip {{ network_nat_table }} table is IPv4-only, so an
+          exit-tunnel guest's IPv6 now depends entirely on the ip6 drops
+          checked above.
+        success_msg: The host forwards no IPv6, so the exit tunnel's ::/0 is a blackhole.

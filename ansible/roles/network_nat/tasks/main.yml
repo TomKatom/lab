@@ -1,8 +1,49 @@
 ---
-# Egress NAT (masquerade) for VMs on {{ network_nat_bridge }}, plus ingress
-# DNAT for whatever's in network_nat_ingress_rules (empty by default — see
-# defaults/main.yml) — see the lab-nat.nft.j2 template for the full ruleset
-# (prerouting/postrouting/forward chains).
+# Egress NAT (masquerade) for VMs on {{ network_nat_bridge }} and for the
+# guest exit VPN, ingress DNAT for whatever's in network_nat_ingress_rules,
+# and the forward-chain rules that keep exit-tunnel peers out of the lab.
+# All three are empty-by-default and render only when their inputs are set —
+# see defaults/main.yml, and the lab-nat.nft.j2 template for the full ruleset
+# (prerouting/postrouting/forward chains) and the reasoning behind each rule.
+
+- name: Assert every ingress DNAT rule has a public address to be qualified on
+  # Refusing to converge is the safe failure here, and the only safe one.
+  # Rendering the DNAT without `ip daddr` would produce a rule matching on
+  # destination port alone: correct-looking on the uplink, where traffic is
+  # addressed to this host by definition, and a hijack of every outbound
+  # connection on a published port from any interface where it is not — which
+  # is precisely what the exit tunnel is, since its clients route 0.0.0.0/0
+  # into it. See the template's prerouting comment.
+  ansible.builtin.assert:
+    that:
+      - network_nat_public_ip | length > 0
+    fail_msg: >-
+      network_nat_ingress_rules has {{ network_nat_ingress_rules | length }}
+      rule(s) but network_nat_public_ip is empty. Every DNAT rule is
+      qualified on the host's own public address; without one the rule would
+      match on destination port alone and hijack traffic merely passing
+      through. See playbooks/proxmox-host.yml, which resolves it.
+    success_msg: Ingress DNAT rules will be qualified on {{ network_nat_public_ip }}.
+  when: network_nat_ingress_rules | length > 0
+  run_once: true
+
+- name: Assert the exit-VPN interface and subnet are declared together
+  # Half a pair is worse than neither, and both halves fail quietly. With an
+  # interface but no subnet the tunnel is isolated and has no egress
+  # masquerade, so it comes up and simply does nothing. With a subnet but no
+  # interface the masquerade renders while the forward chain does not — a
+  # working exit VPN with no isolation rules at all, on a chain whose policy
+  # is accept. See defaults/main.yml.
+  ansible.builtin.assert:
+    that:
+      - (network_nat_exit_interface | length > 0) == (network_nat_exit_subnet | length > 0)
+    fail_msg: >-
+      network_nat_exit_interface ({{ network_nat_exit_interface | default('') }})
+      and network_nat_exit_subnet ({{ network_nat_exit_subnet | default('') }})
+      must be set together or left empty together — see
+      playbooks/proxmox-host.yml, which passes both.
+    success_msg: The exit-VPN interface and subnet agree on whether the tunnel exists.
+  run_once: true
 
 - name: Install nftables
   ansible.builtin.apt:
@@ -28,6 +69,37 @@
       (roles/wireguard/tasks/main.yml) should have set this — confirm it
       runs before network_nat in playbooks/proxmox-host.yml.
     success_msg: net.ipv4.ip_forward is already enabled.
+
+- name: Pin IPv6 forwarding off for the guest exit tunnel
+  # The exit tunnel's clients take `::/0` so their IPv6-capable destinations
+  # stop leaking around the tunnel over the client's own local address. This
+  # host deliberately carries none of that IPv6 anywhere — real v6 egress is
+  # out of scope — so what the design needs is a *deterministic* blackhole:
+  # every v6 attempt dies here, Happy Eyeballs falls back within ~250 ms, and
+  # the connection goes out over IPv4 from this server's country instead of
+  # the client's.
+  #
+  # Set, not assumed. 0 is the kernel default and was previously left at it,
+  # with playbooks/verify-wireguard.yml asserting the value — but site.yml
+  # (the CI auto-deploy) deliberately runs the configuration playbooks and
+  # not the verification ones, so that assertion never ran on a converge.
+  # Anything that flips this knob — a package sysctl.d drop-in, a copied
+  # Proxmox networking snippet, a future v6 experiment — would then forward a
+  # guest's IPv6 past every isolation rule in lab-nat's ip table, since that
+  # table is ip-family only and PVE's forward_policy is ACCEPT. The ip6 table
+  # in the ruleset is the second half of the same fix; this is the half that
+  # stops the packet before any hook runs.
+  #
+  # Gated on the exit tunnel existing: without it this role has no reason to
+  # own a host-wide IPv6 knob, and the hardening role's sysctl baseline
+  # excludes forwarding knobs on purpose so it is not that role's either.
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "0"
+    sysctl_set: true
+    state: present
+    reload: true
+  when: network_nat_exit_interface | length > 0
 
 - name: Keep bridged VM frames out of the ip NAT hooks
   # Proxmox defaults net.bridge.bridge-nf-call-iptables to 1, which pulls the

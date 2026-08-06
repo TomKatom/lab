@@ -1,12 +1,21 @@
 ---
 # Role-private vars, prefixed network_nat_* so they can't collide with
-# another role's defaults. Unlike wireguard_interface/wireguard_peers,
-# nothing here is needed outside this role, so it stays here rather than in
-# group_vars/all.yml.
+# another role's defaults.
 
+# The nftables table this role owns, in both families it renders. Also set in
+# group_vars/all.yml, which wins on precedence — playbooks/verify-wireguard.yml
+# reads the live table back by name, and a name it had to redeclare is a name
+# that could drift. This stays here anyway: the role has to render without
+# that inventory, or it is not a role but a fragment of one playbook, and the
+# failure mode of removing it is a bare "'network_nat_table' is undefined" at
+# template time from any scratch inventory, molecule scenario or second
+# inventory that reuses this role.
 network_nat_table: lab-nat
+
 network_nat_ruleset_dir: /etc/nftables.d
-network_nat_ruleset_path: "{{ network_nat_ruleset_dir }}/lab-nat.nft"
+# Derived rather than a second literal: this file IS the table, so the name
+# belongs in exactly one place here.
+network_nat_ruleset_path: "{{ network_nat_ruleset_dir }}/{{ network_nat_table }}.nft"
 network_nat_bridge: vmbr1
 network_nat_service_name: lab-nat
 
@@ -16,3 +25,72 @@ network_nat_service_name: lab-nat
 # for where the port/destination names get resolved). Empty by default: no
 # rules means no prerouting/DNAT chain is rendered at all.
 network_nat_ingress_rules: []
+
+# The host's own public address, which every ingress DNAT rule above is
+# qualified on. Empty by default and resolved by the caller for the same
+# reason network_nat_ingress_rules is — the address lives in inventory, and
+# this role does not read config/lab.yml's or the inventory's schema.
+#
+# Empty is not a permissive fallback: tasks/main.yml refuses to converge with
+# ingress rules and no address rather than rendering an unqualified
+# `dport ... dnat`. That rule would match on port alone, and on any interface
+# where the traffic is not addressed to this host — the guest exit tunnel,
+# where the client routes 0.0.0.0/0 into the interface — it would hijack
+# every outbound connection on a published port into the DNAT destination.
+# See the template's prerouting comment for the full failure.
+network_nat_public_ip: ""
+
+# The guest exit VPN: the interface its peers arrive on, and the subnet they
+# are addressed out of. Both empty by default, the same
+# suppress-the-whole-thing gate network_nat_ingress_rules uses above — with
+# no interface the template renders no isolation rules and no second
+# masquerade, and the ruleset is exactly what it was before this tunnel
+# existed.
+#
+# Two variables rather than one derived from the other, because the two
+# halves of the ruleset key on different things. The forward chain matches
+# `iifname`: unambiguous, and it stays correct even if a peer is handed the
+# wrong address. The postrouting masquerade has to match a source address,
+# since by then the packet is on its way out of the uplink and the input
+# interface is gone. Set both or neither — tasks/main.yml asserts that,
+# because a half-set pair renders a live tunnel with no isolation rules or
+# an isolated tunnel with no egress, and both fail quietly.
+network_nat_exit_interface: ""
+network_nat_exit_subnet: ""
+
+# The MSS the exit tunnel's forward-chain clamp lowers oversized SYNs to.
+# 1380 = 1420 - 40: wg-quick sizes an interface at the endpoint route's MTU
+# minus 80 (1500 - 80 here), and a TCP segment on IPv4 costs 20 bytes of IP
+# header plus 20 of TCP header on top of the payload.
+#
+# A literal rather than `rt mtu`, because nftables can only compare against a
+# constant and an unconditional `set rt mtu` is what makes the clamp raise
+# rather than lower — see the template. A literal can go stale, so note which
+# way each error falls: too HIGH and the clamp stops firing on segments that
+# still do not fit, degrading to the no-clamp behaviour that existed before
+# this tunnel; too LOW and every guest's connections carry slightly more
+# header overhead than they need. Neither direction can raise an MSS, which
+# is the property that matters — the blackhole only happens upward.
+network_nat_exit_mss: 1380
+
+# Destinations the exit tunnel may never be forwarded to. This is the
+# exception list on the one `accept` that lets a guest out to the internet,
+# not a blocklist evaluated on its own — the rule that follows it drops
+# everything, so a range missing from here is a range that is still blocked,
+# and a range added here is simply named more explicitly. That is the whole
+# reason the ruleset is shaped as allow-by-exception: with a plain blocklist,
+# any internal subnet added to this lab in future would silently become
+# guest-reachable.
+#
+# RFC 1918 plus the ranges that are neither public nor routable: CGNAT
+# (100.64/10), link-local (169.254/16), multicast (224/4) and reserved
+# (240/4). 127/8 is not here on purpose — a loopback destination is dropped
+# as a martian at routing and never reaches the forward hook.
+network_nat_exit_denied_destinations:
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+  - 192.168.0.0/16
+  - 100.64.0.0/10
+  - 169.254.0.0/16
+  - 224.0.0.0/4
+  - 240.0.0.0/4

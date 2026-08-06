@@ -1,10 +1,32 @@
 ---
-- name: Reload lab-nat
-  # Covers both triggers (ruleset template changed, unit file changed) with
-  # one handler: daemon_reload is a cheap no-op when the unit is unchanged,
-  # and a restart re-runs ExecStart, which re-applies the ruleset from disk
-  # — the standard way to "reload" a oneshot/RemainAfterExit unit.
+# Both triggers — the ruleset template changed, the unit file changed — notify
+# the one `Reload lab-nat` topic, and each handler below is cheap for the
+# trigger it isn't about.
+
+- name: Reload the systemd unit definitions
   ansible.builtin.systemd:
-    name: "{{ network_nat_service_name }}"
     daemon_reload: true
-    state: restarted
+  listen: Reload lab-nat
+
+- name: Apply the lab-nat ruleset
+  # Deliberately `nft -f` rather than `systemctl restart lab-nat`, which is
+  # what this used to be. A restart runs the unit's ExecStop first, and that
+  # is `nft delete table ip lab-nat` — so re-applying meant tearing the table
+  # down and rebuilding it as two separate operations. Two things live in the
+  # gap between them: VM egress loses its masquerade, which is what it always
+  # cost and is merely annoying, and the forward chain's exit-tunnel
+  # isolation does not exist, leaving PVE's forward_policy = ACCEPT in charge
+  # — so a guest on that tunnel reaches the whole lab, on every converge. The
+  # ruleset file declares-then-deletes its own table (see the template's
+  # header), which makes a bare `nft -f` a complete atomic replace with no
+  # gap at all.
+  #
+  # It also fails better. A ruleset nft rejects now leaves the previous one
+  # loaded and stops the play; the restart would already have deleted the
+  # table and would leave the host with no NAT whatsoever.
+  #
+  # The unit is untouched and still owns boot-time loading — its ExecStart is
+  # this same command on this same file.
+  ansible.builtin.command: /usr/sbin/nft -f {{ network_nat_ruleset_path }}
+  changed_when: true
+  listen: Reload lab-nat
