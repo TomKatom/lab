@@ -8,3 +8,15 @@ collections:
     version: "2.2.2"
   - name: community.general  # ufw/nftables helpers, misc modules
     version: "13.2.0"
+  # Used for exactly one thing: the `in_network` jinja *test*, which
+  # roles/wireguard's peer assert needs to prove a peer address really is
+  # inside its interface's subnet (the check the `+mgmt` ipset's
+  # authorise-by-source-CIDR model depends on). Deliberately the tests and
+  # not the ipaddr-family *filters* from the same collection: the tests are
+  # implemented on Python's stdlib `ipaddress`, while the filters need the
+  # `netaddr` pip package — which the apply workflow's venv, pinned to bare
+  # ansible-core, does not install. Using a filter would mean adding a
+  # Python dependency to two workflow steps; the test needs nothing but this
+  # line. The collection itself has no dependencies of its own.
+  - name: ansible.utils  # in_network test — roles/wireguard's subnet assert
+    version: "6.0.3"
