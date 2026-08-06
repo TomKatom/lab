@@ -81,16 +81,27 @@ server keypair, so a leaked guest config reveals nothing about the admin
 tunnel. Both are declared in `config/lab.yml` and rendered from
 `wireguard_instances` in `ansible/inventory/group_vars/all.yml`.
 
+The operator-facing procedures are equally separate:
+[`runbooks/wireguard-peer.md`](runbooks/wireguard-peer.md) for `wg0`,
+[`runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md) for
+`wg1`. Read "WireGuard peer" below as "`wg0` peer" unless it says otherwise —
+the two are not interchangeable anywhere in this document.
+
 ## WireGuard management plane
 
-There is no public SSH, no IPMI, and no console — WireGuard is the only way
-to reach management surfaces (SSH/22, Proxmox API/8006, k8s API/6443, host
-metrics/9100). The tunnel itself is:
+There is no public SSH, no IPMI, and no console — the `wg0` tunnel is the
+only way to reach management surfaces (SSH/22, Proxmox API/8006, k8s
+API/6443, host metrics/9100). `wg1` is *also* WireGuard and terminates on
+this same host, and it reaches none of them; what authorizes a packet here
+is membership of the `+mgmt` ipset, not arrival on some WireGuard
+interface. The management tunnel itself is:
 
 - **Interface:** `wg0` on the host (`wireguard_interface` in
   `ansible/inventory/group_vars/all.yml`), listening on public
-  `network.ports.wireguard` (`51820/udp`) — the one WireGuard-related port
-  that *is* public, since the tunnel has to be reachable to be useful.
+  `network.ports.wireguard` (`51820/udp`) — public because a tunnel endpoint
+  has to be reachable to be useful, which is the same reason
+  `ports.wireguard_exit` (`51821/udp`) is public for `wg1`. Those two are
+  the only WireGuard-related ports that are public.
 - **Subnet:** `network.wireguard_subnet` (`10.10.20.0/24`), host address
   `network.wireguard_host_address` (`10.10.20.1/24`).
 - **Peers:** declared in `ansible/inventory/group_vars/all.yml`'s
@@ -106,11 +117,12 @@ metrics/9100). The tunnel itself is:
   inside `internal_subnet` — exactly what the `+mgmt` ipset authorizes by —
   and would collide with any second peer, since a prefix belongs to one peer
   only. `roles/wireguard` asserts the shape before rendering.
-- **Routing:** the *client* side is the mirror image: a peer's own config
-  routes `network.wireguard_subnet` + `network.internal_subnet`
+- **Routing:** the *client* side is the mirror image: a `wg0` peer's own
+  config routes `network.wireguard_subnet` + `network.internal_subnet`
   (`10.10.10.0/24`, i.e. `vmbr1`) into the tunnel and leaves everything else
   on its local link, so a connected peer reaches both host and VM management
-  surfaces over the one tunnel without becoming a default route. Full client
+  surfaces over that tunnel without it becoming a default route. A default
+  route is what `wg1` is for, and giving `wg0` one buys nothing. Full client
   procedure: [`runbooks/wireguard-peer.md`](runbooks/wireguard-peer.md).
 
 **Anti-lockout verify gate.** Because there's no console fallback short of a
@@ -138,6 +150,10 @@ tunnel and its traffic leaves the uplink masqueraded to the host's public
 IP, so it appears to originate in Germany. Peers are declared in
 `wireguard_exit_peers` (`ansible/inventory/group_vars/all.yml`) — empty in
 this repo; the interface listens and nothing can connect without a key.
+Issuing one is [`scripts/wg-exit-peer.sh`](../scripts/wg-exit-peer.sh) plus a
+PR, and the whole procedure — including revocation, which is manual because
+nothing here expires — is
+[`runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md).
 
 **The client side is the mirror image of `wg0`'s.** A guest's own config
 takes `AllowedIPs = 0.0.0.0/0, ::/0` and `DNS = 1.1.1.1`. The server side is
@@ -243,7 +259,10 @@ both. Two consequences worth knowing:
 **Two things that will surprise an operator.** `*.lab.tomkatom.com` still
 resolves publicly to RFC1918, so a tunnelled guest resolving
 `pve.lab.tomkatom.com` gets `10.10.10.1` and is then dropped — expected, but
-it looks like DNS. And on iOS only one WireGuard tunnel can be active at a
+it looks like DNS, and it is dropped on the *input* path by the PVE firewall
+rather than by the isolation block above, since a packet addressed to the
+host never reaches the forward hook (see
+[name resolution](#name-resolution)). And on iOS only one WireGuard tunnel can be active at a
 time, so a phone gets management *or* exit, never both; the fix is a `wg0`
 peer for the phone and switching tunnels, not widening `wg1`.
 
@@ -253,10 +272,30 @@ Management endpoints are addressable by name, not just by internal IP:
 
 | Name | Resolves to | Reachable from |
 |---|---|---|
-| `pve.lab.tomkatom.com` | `10.10.10.1` (host, vmbr1) | WireGuard peer, or vmbr1 |
+| `pve.lab.tomkatom.com` | `10.10.10.1` (host, vmbr1) | `wg0` peer, or vmbr1 |
 | `k3s.lab.tomkatom.com` | `10.10.10.10` (k3s-node) | same |
 | `runner.lab.tomkatom.com` | `10.10.10.20` (ci-runner) | same |
-| `vpn.lab.tomkatom.com` | the OVH public IP | anywhere — it's the tunnel endpoint |
+| `vpn.tomkatom.com` | the OVH public IP | anywhere — it's the endpoint of both tunnels |
+
+`wg0` peer, not "WireGuard peer": a `wg1` guest resolves these names exactly
+as anyone does and gets nothing back, which is expected and looks like a DNS
+fault. Two different layers produce that silence, and it is worth knowing
+which, because they are configured in different files. `k3s.lab` and
+`runner.lab` are VM addresses the host *forwards* to, so those packets reach
+`lab-nat`'s forward chain and hit its `iifname "wg1" drop`. `pve.lab` is the
+host's **own** vmbr1 address: packets addressed to the host are delivered
+locally and never reach the forward hook at all, so what stops them is the
+PVE filter firewall's `input_policy = DROP` plus the `+mgmt` ipset, which
+does not contain `network.wireguard_exit_subnet`. Full version:
+[`runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md) §8.
+
+`vpn.tomkatom.com` is one record serving both tunnels, told apart by port
+(`51820` / `51821`) — the `vpn.lab.` duplicate that peer configs used before
+the DNS cutover has been retired. Its label is `vpn_subdomain` in
+[`config/lab.yml`](../config/lab.yml), read by both the layer that creates
+the record ([`infra/tofu/locals.tf`](../infra/tofu/locals.tf)) and the one
+that writes it into guest configs
+([`scripts/wg-exit-peer.sh`](../scripts/wg-exit-peer.sh)).
 
 Declared once in `config/lab.yml` (`management_subdomain`,
 `management_hosts`, whose `address` is a key into the same `network:` block
@@ -276,10 +315,21 @@ accepted for that simplicity:
   fail on that network specifically while the raw IPs still work.
 
 If either becomes a real problem, the upgrade is a resolver bound to the
-WireGuard/vmbr1 addresses only, published to peers as `DNS = 10.10.20.1,
-lab.tomkatom.com` — WireGuard treats the non-IP entry as a match domain, so
-only `lab.tomkatom.com` lookups would traverse the tunnel. Not built, and
-not needed while the above holds.
+WireGuard/vmbr1 addresses only, published to `wg0` peers as
+`DNS = 10.10.20.1, lab.tomkatom.com` — WireGuard treats the non-IP entry as
+a match domain, so only `lab.tomkatom.com` lookups would traverse the
+tunnel. Not built, and not needed while the above holds.
+
+`wg1` guest configs *do* carry a `DNS =` line, and it is not that. It is
+`1.1.1.1`, a third-party public resolver: on a full tunnel, a client that
+keeps its own resolver leaks which sites it is visiting from its real
+address even though the packets egress here, so pushing a resolver is a leak
+fix, not a lab service. Nothing is running in the lab either way. The
+inverse is the trap worth naming: **do not copy `DNS = 1.1.1.1` into a `wg0`
+config** to make the two match — a `wg0` peer's whole job is resolving
+`lab.` names to RFC1918 targets, and that would hand those lookups to a
+resolver whose rebinding behaviour is the unverified thing in the bullet
+above. `wg0` configs carry no `DNS =` line on purpose.
 
 Everything *else* — `plex.`, `sonarr.`, `auth.`, … — keeps resolving to the
 public IP and arrives via the DNAT path above, whether or not a tunnel is
@@ -310,9 +360,10 @@ firewall.
 
 "WireGuard-only" is shorthand for the `+mgmt` ipset behind Tofu's
 `node_mgmt_rules`, which is `internal_subnet` **plus** `wireguard_subnet` —
-and, pointedly, *not* `wireguard_exit_subnet`: the guest tunnel is
-`wireguard`-reachable in the sense that it terminates on this host, and
-reaches none of these ports.
+and, pointedly, *not* `wireguard_exit_subnet`. Read it as "`wg0`-only": a
+`wg1` guest is on a WireGuard tunnel terminating on this very host and
+reaches none of these ports, because what the rule matches is membership of
+that ipset, not arrival on something called WireGuard.
 That matters for `node_exporter` specifically: Prometheus scrapes the host
 exporter from the k3s VM (`10.10.10.10`) and clears the same rule an
 operator's tunnel does, so the metrics endpoint needs no rule of its own.

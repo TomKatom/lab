@@ -51,7 +51,12 @@ locals {
   dns_a_records = {
     apex     = { name = local.lab.domain, comment = "Managed by OpenTofu" }
     wildcard = { name = "*.${local.lab.domain}", comment = "Managed by OpenTofu" }
-    vpn      = { name = "vpn.${local.lab.domain}", comment = "Managed by OpenTofu - WireGuard endpoint" }
+    # The map key stays the literal `vpn` — it is this record's Tofu resource
+    # address, and renaming it would destroy and recreate the record. The
+    # NAME is built from config/lab.yml's vpn_subdomain, because
+    # scripts/wg-exit-peer.sh writes the same name into every generated guest
+    # config's `Endpoint =` line and had no way to know it had changed.
+    vpn = { name = "${local.lab.vpn_subdomain}.${local.lab.domain}", comment = "Managed by OpenTofu - WireGuard endpoint" }
   }
 
   # Management A records — internal endpoints, addressable by name (see

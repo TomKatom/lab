@@ -31,6 +31,14 @@ talosconfig
 privatekey
 publickey
 
+# WireGuard client configs. scripts/wg-exit-peer.sh writes these outside the
+# repo and refuses an --out-dir inside it, so this is the backstop for one
+# that gets hand-copied here — a wg1 guest config carries both the peer's
+# private key and the preshared key in plaintext, and the repo root already
+# holds enough untracked scratch that `git add .` is a live risk. No tracked
+# *.conf exists to mask; the role templates are *.conf.j2.
+*.conf
+
 # Helm
 **/charts/*.tgz
 

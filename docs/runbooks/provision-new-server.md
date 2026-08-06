@@ -361,8 +361,10 @@ ansible first, tofu second — the same way this runbook stages them.
 
 ## 9. Verification (end of provision)
 
-- External scan: only `443`, `32400`, `51413` (tcp+udp), `51820/udp` open;
-  SSH/`8006`/`6443` refused off-tunnel, reachable over WG.
+- External scan: only `443`, `32400`, `51413` (tcp+udp), `51820/udp` (`wg0`)
+  and `51821/udp` (`wg1`, the guest exit VPN — it listens with no peers, so
+  open here means listening, not reachable) open; SSH/`8006`/`6443` refused
+  off-tunnel, reachable over `wg0`.
 - `pve-firewall status` says `enabled/running` (a dead daemon enforces
   nothing — check it, don't assume it).
 - `zpool status`: `rpool` mirror + `tank` stripe both `ONLINE`.
