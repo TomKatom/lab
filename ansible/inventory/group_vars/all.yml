@@ -143,7 +143,11 @@ wireguard_peers:
 #       public_key: "<contents of their publickey>"
 #       address: 10.10.30.2/32
 #       address_v6: fd00:10:30::2/128
-wireguard_exit_peers: []
+wireguard_exit_peers:
+  - name: toms-phone
+    public_key: "sil/kZjbgKOoLMmsppmHMrx0Qaf8I6qnTU88vTEv0AY="
+    address: 10.10.30.2/32
+    address_v6: fd00:10:30::2/128
 
 # The interfaces roles/wireguard renders — one config file, one key pair
 # and one wg-quick unit per entry: the management tunnel and the guest exit
