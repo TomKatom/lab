@@ -148,6 +148,10 @@ wireguard_exit_peers:
     public_key: "sil/kZjbgKOoLMmsppmHMrx0Qaf8I6qnTU88vTEv0AY="
     address: 10.10.30.2/32
     address_v6: fd00:10:30::2/128
+  - name: denis-phone
+    public_key: "qrnYy5FOIX9FykXEtS46CN7dvG2X+3DTLbmm3Wdp7g0="
+    address: 10.10.30.3/32
+    address_v6: fd00:10:30::3/128
 
 # The interfaces roles/wireguard renders — one config file, one key pair
 # and one wg-quick unit per entry: the management tunnel and the guest exit
