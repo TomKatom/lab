@@ -58,6 +58,7 @@ What is in the overlay today:
 | `rules-media.yaml` | PrometheusRule | the *arr, Plex and Deluge alerts — see [Metric alerts — the media stack](#metric-alerts--the-media-stack) |
 | `rules-backups.yaml` | PrometheusRule | the PBS/backup alerts — see [Metric alerts — backups](#metric-alerts--backups) |
 | `rules-wireguard.yaml` | PrometheusRule | the `wg0`/`wg1` tunnel alerts — see [Metric alerts — WireGuard](#metric-alerts--wireguard) |
+| `rules-finance.yaml` | PrometheusRule | the nightly bank-scrape staleness alert — see [Metric alerts — finance](#metric-alerts--finance) |
 | `loki-rules.yaml` | ConfigMap `loki-rules` | the Loki ruler's rule files |
 | `dashboard-node-exporter-full.yaml` | ConfigMap | vendored grafana.com dashboard 1860 |
 | `dashboard-media.yaml` | ConfigMap | hand-written "Media stack" dashboard — the *arrs, Plex and Deluge |
@@ -478,6 +479,39 @@ in kube-prometheus-stack knows these applications exist.
 > *why* an item is stuck. It is set today and must stay set — a restored
 > per-state rule without it would evaluate forever against a filtered view
 > and read as a passing check.
+
+### Metric alerts — finance
+
+From [`monitoring/rules-finance.yaml`](../clusters/lab/platform/monitoring/rules-finance.yaml),
+group `finance`. The `finance` namespace runs no exporter and has no
+ServiceMonitor; the only series this group reads are kube-state-metrics'
+own view of the `moneyman` CronJob. Actual Budget itself has no rule here —
+it is one container on a PVC, which is exactly what the chart's
+`KubePodCrashLooping`, `KubePodNotReady` and `KubePersistentVolumeFillingUp`
+already cover.
+
+| Alert | Sev | Fires when | First response |
+|---|---|---|---|
+| `MoneymanStale` | warning | `kube_cronjob_status_last_successful_time` for `finance/moneyman` is over 36 h old and the CronJob is not suspended, for 1h | `kubectl -n finance get cronjob moneyman` and `kubectl -n finance get jobs,pods`. Usual causes are a Pod that cannot start and a run skipped because the previous one was still running. ⚠ **This firing means the job stopped running, and its not firing does not mean the data is current** — see below. [`runbooks/finance.md`](runbooks/finance.md). |
+
+Two silences are deliberate and neither is a gap. Before the first-ever
+successful run kube-state-metrics publishes no
+`kube_cronjob_status_last_successful_time` series at all, so the rule cannot
+fire during the operator bootstrap — which is also why it is safe to merge
+ahead of the CronJob it names. And a CronJob suspended on purpose is
+excluded by an `unless on (namespace, cronjob)`, written with an explicit
+matching key rather than bare because a bare `unless` compares the *full*
+label set of both sides: the two metrics agree on every label today, and
+one extra label on either would silently drop the suppression and alert
+every night through a deliberate suspension.
+
+An individually failed Job is **not** this rule's job and deliberately has
+none of its own — the chart's `KubeJobFailed` (15 m) and
+`KubeJobNotCompleted` (12 h active) already cover it, per
+[What the chart already covers](#what-the-chart-already-covers). Neither of
+those auto-resolves, since `failedJobsHistory: 3` keeps the failed Job
+object around until it is deleted or rotated out. `MoneymanStale` is the one
+in the set that clears itself the moment a run succeeds.
 
 ### Log alerts
 
@@ -1020,8 +1054,8 @@ Each of these is a decision, not a gap. Revisit them on purpose.
   away in the Deluge UI. Aggregates by torrent state are the right
   granularity.
 - **`importBlocked` queue items, as an alert.** The condition that motivated
-  the media exporters in the first place, and the one thing here that is a
-  gap rather than a decision — but the decision *not to fake it* is
+  the media exporters in the first place, and one of the two things here
+  that is a gap rather than a decision — but the decision *not to fake it* is
   deliberate. exportarr v2.3.0 cannot express it (see the ⚠ under
   [Metric alerts — the media stack](#metric-alerts--the-media-stack)), and
   the two ways to close it are an upstream release, or a probe of the *arr
@@ -1030,6 +1064,24 @@ Each of these is a decision, not a gap. Revisit them on purpose.
   recipe already written into `rules-media.yaml`; wait for it. Meanwhile the
   queue-size panel shows the symptom and `ArrHealthErrors` catches the
   subset Servarr raises as a health issue.
+- **A bank scrape that runs and comes back with nothing.** This one is a real
+  gap and the second thing in this list that is not a decision, so read
+  [Metric alerts — finance](#metric-alerts--finance) as covering strictly
+  less than it looks like it does. moneyman calls `process.exit(0)`
+  unconditionally and catches every error on the way there, so an expired
+  Isracard password, a CAPTCHA wall or a changed login form all produce a
+  *Succeeded* Job. `kube_cronjob_status_last_successful_time` advances,
+  `KubeJobFailed` stays quiet, and `MoneymanStale` — which reads exactly that
+  timestamp — stays quiet with them. What is monitored is that the CronJob
+  still runs; what is not is whether it accomplished anything. The two ways
+  to close it are moneyman's own Telegram notifier, rejected because it puts
+  the bot token in a third SOPS home inside an encrypted blob nothing can
+  diff, and a Loki rule over the container's log, which needs
+  `MONEYMAN_UNSAFE_STDOUT` and `DEBUG=moneyman:*` set on the CronJob first —
+  the image sends everything else to a file inside the container and deletes
+  it on exit, so `kubectl logs` on a finished Job prints roughly one line.
+  Until one of those lands, the check that the data is current is looking at
+  Actual, and [`runbooks/finance.md`](runbooks/finance.md) says so.
 - **The local ZFS snapshot tier.** `ansible/roles/zfs_snapshots` takes
   hourly/daily/weekly sanoid snapshots of `rpool/ROOT/pve-1` and the k3s VM's
   backed-up zvols, and nothing alerts on them — its failure mode is a *stale*
