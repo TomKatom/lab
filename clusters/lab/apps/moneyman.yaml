@@ -1,0 +1,214 @@
+# moneyman — scrapes Bank Hapoalim and Isracard nightly with
+# israeli-bank-scrapers behind headless Chromium and imports what it finds
+# into Actual Budget over the cluster-internal Service. A CronJob, not a
+# Deployment: it runs, exports and exits, with nothing to serve in between —
+# no Service, no Ingress, no PVC, because every piece of state it produces
+# lives in Actual's own PVC (./actual.yaml).
+#
+# Wave 1: after finance-common (wave 0) has created the `finance` namespace
+# and the ksops-decrypted `moneyman-config` Secret whose single key is the
+# entire configuration this reads. The wave-2 rule the *arr CronJobs follow
+# is about charts mounting a wave-1 ConfigMap and does not apply here (see
+# ./README.md "Sync waves within apps/").
+#
+# ## It is merged suspended, on purpose
+#
+# `suspend: true` below is not a placeholder to clean up later — it is what
+# makes this PR safe to merge on its own. At merge the Secret holds template
+# credentials, and an unsuspended CronJob would fail against a bank every
+# night until someone noticed. The operator flips it to `false` in the
+# follow-up credentials PR, after the bootstrap in
+# ../../../docs/runbooks/finance.md has filled the real config and one manual
+# Job has proven a scrape end to end. `kubectl create job --from=cronjob/...`
+# works while suspended, which is exactly how that proof is obtained.
+#
+# ## A failed scrape is invisible from Kubernetes, and that shapes everything
+#
+# Checked in moneyman's own source at this pinned tag: `src/index.ts` ends
+# with an unconditional `process.exit(0)`, and every error path above it —
+# `run()`, `runScraper()`, and the per-storage save loop — catches and only
+# logs. A month of CAPTCHA-blocked Isracard runs still produces Succeeded
+# Jobs. Three consequences, all of them load-bearing and none of them
+# obvious from the manifest alone:
+#
+#   - `backoffLimit` never retries a flaky scrape. The plan justified it as
+#     "bank scrapers are flaky, retries are cheap"; that is false at this
+#     tag. It is kept at 2 for the failures that *do* produce a non-zero pod
+#     — image pull, OOM kill, eviction, DeadlineExceeded — and nothing else.
+#   - the chart's own `KubeJobFailed` will never fire for a broken scrape.
+#   - the sibling monitoring PR's `MoneymanStale` watches
+#     `kube_cronjob_status_last_successful_time`, which advances on Job
+#     completion, so it detects "this CronJob stopped running at all" and
+#     never "the scrape stopped working". The operator-facing check for the
+#     latter is Actual's transaction list, and the runbook says so.
+#
+# ## There is no volume, and the overlap that leaves is safe anyway
+#
+# The absent `persistence:` block is a verified claim rather than an
+# omission. Everything moneyman writes goes under os.tmpdir() — its log file,
+# the @actual-app/api budget cache in /tmp/moneyman-actual-data, puppeteer's
+# throwaway Chromium profile, failure screenshots — and /tmp is 1777 in the
+# base layer, so uid 1000 can write it with nothing mounted. This pod
+# deliberately does not carry `readOnlyRootFilesystem` the way
+# ./filebrowser.yaml does: adding it later means adding an emptyDir at /tmp
+# sized for a whole budget file plus a browser profile, so it is not the free
+# hardening win it looks like. If Chromium ever does fail as uid 1000, try
+# `HOME: /tmp` in the env below before touching the security baseline.
+#
+# Running stateless means every night re-scrapes an overlapping window
+# (`daysBack` in the config), and that is safe: the exporter
+# (src/bot/storage/actual.ts at this tag) stamps every transaction with an
+# `imported_id` and hands the batch to actualApi.importTransactions, and
+# Actual matches on (imported_id, account) before inserting, so a re-scraped
+# day updates rather than duplicates. Pending transactions are skipped before
+# import, so there are no pending-then-settled pairs either. The id is stable
+# only with options.scraping.transactionHashType set to "moneyman" — the
+# default hashes description, memo and a minute-rounded date, all of which
+# drift on Isracard — which is why finance-common's config template sets it
+# explicitly and why changing it in either direction after the first import
+# re-imports the whole window as new transactions.
+#
+# ## Logs are nearly empty by default, deliberately
+#
+# The image bakes `MONEYMAN_UNSAFE_STDOUT=false`, so `docker-entrypoint.sh`
+# redirects the process's stdout and stderr into `/tmp/moneyman.log` and
+# deletes it before exit, leaving `kubectl logs` with two or three lines.
+# That is not flipped here: unredirected stdout carries transaction
+# descriptions, amounts and account numbers, and this cluster ships every
+# pod's stdout to Loki (../platform/alloy.yaml discovers pods with no
+# namespace selector). Sending a year of itemized spending into the log
+# store to make a job nobody reads more chatty is the wrong default. The
+# runbook's diagnostic recipe sets `MONEYMAN_UNSAFE_STDOUT=true` and
+# `DEBUG=moneyman:*` on a one-off Pod instead, for the one hour it is needed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: moneyman
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # The house 1000:1000 block (./README.md "Identity: everything runs
+        # as 1000:1000"), applied without an exception even though the image
+        # carries no USER directive and would otherwise start as root.
+        # Nothing in it needs root: the entrypoint is a plain shell script
+        # with no chown or gosu, no port is bound, and uid 1000 already
+        # exists in the image as `node` with /home/node owned 1000:1000, so
+        # HOME resolves to a writable directory with no help from us
+        # (checked the image's /etc/passwd and layer ownership at authoring
+        # time). There is no volume here, so fsGroup has nothing to chown —
+        # it is carried only to keep this block identical to every other app.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            type: cronjob
+            cronjob:
+              # 04:30 Israel time, and this is the one CronJob in the repo
+              # where that has to be true year-round. ./recyclarr.yaml leaves
+              # its schedule in UTC and says "if this ever needs to be local
+              # wall-clock time, set cronjob.timeZone rather than relying on
+              # the env" — this is that case: the banks post the previous
+              # day's transactions overnight in local time, and Israel
+              # observes DST, so a UTC schedule would slide an hour twice a
+              # year across that boundary. timeZone is evaluated by the
+              # controller-manager, not in the Pod; the TZ env below is a
+              # separate thing that only moves log timestamps.
+              schedule: "30 4 * * *"
+              timeZone: Asia/Jerusalem
+              # Flipped to false by the operator in the credentials PR, once
+              # the real config is in place — see the header. Until then this
+              # object exists, syncs Healthy, and schedules nothing.
+              suspend: true
+              # Forbid, not backoffLimit, is what bounds a hung Chromium: a
+              # scrape that wedges on a bank's anti-bot page costs at most
+              # the next night's run, and two concurrent runs would race each
+              # other importing the same overlap window into Actual.
+              concurrencyPolicy: Forbid
+              successfulJobsHistory: 1
+              failedJobsHistory: 3
+              # Pod-level failures only, per the header — a failed scrape
+              # exits 0 and is never retried.
+              backoffLimit: 2
+              # Supported at 5.0.1: the chart's values.schema.json declares
+              # controllers.*.cronjob with additionalProperties false and
+              # lists this key, and a local `helm template` of exactly these
+              # values renders it. Note *where* it renders —
+              # jobTemplate.spec.activeDeadlineSeconds — so an hour is the
+              # budget for the whole Job including all backoffLimit
+              # attempts, not per attempt. Blowing it fails the Job as
+              # DeadlineExceeded, which is one of the few states the chart's
+              # own KubeJobFailed can actually see.
+              activeDeadlineSeconds: 3600
+              # Not set here but rendered anyway: app-template defaults
+              # startingDeadlineSeconds to 30 (Kubernetes' own default is
+              # unset). A controller-manager busy at 04:30, or a previous Job
+              # still running under Forbid, silently skips the night — which
+              # is the miss MoneymanStale exists to catch.
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/daniel-hauser/moneyman
+                  # renovate: datasource=docker depName=ghcr.io/daniel-hauser/moneyman
+                  tag: "v2026.07.18.1@sha256:b3c8579de2879a1ac00d00d3168c214cc0157f8b75b3d98204bfa7ebe073359e"
+                # No command or args. The entrypoint supplies `node
+                # dst/index.js` when given none, and it is also what sets up
+                # the stdout redirection described in the header — overriding
+                # it would bypass both.
+                env:
+                  TZ: Asia/Jerusalem
+                  # The whole configuration, bank credentials included, as
+                  # one JSONC blob. It comes from the ksops Secret that
+                  # finance-common creates at wave 0; this app is wave 1, so
+                  # a first-sync race that starts the Pod before the Secret
+                  # exists is possible and self-heals on the next sync
+                  # (./README.md "Sync waves within apps/"). Named by key
+                  # rather than envFrom because the Secret has exactly one
+                  # and naming it documents the coupling.
+                  MONEYMAN_CONFIG:
+                    valueFrom:
+                      secretKeyRef:
+                        name: moneyman-config
+                        key: MONEYMAN_CONFIG
+                # `--no-sandbox` is hardcoded upstream in
+                # src/scraper/browser.ts, not a choice made here and not
+                # removable from a manifest. It is also precisely what
+                # removes Chromium's need for CAP_SYS_ADMIN or unprivileged
+                # user namespaces, so dropping every capability, refusing
+                # root and keeping seccomp RuntimeDefault are real
+                # compensating controls rather than paperwork. The same
+                # hardcoded list carries `--disable-dev-shm-usage`, so there
+                # is no /dev/shm tmpfs to add either.
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                # Sized for one headless Chromium driving two bank sites in
+                # sequence (maxParallelScrapers is 1 in the config).
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 512Mi
+                  limits:
+                    cpu: "2"
+                    memory: 2Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: finance
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
