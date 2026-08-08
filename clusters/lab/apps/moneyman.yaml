@@ -11,16 +11,18 @@
 # is about charts mounting a wave-1 ConfigMap and does not apply here (see
 # ./README.md "Sync waves within apps/").
 #
-# ## It is merged suspended, on purpose
+# ## It shipped suspended, and this is the commit that started it
 #
-# `suspend: true` below is not a placeholder to clean up later — it is what
-# makes this PR safe to merge on its own. At merge the Secret holds template
-# credentials, and an unsuspended CronJob would fail against a bank every
-# night until someone noticed. The operator flips it to `false` in the
-# follow-up credentials PR, after the bootstrap in
-# ../../../docs/runbooks/finance.md has filled the real config and one manual
-# Job has proven a scrape end to end. `kubectl create job --from=cronjob/...`
-# works while suspended, which is exactly how that proof is obtained.
+# `suspend: false` below is only correct once `moneyman-config` holds real
+# credentials, because an unsuspended CronJob against a template config
+# fails against a bank every night until someone notices. That is why the
+# flip is its own PR rather than a line in the one that added this file, and
+# why the same PR carries the `sops` edit: the two facts must become true in
+# the same commit range, and nothing in Kubernetes can check that they did.
+# Prerequisite, per ../../../docs/runbooks/finance.md: the Actual budget file
+# exists, both accounts are mapped, and one manual Job has proven a scrape
+# end to end. `kubectl create job --from=cronjob/...` works while suspended,
+# which is exactly how that proof is obtained.
 #
 # ## A failed scrape is invisible from Kubernetes, and that shapes everything
 #
@@ -138,10 +140,11 @@ spec:
               # separate thing that only moves log timestamps.
               schedule: "30 4 * * *"
               timeZone: Asia/Jerusalem
-              # Flipped to false by the operator in the credentials PR, once
-              # the real config is in place — see the header. Until then this
-              # object exists, syncs Healthy, and schedules nothing.
-              suspend: true
+              # Live. Set it back to true to stop the nightly scrape
+              # deliberately; MoneymanStale stays silent through the
+              # suspension and for 36h after it is lifted, by way of the
+              # max_over_time window in ../platform/monitoring/rules-finance.yaml.
+              suspend: false
               # Forbid, not backoffLimit, is what bounds a hung Chromium: a
               # scrape that wedges on a bank's anti-bot page costs at most
               # the next night's run, and two concurrent runs would race each
