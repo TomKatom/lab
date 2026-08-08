@@ -108,6 +108,8 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
                                                      └─ tautulli / homepage (apex + www)
                                                     apps/ (share ns)
                                                      └─ filebrowser (files. + share.)
+                                                    apps/ (finance ns)
+                                                     └─ finance-common (bank creds, Phase 11)
 ```
 
 ## Tooling

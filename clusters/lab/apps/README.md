@@ -2,8 +2,10 @@
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
 Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
-`media-common` config — plus `filebrowser`, which is here but deliberately
-not in the `media` namespace (see [The `share` namespace](#the-share-namespace)) —
+`media-common` config — plus `filebrowser` and `finance-common`, both here but
+deliberately not in the `media` namespace (see
+[The `share` namespace](#the-share-namespace) and
+[The `finance` namespace](#the-finance-namespace)) —
 discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
@@ -48,10 +50,11 @@ don't trust each other — doesn't buy anything here.
 
 ## The `share` namespace
 
-`filebrowser` is the one Application in this directory whose
-`destination.namespace` is not `media`, and the argument above is exactly why:
-it is the one app here that consumes none of `media-common`'s Secrets, so the
-re-encryption cost that keeps the media stack together simply isn't charged.
+`filebrowser` was the first Application in this directory to carry a
+`destination.namespace` other than `media` — `finance` below is the second
+namespace to follow it out — and the argument above is exactly why: it
+consumes none of `media-common`'s Secrets, so the re-encryption cost that
+keeps the media stack together simply isn't charged against it.
 What it does have is the property that argument assumes away — it is not part
 of the same trust domain. Its `/public` routes are reachable from the open
 internet with no session, which makes it the one service here where "a bug in
@@ -70,18 +73,23 @@ trusts a header and the policy is the only reason that is safe.
 
 ## The `finance` namespace
 
-`actual` and `moneyman` are the other two Applications here outside `media`,
-and the first half of the argument is the same as `share`'s: neither consumes
-a `media-common` Secret, so the re-encryption cost that keeps the media stack
-in one namespace is never charged against them. The second half runs the other
-way round. `filebrowser` got its own namespace because of what it *is* — a
-process reachable with no session, which must not also be able to read the
-media Secrets. `finance` gets one because of what it *holds*:
-`moneyman-config` carries two real bank logins and the Actual server password,
-and a namespace is the cheapest way to say that a compromised *arr has no path
-to them. It is created by
-[`finance-common.yaml`](finance-common.yaml) at wave `"0"` under the same
-first-syncer rule.
+`finance` is the third namespace this directory owns, and so far the only
+Application in it is [`finance-common.yaml`](finance-common.yaml) — the wave
+`"0"` first-syncer that creates the namespace and decrypts `moneyman-config`,
+under the same rule `filebrowser-config` follows for `share`. The two
+workloads that Secret exists for, `actual` and `moneyman`, land later in
+Phase 11; the namespace and the credentials go in first because everything
+else in the phase depends on them.
+
+The first half of the argument for a namespace of its own is the same as
+`share`'s: nothing here consumes a `media-common` Secret, so the re-encryption
+cost that keeps the media stack in one namespace is never charged against it.
+The second half runs the other way round. `filebrowser` got its own namespace
+because of what it *is* — a process reachable with no session, which must not
+also be able to read the media Secrets. `finance` gets one because of what it
+*holds*: `moneyman-config` carries two real bank logins and the Actual server
+password, and a namespace is the cheapest way to say that a compromised *arr
+has no path to them.
 
 The same caveat applies as above — this is a Secret boundary and nothing more.
 There is no NetworkPolicy here, because the thing that made one necessary next

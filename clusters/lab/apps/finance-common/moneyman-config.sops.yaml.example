@@ -25,16 +25,11 @@
 # to Actual account UUID, and the key is specifically israeli-bank-scrapers'
 # `account.accountNumber` — the UUID is the one in the account page's URL.
 #
-# `serverUrl` is the in-cluster Service DNS of the Actual server, verified by
-# rendering ../actual.yaml's values with app-template 5.0.1: the Service is
-# named `actual` on port 5006. It is deliberately not budget.tomkatom.com —
-# Authelia's forwardAuth is a Traefik middleware annotation on the Ingress, so
-# it gates the public hostname only, and moneyman has no way to hold a session
-# anyway. The consequence is that this address is a coupling recorded in
-# ciphertext where ../media-common/media-urls.yaml would record it in the
-# clear: a PR that renames Actual's Service or moves its port has to carry a
-# `sops` edit of the real file in the same commit, because nothing validates
-# the two against each other.
+# `serverUrl` is the in-cluster Service DNS of the Actual server and is
+# deliberately not budget.tomkatom.com. See the header of
+# ./moneyman-config.sops.yaml for why the public hostname is the wrong address
+# here and what a rename of Actual's Service costs; the coupling is recorded
+# in that file, so the argument for it lives there too.
 #
 # `options.scraping.transactionHashType: "moneyman"` is load-bearing and is
 # the one value here that must be right *before the first import*. See the
