@@ -1,0 +1,27 @@
+# Managed by Ansible (roles/wireguard) — do not edit by hand.
+[Interface]
+{# `address_v6` (interface) and `address_v6` (peer, below) are optional: an
+   instance that declares neither renders exactly the single-address line it
+   rendered before dual-stack support existed, byte for byte, which is what
+   keeps the live management tunnel from restarting on this change. `select`
+   with no test keeps only truthy items, so the empty default drops out.
+   Two keys rather than one comma-joined `address` so the role's assert can
+   check each half's prefix length and subnet on its own. #}
+Address = {{ [item.address, item.address_v6 | default('')] | select | join(', ') }}
+ListenPort = {{ item.listen_port }}
+PrivateKey = {{ wireguard_private_keys[item.name] }}
+# Table = off: see roles/wireguard/tasks/main.yml's "Render wg0.conf" task.
+Table = off
+{% for peer in item.peers %}
+
+[Peer]
+# {{ peer.name }}
+PublicKey = {{ peer.public_key }}
+{% if peer.name in (wireguard_peer_psks | default({})) %}
+PresharedKey = {{ wireguard_peer_psks[peer.name] }}
+{% endif %}
+AllowedIPs = {{ [peer.address, peer.address_v6 | default('')] | select | join(', ') }}
+{% if peer.persistent_keepalive is defined %}
+PersistentKeepalive = {{ peer.persistent_keepalive }}
+{% endif %}
+{% endfor %}

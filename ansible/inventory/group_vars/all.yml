@@ -21,7 +21,10 @@ ovh_public_ip: 145.239.3.55
 argocd_namespace: argocd
 
 # Shared between roles/wireguard and playbooks/verify-wireguard.yml — a
-# single name so neither has to redeclare it.
+# single name so neither has to redeclare it. It names the management
+# tunnel specifically, which is the one verify-wireguard.yml asks for a
+# handshake on; roles/wireguard reaches it through wireguard_instances
+# below.
 wireguard_interface: wg0
 
 # Operator WireGuard peers: public key + the address that peer owns inside
@@ -43,8 +46,11 @@ wireguard_interface: wg0
 #     ipset, infra/tofu/firewall.tf), and
 #   - a second peer was impossible: a prefix belongs to exactly one peer, so
 #     whichever was configured last silently stole it from the first.
-# Keep one /32 per peer, unique across this list (roles/wireguard asserts
-# both before rendering).
+# Keep one /32 per peer, unique across this list, and inside the interface's
+# own `subnet` — roles/wireguard asserts all three before rendering, the
+# containment one because that `+mgmt` ipset authorises by source CIDR alone,
+# so an address that strays into wireguard_subnet is an address that has
+# management access whatever interface it was meant for.
 #
 # The client side is the mirror image and is deliberately not configured
 # from here — a peer's own config routes wireguard_subnet + internal_subnet
@@ -68,3 +74,52 @@ wireguard_peers:
   - name: toms-pc
     public_key: "AZ9c31nOcvfx01grp7AMnczZHoCDCqdcSnuWThgiPXw="
     address: 10.10.20.3/32
+
+# The interfaces roles/wireguard renders — one config file, one key pair
+# and one wg-quick unit per entry. Exactly one today, the management
+# tunnel. The list exists so that a second interface is a data change
+# rather than a rewrite of the role, and so every task in the role is
+# already scoped to the instance it is working on instead of to an
+# implicit single global (which is what made the old restart handler
+# unsafe — see roles/wireguard/tasks/main.yml's last task).
+#
+# "Data change" is meant literally, so the role already carries the shape a
+# second interface needs and does not yet use: its own subnet to validate
+# peers against, and an optional IPv6 leg on both the interface and its
+# peers. Those were built in here rather than left to the commit that adds
+# the interface, because discovering mid-change that the role's peer assert
+# cannot express the new interface's addresses is how a "just add data" step
+# turns into reopening a role that renders the only way into the box.
+#
+# wg0 keeps its `name` and `peers` by reference rather than inlining them:
+# wireguard_interface and wireguard_peers are read under those names by
+# playbooks/verify-wireguard.yml, and docs/runbooks/wireguard-peer.md tells
+# the operator to add peers to wireguard_peers. A future second interface
+# is not the management tunnel and would declare its own name and peer list
+# here directly.
+#
+# `address`, `subnet` and `listen_port` name keys in config/lab.yml rather
+# than repeating the values. They resolve lazily — Jinja in a group_vars
+# value is evaluated where the value is used, by which point the playbook's
+# vars_files has loaded config/lab.yml — which is exactly the laziness this
+# file's header calls out ovh_public_ip as the one exception to.
+#
+# `subnet` is the CIDR every peer of this interface must sit inside, and
+# roles/wireguard asserts that rather than deriving it from `address`: it is
+# the same config/lab.yml key infra/tofu/locals.tf builds the `+mgmt` ipset
+# from, so the assert and the firewall cannot come to disagree about what
+# "the management subnet" is. `address` is asserted to be inside it too, so
+# the two keys can't drift apart either.
+#
+# An instance may also carry `subnet_v6` and `address_v6` for a dual-stack
+# interface, and its peers a matching `address_v6`. Both are optional and wg0
+# declares neither: the management tunnel has no IPv6 story, and adding one
+# would change a live interface's config, which restarts it — on a host whose
+# only route in is that interface. An instance that omits them renders
+# exactly the single-address config it rendered before, byte for byte.
+wireguard_instances:
+  - name: "{{ wireguard_interface }}"
+    address: "{{ network.wireguard_host_address }}"
+    subnet: "{{ network.wireguard_subnet }}"
+    listen_port: "{{ ports.wireguard }}"
+    peers: "{{ wireguard_peers }}"

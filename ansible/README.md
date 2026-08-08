@@ -41,7 +41,7 @@ Layout:
 |---|---|---|
 | `pve_repos` | swaps the subscriber-only PVE/Ceph/PBS enterprise apt sources for the free ones. **Runs first**, before any other role's apt tasks | `proxmox-host.yml` |
 | `pve_firewall` | the host-side firewall backend and the sysctl the Proxmox filter firewall needs | `proxmox-host.yml` |
-| `wireguard` | the management tunnel — the host key is generated in place and never leaves the box | `proxmox-host.yml` |
+| `wireguard` | one wg-quick interface per `wireguard_instances` entry (today only `wg0`, the management tunnel) — each interface's host key is generated in place and never leaves the box | `proxmox-host.yml` |
 | `network_nat` | single-IP NAT/DNAT in nftables (a different hook from the filter firewall Tofu owns) | `proxmox-host.yml` |
 | `hardening` | SSH, `fail2ban`, `unattended-upgrades`, sysctl, `auditd`. Runs on the host *and* the guests, switched by `hardening_is_pve_host` | `proxmox-host.yml`, `hardening-vms.yml` |
 | `zfs_tank` | the `tank` HDD stripe and its datasets | `proxmox-host.yml` |
@@ -128,10 +128,11 @@ execute it against the live server itself).
    subscriber-only PVE/Ceph enterprise apt repos for the free
    no-subscription one (`roles/pve_repos`; this host has no paid Proxmox VE
    subscription, so those repos 401 on every apt update otherwise), then
-   installs `wireguard-tools`, generates the host's private key **in
+   installs `wireguard-tools`, generates each interface's private key **in
    place** (it's created with `wg genkey` directly on the host and never
-   leaves it — see `roles/wireguard/tasks/main.yml`), and brings up `wg0`.
-   Note the printed host public key.
+   leaves it — see `roles/wireguard/tasks/main.yml`), and brings up every
+   entry in `wireguard_instances` — today just `wg0`. Note the printed host
+   public key.
 2. Add your own peer: generate a keypair and a preshared key locally (`wg
    genkey | tee privatekey | wg pubkey > publickey`, `wg genpsk` — keep
    `privatekey` off this repo entirely), add an entry to `wireguard_peers`

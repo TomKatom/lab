@@ -1,8 +1,14 @@
 ---
 # wireguard_interface and wireguard_peers are shared with
-# playbooks/verify-wireguard.yml, so they live in group_vars/all.yml
-# instead of here — a role default would be a second, competing source of
-# truth for values another file also needs.
+# playbooks/verify-wireguard.yml, and wireguard_instances — the list this
+# role actually iterates — is built from them, so all three live in
+# group_vars/all.yml instead of here: a role default would be a second,
+# competing source of truth for values another file also needs.
+#
+# There is no wireguard_private_key_path default any more: it was derived
+# from wireguard_interface, which only has an answer while exactly one
+# interface exists. Each key path is now spelled out per instance as
+# <wireguard_key_dir>/<instance name>.key in tasks/main.yml, where which
+# instance is being worked on is unambiguous.
 
 wireguard_key_dir: /etc/wireguard
-wireguard_private_key_path: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.key"

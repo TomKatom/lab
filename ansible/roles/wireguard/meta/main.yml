@@ -2,7 +2,7 @@
 galaxy_info:
   role_name: wireguard
   author: tomkatom
-  description: WireGuard management-plane tunnel on the Proxmox host
+  description: WireGuard tunnels on the Proxmox host, one wg-quick interface per wireguard_instances entry
   license: MIT
   min_ansible_version: "2.15"
   platforms:

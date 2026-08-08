@@ -125,9 +125,11 @@ PersistentKeepalive = 25
   only because the real name was gated until the old server's zone was
   handed over — see `docs/runbooks/dns-cutover.md`.)
 
-- **Host public key** — printed by the converge ("Show the host's WireGuard
-  public key"). The host's private key is generated in place on the server
-  and never leaves it, so this is the only half you ever handle.
+- **Host public key** — printed by the converge ("Show each instance's
+  WireGuard public key"), one line per interface in `wireguard_instances`;
+  take the `wg0` line. Each interface's private key is generated in place on
+  the server and never leaves it, so the public half is the only one you
+  ever handle.
 - **`Address`** — the same `/32` you declared in §3. `/32`, not `/24`: your
   machine owns exactly one tunnel address, and a `/24` would make it claim
   the whole peer subnet as directly connected.

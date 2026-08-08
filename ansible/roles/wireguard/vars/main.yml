@@ -1,0 +1,28 @@
+---
+# The three flat lists that describe every peer of every instance at once.
+#
+# In vars/ rather than inline in tasks/main.yml because more than one assert
+# needs them: task `vars:` are scoped to their own task, so a second task
+# wanting the same list has no way to reach the first one's copy and has to
+# restate the expression. Two byte-identical expressions in one file is the
+# shape a check silently drifts out of — someone adds `address_v6` to one
+# and not the other, and the assert that was not updated keeps passing on a
+# narrower list than it claims to cover.
+#
+# vars/ and not defaults/ for the reason roles/pbs/vars/main.yml gives: role
+# vars outrank inventory, so nothing in group_vars can override the list a
+# safety check reads while leaving the check itself in place. These are
+# derived facts about wireguard_instances, not tuning knobs.
+#
+# They resolve lazily, so referring to wireguard_instances — which lives in
+# inventory/group_vars/all.yml and is itself built from config/lab.yml — is
+# fine here: nothing is evaluated until an assert dereferences it.
+
+# v4 and v6 in one list: the two families can never collide with each other,
+# so uniqueness over the concatenation says exactly what checking them
+# separately would, in one expression.
+wireguard_all_peer_addresses: "{{ (wireguard_instances | map(attribute='peers') | flatten | map(attribute='address') | list) + (wireguard_instances | map(attribute='peers') | flatten | map(attribute='address_v6', default='') | select | list) }}"
+
+wireguard_all_peer_names: "{{ wireguard_instances | map(attribute='peers') | flatten | map(attribute='name') | list }}"
+
+wireguard_all_peer_public_keys: "{{ wireguard_instances | map(attribute='peers') | flatten | map(attribute='public_key') | list }}"

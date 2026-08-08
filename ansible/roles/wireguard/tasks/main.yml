@@ -1,26 +1,143 @@
 ---
-# WireGuard management-plane tunnel on the Proxmox host. The host private
-# key is generated in place on first run and never leaves it — see the
-# "Read the host private key back" task below for why that's safe despite
-# needing the value to render wg0.conf.
+# WireGuard on the Proxmox host. Every entry in wireguard_instances
+# (inventory/group_vars/all.yml) becomes one wg-quick interface: its own
+# config, its own systemd unit, its own key pair — generated in place on
+# first run and never leaving the box, see the "Read each instance's
+# private key back" task below for why that's safe despite needing the
+# value to render the config.
+#
+# One key pair per interface rather than one shared host key: the private
+# key is what decrypts that interface's traffic, so an incident confined to
+# one tunnel's key (a bad restore of its .conf, a wrongly-shared file) must
+# not hand over the other tunnels with it.
 
-- name: Assert every peer owns exactly one unique /32
+- name: Assert every peer owns one unique host address inside its instance's subnet
   # Cheap guard for a failure mode WireGuard itself reports nowhere: a
   # prefix belongs to exactly one peer, so two peers claiming overlapping
   # AllowedIPs is not an error — the last one configured silently takes the
-  # prefix and the earlier peer stops receiving traffic. A wider-than-/32
+  # prefix and the earlier peer stops receiving traffic. A wider-than-host
   # entry is the same class of mistake (it's the client's route list pasted
   # into the server's anti-spoof filter). See group_vars/all.yml.
+  #
+  # Containment in `subnet` is checked, not merely described. This is the
+  # one assertion here that is a security control rather than a
+  # foot-gun guard: infra/tofu/locals.tf builds the `+mgmt` ipset from
+  # network.wireguard_subnet, and infra/tofu/firewall.tf matches it as a
+  # pure source CIDR with no interface term, so it authorises by address
+  # alone. A peer of some *other* instance addressed by mistake into
+  # 10.10.20.0/24 would therefore be inside `+mgmt`, and its packets to the
+  # host land on the host's own INPUT chain — not the forward chain where
+  # per-interface isolation rules live — handing it SSH, the PVE API, PBS
+  # and the k8s API. Every other check below can only cost a peer its
+  # connectivity; this one is what keeps that from being reachable at all,
+  # and it is checked against the very CIDR the ipset is built from.
+  #
+  # `ansible.utils.in_network` (requirements.yml) rather than hand-rolled
+  # prefix arithmetic: it is a *test* plugin, and this collection's tests
+  # run on Python's stdlib `ipaddress` — only its ipaddr-family *filters*
+  # need the `netaddr` pip package, which the apply workflow's bare
+  # ansible-core venv does not install. It also fails closed, returning
+  # False for a malformed address or a v4/v6 family mismatch rather than
+  # raising, so garbage is rejected by the same count comparison.
+  #
+  # `address_v6` gets the identical treatment one prefix length up, and is
+  # optional per peer — the v6 checks run over only the peers that declare
+  # one, so an instance with no IPv6 has an empty list and passes
+  # trivially. Optional rather than required because adding a v6 address to
+  # a peer that has no use for one is a config change to a live interface,
+  # which restarts it. The v4 and v6 halves are separate keys rather than
+  # one comma-joined string precisely so both can be validated: a single
+  # `address` holding "10.10.30.2/32, fd00:10:30::2/128" can be tested for
+  # neither prefix length nor containment without re-parsing it here.
+  #
+  # The prefix-length patterns are anchored at both ends on purpose. A
+  # trailing-match-only pattern accepts a comma-joined pair whose *last*
+  # element happens to be a /32 while reporting it as "a single /32".
   ansible.builtin.assert:
     that:
-      - wireguard_peers | map(attribute='address') | select('match', '.*/32$') | list | length == wireguard_peers | length
-      - wireguard_peers | map(attribute='address') | unique | length == wireguard_peers | length
+      - wireguard_instance_peer_addresses | select('match', '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/32$') | list | length == wireguard_instance_peer_addresses | length
+      - wireguard_instance_peer_addresses | unique | length == wireguard_instance_peer_addresses | length
+      - wireguard_instance_peer_addresses | select('ansible.utils.in_network', item.subnet) | list | length == wireguard_instance_peer_addresses | length
+      - wireguard_instance_own_address | select('ansible.utils.in_network', item.subnet) | list | length == 1
+      - wireguard_instance_peer_addresses_v6 | select('match', '^[0-9a-fA-F:]+/128$') | list | length == wireguard_instance_peer_addresses_v6 | length
+      - wireguard_instance_peer_addresses_v6 | unique | length == wireguard_instance_peer_addresses_v6 | length
+      - wireguard_instance_peer_addresses_v6 | select('ansible.utils.in_network', item.subnet_v6 | default('')) | list | length == wireguard_instance_peer_addresses_v6 | length
+      - wireguard_instance_own_address_v6 | select('ansible.utils.in_network', item.subnet_v6 | default('')) | list | length == wireguard_instance_own_address_v6 | length
     fail_msg: >-
-      Every entry in wireguard_peers must declare a unique `address` that is
-      a single /32 inside {{ network.wireguard_subnet }} — one host address
-      per peer, no subnets, no duplicates. Got:
-      {{ wireguard_peers | map(attribute='address') | list }}
-    success_msg: Peer addresses are unique /32s.
+      {{ item.name }}: every entry in `peers` must declare an `address` that
+      is a single /32, unique, and inside this interface's own
+      {{ item.subnet }} — one host address per peer, no subnets, no
+      duplicates, nothing borrowed from another interface's subnet — and,
+      where it declares one at all, an `address_v6` that is a single /128
+      inside this interface's `subnet_v6`
+      {{ item.subnet_v6 | default('(undeclared: this interface has no IPv6, so no peer of it may take an address_v6)') }}.
+      The interface's own `address` {{ item.address }} must sit in the same
+      subnet. Got:
+      {{ wireguard_instance_peer_addresses }} and
+      {{ wireguard_instance_peer_addresses_v6 }}.
+    success_msg: >-
+      {{ item.name }}: peer addresses are unique host addresses inside
+      {{ item.subnet }}{{ ' and ' ~ item.subnet_v6 if item.subnet_v6 is defined else '' }}.
+  vars:
+    wireguard_instance_peer_addresses: "{{ item.peers | map(attribute='address') | list }}"
+    wireguard_instance_peer_addresses_v6: "{{ item.peers | map(attribute='address_v6', default='') | select | list }}"
+    # in_network reads its left operand as a network, and a host address
+    # carrying a subnet prefix (10.10.20.1/24) is not one — it has host bits
+    # set, so ip_network() rejects it. Strip the prefix and the bare address
+    # is a /32 (or /128) of its own. Single-element lists so the v6 case,
+    # which may be absent, needs no separate `when`.
+    wireguard_instance_own_address: "{{ [item.address | regex_replace('/.*$', '')] }}"
+    wireguard_instance_own_address_v6: "{{ [item.address_v6 | default('') | regex_replace('/.*$', '')] | select | list }}"
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+  run_once: true
+
+- name: Assert nothing is claimed by two instances at once
+  # The assert above is blind to its siblings, and each of these four
+  # collisions is silent in its own way:
+  #   - two instances sharing a `name` render to the same
+  #     /etc/wireguard/<name>.conf and drive the same wg-quick unit, so the
+  #     later entry simply overwrites the earlier one's interface.
+  #   - a peer address repeated across instances gives the host two routes
+  #     to one /32 on two different interfaces; which one wins the return
+  #     path is then a routing-table detail, and the per-interface source
+  #     filtering that isolation between instances rests on stops meaning
+  #     anything.
+  #   - a peer `name` is the lookup key into wireguard_peer_psks
+  #     (group_vars/proxmox_host.sops.yml), one flat map with no notion of
+  #     which interface a peer belongs to — so a duplicate name silently
+  #     issues the same preshared key to two different peers, which is the
+  #     one thing a PSK exists to prevent.
+  #   - a peer `public_key` repeated is the one collision WireGuard resolves
+  #     itself, and destructively: the public key IS a peer's identity to
+  #     `wg`, so two [Peer] blocks sharing one inside a single config are
+  #     merged and the later block's AllowedIPs simply replace the earlier
+  #     block's, leaving one of the two peers unreachable with nothing
+  #     logged. Across two instances there is no merge and no error at all —
+  #     both interfaces accept the same key, and the holder of that one
+  #     private key gets whatever the more privileged of the two tunnels
+  #     grants. For wg0 and wg1 that is the difference between the `+mgmt`
+  #     ipset and a guest exit, so a key pasted into both lists hands a guest
+  #     the management tunnel. Uniqueness here is not a deduplication tidy-up.
+  ansible.builtin.assert:
+    that:
+      - wireguard_instances | map(attribute='name') | unique | length == wireguard_instances | length
+      - wireguard_all_peer_addresses | unique | length == wireguard_all_peer_addresses | length
+      - wireguard_all_peer_names | unique | length == wireguard_all_peer_names | length
+      - wireguard_all_peer_public_keys | unique | length == wireguard_all_peer_public_keys | length
+    fail_msg: >-
+      Interface names, peer addresses, peer names and peer public keys must
+      each be unique across the whole of wireguard_instances. Got interfaces
+      {{ wireguard_instances | map(attribute='name') | list }}, peer
+      addresses {{ wireguard_all_peer_addresses }}, peer names
+      {{ wireguard_all_peer_names }}. The keys themselves are deliberately
+      not echoed: this message is printed by an assert that only fires when
+      a `public_key` value is wrong, and one way for it to be wrong is to
+      hold a PRIVATE key someone pasted from the wrong file — which CI would
+      then publish into its job summary. Compare the `public_key` values in
+      `wireguard_peers` and `wireguard_exit_peers` by hand instead.
+    success_msg: No interface name, peer address, peer name or peer public key is shared between instances.
   run_once: true
 
 - name: Install wireguard-tools
@@ -46,49 +163,94 @@
     group: root
     mode: "0700"
 
-- name: Generate the host's WireGuard private key (once, ever — idempotent)
+- name: Generate each instance's private key (once, ever — idempotent)
   ansible.builtin.shell: |
     set -euo pipefail
     umask 077
-    wg genkey > {{ wireguard_private_key_path }}
+    wg genkey > {{ wireguard_key_dir }}/{{ item.name }}.key
   args:
-    creates: "{{ wireguard_private_key_path }}"
+    creates: "{{ wireguard_key_dir }}/{{ item.name }}.key"
     executable: /bin/bash
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Lock down the private key file permissions
   ansible.builtin.file:
-    path: "{{ wireguard_private_key_path }}"
+    path: "{{ wireguard_key_dir }}/{{ item.name }}.key"
     owner: root
     group: root
     mode: "0600"
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: Read the host private key back
-  # This value only ever exists in this run's in-memory facts on the
+- name: Read each instance's private key back
+  # These values only ever exist in this run's in-memory facts on the
   # controller — never written to the controller's disk, never committed.
-  # It's needed here purely to render wg0.conf below (wg-quick's config
-  # format takes PrivateKey as a literal, not a file reference).
+  # They're needed here purely to render the configs below (wg-quick's
+  # config format takes PrivateKey as a literal, not a file reference).
   ansible.builtin.slurp:
-    src: "{{ wireguard_private_key_path }}"
+    src: "{{ wireguard_key_dir }}/{{ item.name }}.key"
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
   register: wireguard_private_key_slurp
   no_log: true
 
-- name: Derive the host's public key
+- name: Index the private keys by interface name
+  # Everything below loops over wireguard_instances directly, so it needs
+  # each key by interface name rather than by position in the slurp
+  # results. Pairing two loops by list index is the kind of thing that
+  # keeps "working" after someone reorders wireguard_instances, only now
+  # writing one interface's key into another's config.
+  ansible.builtin.set_fact:
+    wireguard_private_keys: "{{ wireguard_private_keys | default({}) | combine({item.item.name: item.content | b64decode}) }}"
+  loop: "{{ wireguard_private_key_slurp.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  no_log: true
+
+- name: Derive each instance's public key
   ansible.builtin.command: wg pubkey
   args:
-    stdin: "{{ wireguard_private_key_slurp.content | b64decode }}"
+    stdin: "{{ wireguard_private_keys[item.name] }}"
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
   register: wireguard_pubkey_result
   changed_when: false
   no_log: true
 
-- name: Show the host's WireGuard public key
+- name: Show each instance's WireGuard public key
+  # Loops the results rather than wireguard_instances so the key and the
+  # interface it belongs to come out of the same record. The `label` is not
+  # cosmetic: these results carry the module invocation, whose stdin was
+  # the *private* key, so nothing here may print a bare `item`.
   ansible.builtin.debug:
     msg: >-
-      Host WireGuard public key: {{ wireguard_pubkey_result.stdout }}
+      {{ item.item.name }} host WireGuard public key: {{ item.stdout }}
       — give this to peers configuring their own client tunnel.
+  loop: "{{ wireguard_pubkey_result.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
-- name: Render wg0.conf
+- name: Render wg0.conf and every other instance's config
+  # This name opens with the exact string `Render wg0.conf` on purpose, and
+  # that prefix is load-bearing rather than a leftover: every file this task
+  # renders carries a comment citing it (templates/wg.conf.j2's `Table =
+  # off` line), so an operator grepping the role from the box has to keep
+  # landing here. The citation is *file content* — rewording it changes
+  # wg0.conf's own bytes, which re-renders and bounces the management tunnel
+  # on a host with no console — so the reference is kept true from this end
+  # instead, by only ever extending the name to the right.
+  #
   # The rendered file embeds the private key (and any peer PresharedKey) —
-  # no_log so --diff can't leak either.
+  # no_log so --diff can't leak either, plus `diff: false` so that the
+  # result registered below cannot carry the rendered content in the first
+  # place: CI applies with --diff and pastes the run's output into the job
+  # summary, and a later task that failed while looping these results would
+  # print the item that holds it.
   #
   # The template sets `Table = off`. What originally forced that: peers used
   # to carry the *client's* route list (wireguard_subnet + internal_subnet)
@@ -98,24 +260,55 @@
   # vmbr1, which fails with RTNETLINK "File exists" and takes the whole
   # wg-quick@wg0 unit down with it. Peers are now scoped to their own /32
   # (group_vars/all.yml), so that collision is gone and Table = auto would
-  # work — but this stays off deliberately: nothing needs it (the
-  # wireguard_subnet route comes free from the interface's own Address, and
-  # every peer /32 falls inside it), and on a box with no console, fewer
-  # route mutations per restart is the safer default. Table = off only
-  # disables wg-quick's own `ip route add` side effects; WireGuard's
-  # AllowedIPs-based crypto-routing and anti-spoof source filtering are set
-  # unconditionally via `wg set` either way.
+  # work — but this stays off deliberately: nothing needs it (an interface's
+  # own subnet route comes free from its Address, and every peer /32 falls
+  # inside it), and on a box with no console, fewer route mutations per
+  # restart is the safer default. Table = off only disables wg-quick's own
+  # `ip route add` side effects; WireGuard's AllowedIPs-based crypto-routing
+  # and anti-spoof source filtering are set unconditionally via `wg set`
+  # either way.
   ansible.builtin.template:
-    src: wg0.conf.j2
-    dest: "{{ wireguard_key_dir }}/{{ wireguard_interface }}.conf"
+    src: wg.conf.j2
+    dest: "{{ wireguard_key_dir }}/{{ item.name }}.conf"
     owner: root
     group: root
     mode: "0600"
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: wireguard_config
+  diff: false
   no_log: true
-  notify: Restart wireguard
 
 - name: Enable and start wg-quick
   ansible.builtin.systemd:
-    name: "wg-quick@{{ wireguard_interface }}"
+    name: "wg-quick@{{ item.name }}"
     enabled: true
     state: started
+  loop: "{{ wireguard_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Restart only the interfaces whose config actually changed
+  # Deliberately not a handler, which is what this used to be. Ansible
+  # dedupes handlers by name, so one "Restart wireguard" handler with the
+  # interface templated into its unit name collapses to a single
+  # notification however many instances notify it: it fires once, for
+  # whichever interface won the variable, and leaves the other running its
+  # old config. Naming a handler per interface only moves the problem into
+  # hand-writing one handler per instance.
+  #
+  # Gating on each render's own `changed` keeps the blast radius to exactly
+  # the interface whose file moved. That is the whole point: wg0 is the
+  # only route to SSH and the PVE API on a host with no IPMI, so adding or
+  # editing another instance must not be able to bounce it. What this gives
+  # up versus a handler is end-of-play batching, worth nothing here — there
+  # is one notifier, and restarting a tunnel the moment its config lands is
+  # if anything the more predictable ordering.
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ item.item.name }}"
+    state: restarted
+  loop: "{{ wireguard_config.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.changed
