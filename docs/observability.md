@@ -492,18 +492,30 @@ already cover.
 
 | Alert | Sev | Fires when | First response |
 |---|---|---|---|
-| `MoneymanStale` | warning | `kube_cronjob_status_last_successful_time` for `finance/moneyman` is over 36 h old and the CronJob is not suspended, for 1h | `kubectl -n finance get cronjob moneyman` and `kubectl -n finance get jobs,pods`. Usual causes are a Pod that cannot start and a run skipped because the previous one was still running. ⚠ **This firing means the job stopped running, and its not firing does not mean the data is current** — see below. [`runbooks/finance.md`](runbooks/finance.md). |
+| `MoneymanStale` | warning | `kube_cronjob_status_last_successful_time` for `finance/moneyman` is over 36 h old and the CronJob has not been suspended at any point in those 36 h, for 1h | `kubectl -n finance get cronjob moneyman` and `kubectl -n finance get jobs,pods`. Usual causes are a Pod that cannot start and a run skipped because the previous one was still running. ⚠ **This firing means the job stopped running, and its not firing does not mean the data is current** — see below. [`runbooks/finance.md`](runbooks/finance.md). |
 
-Two silences are deliberate and neither is a gap. Before the first-ever
-successful run kube-state-metrics publishes no
+Three silences are deliberate and none of them is a gap. Before the
+first-ever successful run kube-state-metrics publishes no
 `kube_cronjob_status_last_successful_time` series at all, so the rule cannot
-fire during the operator bootstrap — which is also why it is safe to merge
-ahead of the CronJob it names. And a CronJob suspended on purpose is
-excluded by an `unless on (namespace, cronjob)`, written with an explicit
-matching key rather than bare because a bare `unless` compares the *full*
-label set of both sides: the two metrics agree on every label today, and
-one extra label on either would silently drop the suppression and alert
-every night through a deliberate suspension.
+fire during the operator bootstrap — which is also why the rule itself is
+inert if it reaches the cluster ahead of the CronJob it names. A CronJob
+suspended on purpose is excluded. And so are the 36 hours after a suspension
+is *lifted*, which is the one that is not obvious: the last-success timestamp
+is frozen for as long as a CronJob is suspended, so a suppression that only
+asked "is it suspended right now" would stop suppressing the instant the
+operator resumed it, with the left side already days past the threshold —
+a page, and then up to a day of paging until the next 04:30 run, every time
+a bank password rotation or a holiday pause ended. The suppression is
+therefore `max_over_time(kube_cronjob_spec_suspend[36h]) == 1`, which gives a
+resumed CronJob exactly the grace a brand-new one gets and nothing more: a
+resume that genuinely fails to run still pages, 37 h later rather than 1 h
+later.
+
+The `unless` carries an explicit `on (namespace, cronjob)` rather than the
+bare form the plan drafted, because a bare `unless` compares the *full* label
+set of both sides: the two metrics agree on every label today, and one extra
+label on either would silently drop the suppression and alert every night
+through a deliberate suspension.
 
 An individually failed Job is **not** this rule's job and deliberately has
 none of its own — the chart's `KubeJobFailed` (15 m) and
