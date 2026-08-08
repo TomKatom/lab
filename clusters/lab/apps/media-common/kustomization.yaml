@@ -1,7 +1,7 @@
 # Rendered by the ksops-patched Argo repo-server (Phase 4) — `kustomize build`
 # here needs `--enable-alpha-plugins --enable-exec` plus the age key, which is
 # why CI skips this directory (see ../../platform/README.md "Pre-merge review").
-# It is the only directory under apps/ that CI skips.
+# It and ../finance-common are the two directories under apps/ that CI skips.
 #
 # No `namespace:` transformer: every resource here already carries its own.
 apiVersion: kustomize.config.k8s.io/v1beta1

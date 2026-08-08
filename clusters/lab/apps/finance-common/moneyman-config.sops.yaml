@@ -1,0 +1,77 @@
+# moneyman's entire configuration, age-encrypted, because there is no smaller
+# unit to encrypt: moneyman reads one JSON document out of `MONEYMAN_CONFIG`
+# (JSONC — comments and trailing commas are legal inside the value) and falls
+# back to `MONEYMAN_CONFIG_PATH`, and offers no per-setting environment form
+# at all. Verified in `src/config.ts` at the release this stack pins,
+# `v2026.07.18.1`. So the two bank logins, the Actual server password and the
+# non-secret scraping knobs all live in this one value together.
+#
+# Committed with placeholders. The operator fills it with
+# `sops clusters/lab/apps/finance-common/moneyman-config.sops.yaml` per
+# docs/runbooks/finance.md, and ./moneyman-config.sops.yaml.example is the
+# plaintext, reviewable copy of the shape — read that one to understand what
+# each key is for; this file exists to hold the values.
+#
+# ⚠ `MONEYMAN_CONFIG` must stay a *block scalar* (`|`) through every sops
+# edit. That is what makes it re-encrypt as `type:str`, and a string is what
+# `stringData` is (map[string]string). Retyped as a flow scalar it may still
+# encrypt fine and then fail only at Argo sync time with "cannot unmarshal
+# ... into Go struct field Secret.stringData of type string", leaving every
+# other resource in the overlay applied and just this Secret missing — the
+# failure #54 hit on ../media-common/telegram.sops.yaml. CI greps every
+# clusters/**/*.sops.yaml for values that are not `type:str`, so it fails at
+# PR time instead; the block scalar here was encrypted and re-checked against
+# that grep at authoring time and came back clean.
+#
+# ⚠ `storage.actual.serverUrl` inside this blob is
+# `http://actual.finance.svc.cluster.local:5006` — the in-cluster Service DNS
+# of ../actual.yaml, deliberately not `budget.tomkatom.com`. Authelia's
+# forwardAuth is a Traefik middleware annotation on the *Ingress*, so it gates
+# the public hostname and says nothing about traffic to the ClusterIP; going
+# in-cluster skips a round trip through Traefik and a session moneyman has no
+# way to hold. The name `actual` and the port `5006` were verified by
+# rendering ../actual.yaml's chart values with app-template 5.0.1, and hold
+# only while that manifest declares exactly one entry under `service:` — a
+# second one renames the Service `actual-app` and this URL silently stops
+# resolving. Nothing checks that: unlike ../media-common/media-urls.yaml,
+# which exists precisely so a cluster-internal address is written down once
+# and diffably, this one is un-reviewable ciphertext. A PR that changes
+# Actual's Service name or port therefore has to carry a `sops` edit of this
+# file in the same commit.
+#
+# ⚠ `options.scraping.transactionHashType` must stay `"moneyman"`, and must
+# never be changed after the first import. It is what makes re-scraping a
+# `daysBack` window that overlaps yesterday's a no-op: at that setting the
+# Actual exporter sets `imported_id` to a hash of the transaction's stable
+# `uniqueId` (`src/bot/storage/actual.ts` at the pinned tag), and Actual
+# matches incoming rows on `imported_id` per account before inserting
+# (`packages/loot-core/src/server/accounts/sync.ts` at v26.8.1). Under the
+# upstream default `""` the id is instead a hash of description, memo and a
+# minute-rounded date, all of which drift on Isracard as merchant strings
+# settle — every drift mints a new id and therefore a duplicate. moneyman
+# logs a warning about this on every run, and upstream states the default
+# will flip in a future release; setting it explicitly is what makes an image
+# bump safe. ../moneyman.yaml's header refers back to this paragraph.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: moneyman-config
+    namespace: finance
+type: Opaque
+stringData:
+    MONEYMAN_CONFIG: ENC[AES256_GCM,data:yXQ0vKRSPPZm8eNp0Ho+wmJcO7NVD+h5vht/5JbXXNIEKpke4OVvD6SqhmcTrwdX/ihbXetvI01slmlEFfwGWSTOxxQravE2kTFiFwfznWB0bWOnpU9q5IwWG2q8I4Kd/Tq1GSNPEy+pIA0HeTJwdV4wMVvp7ZlR7/GDFgddap5jd57BBQnHhZCteVVRVgSGmIYEZnQxvxIETygqpbudJkIc6PHfr3N01+yXEuOo35U2lcIYmmA8kEKwmRgP6AHl2+VTpETE+4V2a7iUAoVH4YEuGWcklVy9+kovJDyBe/lP9pgLen8TPY6ksrQYCDlz/881zHQdbPhT4/c+dSvSd0N6PN5Tj1bsUZI2sXX+L3S7C4eN7ZkVRCRNs4FJp6+pc0NLUHTAJNfZ/pE0DIiP+286Lacwsjo+q5sIN5y23ROlFO6a8mGmS4ymlX5a5mEmL3ufkNAXoDx6AE7uN3GJ0jphuo0pUDCYoSvW54tqGvb+SVaKWssbpTgIrkby3neys6rYADg7kiaioHdj27tugWOaWglwMxXN7GSDPUux++xJqY7n1KIOP1HnKSBccvBHAiZohUuujbfgIn13GoibwRI7Hg8AzbXiYKDKBd0IHvovp/OoCQu6MOh6vJ1GLvzyDZRyyjoxp5apFIfqFn3TDoI8DYlIwtyFeJSDAau5m8OmHCssyyTnWHv7zNFbe1Gvr1WhkrOWumOwLlTDeY91uuV4074/onpy5/TA5tE7PumuHEhy0QMU3+zKKhAlPtBRqmFBHrYLorCHrbnyUfd3z1eWCtnVd1cxf7j2WB5RjP/0Ee8rKDIsB8mFu8o7B4z7zZUVjyHHksDQ0bGKapFQBJELnHfpwwJKpNOwxPAurIUgGdnZxgsYW2FF8koRVIx0VF4ODRVz8h5eoFsoDAhithDjESn7,iv:u9AxmIKhgqMyzsTDNDvanvLUNieZZPDseuopHGkBRL0=,tag:r3UdepuXanNPrBmpgrimBw==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBRWi9xMitTOGRaZVlnNW54
+            R0JhS29xWjRIaWdhb1E1UHZsSmtmdVlQdUEwCkwxVEtjSHZBNGxXNHQ2TGxXaXdl
+            Qy9RQkR4aUtCa1h4NktlWG5IV3RJZncKLS0tIC9MVzl3NVowNG1hVFJTdDNrcjds
+            MUFTUWZHYlJOUnMrOXdHbjg4K05hQU0KmuqLdkRsj3j/Rj9ylMaJEYzm/bxZAjvc
+            SCzjAIbOwcFkTl6ISJ6csrp9lruUEqDKS34DEeqCtEdbPK5cT2qd0g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1vp0uflxu3ggmy0szdzhk555dwxpjsv86twxz95d2xcy5wc70h3mq4jr7lc
+    encrypted_regex: ^(data|stringData)$
+    lastmodified: "2026-08-08T16:40:01Z"
+    mac: ENC[AES256_GCM,data:kPX1dG/9aRW7fzAhdoE/QTscQfNAoEmq7FdlHDUTpyeiYSkxvss/IKHJOFfyzLD/E8B6zt8/a1it0pRX/CmIFYR8nf5LsDRXq6d7aBpKy0JXUL8f0TBaWgS22FUAz0kBt5x/Nxze3livOMc4gRad/zAJWMOJGsBrw034GsgVgGg=,iv:Ib6fVhxC1l18eXjg3ge3jpIHo1m/QigdBbPI4uVPLN0=,tag:5NyX4ZYtpcuHBce6b2n3xg==,type:str]
+    version: 3.13.2

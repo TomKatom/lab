@@ -68,6 +68,26 @@ from the `traefik` namespace only, egress to DNS only. Read its comment block
 before changing anything about how that app authenticates, because the app
 trusts a header and the policy is the only reason that is safe.
 
+## The `finance` namespace
+
+`actual` and `moneyman` are the other two Applications here outside `media`,
+and the first half of the argument is the same as `share`'s: neither consumes
+a `media-common` Secret, so the re-encryption cost that keeps the media stack
+in one namespace is never charged against them. The second half runs the other
+way round. `filebrowser` got its own namespace because of what it *is* — a
+process reachable with no session, which must not also be able to read the
+media Secrets. `finance` gets one because of what it *holds*:
+`moneyman-config` carries two real bank logins and the Actual server password,
+and a namespace is the cheapest way to say that a compromised *arr has no path
+to them. It is created by
+[`finance-common.yaml`](finance-common.yaml) at wave `"0"` under the same
+first-syncer rule.
+
+The same caveat applies as above — this is a Secret boundary and nothing more.
+There is no NetworkPolicy here, because the thing that made one necessary next
+door was FileBrowser's unauthenticated `/public` routes, and nothing in
+`finance` serves a route Authelia does not gate.
+
 ## Identity: everything runs as 1000:1000
 
 `1000:1000` is the `debian` user on the underlying VM, and the owner of
@@ -233,7 +253,8 @@ key) — one file per app holds host, Service and port together, and the
 widened CI render step (see below) renders and validates it exactly like
 the rest of the values. A `-config` dir only exists where there's
 multi-file plain config with nothing to do with a chart's own resources
-(`recyclarr`, `homepage`) or a ksops Secret to decrypt (`media-common`) —
+(`recyclarr`, `homepage`) or a ksops Secret to decrypt (`media-common`,
+`finance-common`) —
 see "Sync waves" and "Kustomize `-config` dirs" below.
 
 House Ingress style is unchanged from `platform/` (see
@@ -438,13 +459,18 @@ deferred to Phase 8.
   carries `syncOptions: [CreateNamespace=true]` — the same first-syncer
   rule `authelia-config.yaml` follows for the `authelia` namespace. Every
   other app's Secret/ConfigMap consumption assumes it already exists.
-- **`filebrowser-config` — wave `"0"`.** The same rule for the *other*
+- **`filebrowser-config` — wave `"0"`.** The same rule for the second
   namespace this directory owns: it is the only Application carrying
   `CreateNamespace=true` for `share`, and its NetworkPolicy has to exist
   before the pod it constrains starts listening.
+- **`finance-common` — wave `"0"`.** And again for the third: the only
+  Application carrying `CreateNamespace=true` for `finance`, and the one that
+  decrypts `moneyman-config`, which `moneyman` reads in full and cannot start
+  without.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`, `filebrowser`),
+  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`, `filebrowser`,
+  `actual`, `moneyman`),
   together with `recyclarr-config`'s and `homepage-config`'s own
   kustomize-source Applications. The two exporters share the wave with the apps they scrape
   rather than trailing them: neither probes its target at startup, so a
@@ -488,10 +514,11 @@ only exists where there's:
   the namespace anyway, so the overlay is the only home for it. Note what is
   *not* in there: FileBrowser's `config.yaml` stays in the chart Application's
   `configMaps:` precisely because of the drift window below.
-- **A ksops Secret to decrypt** — `media-common`, the one directory in
-  this stack that CI's kustomize step deliberately skips building (no
-  `SOPS_AGE_KEY` in that job), the same way every platform `-config`
-  overlay with a `.sops.yaml` file is skipped.
+- **A ksops Secret to decrypt** — `media-common` and `finance-common`, the
+  two directories in this stack that CI's kustomize step deliberately skips
+  building (no `SOPS_AGE_KEY` in that job), the same way every platform
+  `-config` overlay with a `.sops.yaml` file is skipped. `finance-common` is
+  the pure case: it has no `resources:` at all, only the generator.
 
 What splitting the config out costs, in both cases: app-template only
 stamps its `checksum/configMaps` pod annotation — the thing that rolls a
