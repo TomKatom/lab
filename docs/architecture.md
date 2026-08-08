@@ -431,6 +431,16 @@ Each phase is its own PR. Full detail and current status in
     Design: [`docs/networking.md`](networking.md#wireguard-guest-exit-plane).
     Procedure:
     [`docs/runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md).
+11. **Personal finance** — Actual Budget on `budget.tomkatom.com` and a
+    nightly `moneyman` CronJob that scrapes Bank Hapoalim and Isracard into
+    it, both in a `finance` namespace of their own. The namespace is a
+    Secret boundary and nothing else: `moneyman-config` holds two real bank
+    logins, and no *arr has a path to them. It ships inert — the credential
+    blob is a template and the CronJob is merged suspended — because a run
+    against placeholders would fail nightly. The scraper exits `0` whatever
+    happens, so a Succeeded Job proves nothing and staleness, not failure,
+    is what `MoneymanStale` watches. Procedure:
+    [`docs/runbooks/finance.md`](runbooks/finance.md).
 
 ## Verification
 
