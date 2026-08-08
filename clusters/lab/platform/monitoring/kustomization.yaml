@@ -12,7 +12,7 @@ kind: Kustomization
 generators:
   - secret-generator.yaml
 
-# Everything this overlay applies that is not a Secret. The five
+# Everything this overlay applies that is not a Secret. The six
 # PrometheusRules and the six ConfigMaps are plain objects with no kustomize
 # transformation of any kind — `loki-rules` and all five dashboards in
 # particular must keep their exact names and labels, because ../loki.yaml mounts
@@ -31,6 +31,7 @@ resources:
   - rules-media.yaml
   - rules-backups.yaml
   - rules-wireguard.yaml
+  - rules-finance.yaml
   - loki-rules.yaml
   - dashboard-node-exporter-full.yaml
   - dashboard-media.yaml

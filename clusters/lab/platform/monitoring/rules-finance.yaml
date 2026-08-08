@@ -1,0 +1,184 @@
+# Alert rules for the finance stack: one rule, watching the nightly moneyman
+# CronJob that scrapes Bank Hapoalim and Isracard into Actual Budget. Actual
+# itself gets nothing here on purpose — it is one container behind a
+# Deployment on a PVC, and the chart's own KubePodCrashLooping,
+# KubePodNotReady and KubePersistentVolumeFillingUp already say everything a
+# hand-written rule could about that shape.
+#
+# Neither series below comes from anything the `finance` namespace runs.
+# There is no exporter and no ServiceMonitor in that namespace; both come
+# from kube-state-metrics. Verified at authoring time by rendering
+# ../kube-prometheus-stack.yaml's own valuesObject at the pinned chart
+# 88.1.4: kube-state-metrics v2.19.1, started with
+# `--resources=…,cronjobs,…` and with no --metric-allowlist, no
+# --metric-denylist, no --metric-labels-allowlist and no --namespaces
+# restriction, behind a ServiceMonitor carrying `honorLabels: true` — which
+# is the part that matters, because it is what stops the scrape target's own
+# namespace="monitoring" from overwriting the metric's namespace="finance".
+#
+# READ ./rules-pve-host.yaml's HEADER FIRST for the two properties this file
+# shares with every other rules file here and does not restate: there is no
+# `release: kube-prometheus-stack` label, and there are no angle brackets in
+# annotations.
+#
+# THE `unless` CARRIES AN EXPLICIT `on (namespace, cronjob)` AND THAT IS A
+# DELIBERATE DEVIATION FROM THE PLAN, which drafted it bare. `unless` matches
+# on the FULL label set of both sides, so a bare one is only correct while
+# the two metrics agree on every label they carry. They do today: the
+# kube-state-metrics v2.19.1 docs at that exact tag list
+# `kube_cronjob_status_last_successful_time` and `kube_cronjob_spec_suspend`
+# as STABLE with exactly `cronjob` and `namespace` and nothing else, and
+# since both come off the same scrape target through a ServiceMonitor with no
+# metricRelabelings they also share `job`, `instance`, `service`, `endpoint`,
+# `pod` and `container`. That agreement is a coincidence of today's
+# deployment rather than a property of the metrics, and losing it is silent:
+# `promtool test rules` was run over both forms at authoring time, and with
+# ONE extra label on the suspend series only (a `uid`, say) the bare form
+# fires all night on a deliberately suspended CronJob while the `on (…)` form
+# stays quiet. Both parse and both pass `promtool check rules`; only one is a
+# fact about the CronJob's identity rather than about how kube-state-metrics
+# happens to be labelled this week.
+#
+# THIS RULE IS DELIBERATELY SILENT IN THREE STATES AND NONE OF THEM IS A BUG.
+# Before the first-ever successful run, kube-state-metrics emits no
+# `kube_cronjob_status_last_successful_time` at all (it publishes the series
+# only once `.status.lastSuccessfulTime` is non-nil), so the left side is an
+# empty vector and stays one. That is what makes this rule safe to reach the
+# cluster ahead of the CronJob and safe to leave running through the operator
+# bootstrap, when ../../apps/moneyman.yaml ships `suspend: true` and there
+# has never been a success to be stale. The second state is suspension
+# itself, which is what the `unless` is for: a CronJob suspended on purpose
+# is not a CronJob that has stopped working. The third is the 36 hours after
+# a suspension is lifted, and it is why the suppression is written
+# `max_over_time(…[36h]) == 1` rather than the plain `== 1` the plan drafted.
+#
+# THAT THIRD STATE IS A REVIEW FINDING, NOT A FLOURISH.
+# `kube_cronjob_status_last_successful_time` is frozen for as long as a
+# CronJob is suspended — nothing runs, so nothing updates
+# `.status.lastSuccessfulTime` — so the left side of the `unless` is already
+# far past 36 h at the instant `kube_cronjob_spec_suspend` flips back to 0,
+# and a suppression that only asks "is it suspended right now" stops
+# suppressing in that same instant. A `promtool test rules` run against the
+# plan's form at authoring time confirmed the consequence rather than
+# reasoning about it: suspended for 72 h with the last success frozen at
+# t=0, the alert is silent at 71 h and FIRING at 75 h with the full warning
+# payload, and it stays up until the next 04:30 run succeeds — up to a day
+# of paging every time a deliberate pause ends, which is a bank password
+# rotation, an Isracard block being chased, or a holiday. Taking the maximum
+# over the same 36 h the threshold uses hands a resumed CronJob exactly the
+# grace a brand-new one gets: suppression ends 36 h after the last sample
+# that said "suspended" and `for: 1h` adds the usual hour, so a resume that
+# genuinely fails to run still pages, 37 h late instead of 1 h late. It also
+# subsumes the plain `== 1`, since a currently suspended CronJob is its own
+# window maximum, which is why this is one clause where the obvious fix is
+# two. Unit-tested at authoring time across the five scenarios that matter:
+# stale and never suspended fires at 38 h, stale while suspended is silent,
+# absent left side is silent, a divergent label set on the suspend series is
+# silent, and a 72 h suspension resumed at t=72 h is silent through 108 h and
+# fires at 109 h. Note this is NOT the PR-9.5 unsuspend, which was already
+# safe: before the first-ever success there is no left side at all.
+#
+# WHAT THIS ALERT CANNOT SEE, and the reason the description says so out
+# loud. moneyman calls `process.exit(0)` unconditionally after `run()`, and
+# both `run()` and `runScraper()` catch and merely log everything
+# (src/index.ts:34, :60-63, :66-73 at release v2026.07.18.1 — the source was
+# read at authoring time, the behaviour is not inferred from the README). A
+# month of failed Isracard logins therefore produces a month of *Succeeded*
+# Jobs, `kube_cronjob_status_last_successful_time` advances every night, and
+# this rule never fires. So it detects a CronJob that has stopped RUNNING —
+# a Pod that cannot pull or start, a run skipped because app-template 5.0.1
+# injects `startingDeadlineSeconds: 30` whether asked for or not, or
+# `concurrencyPolicy: Forbid` colliding with a still-running previous Job —
+# and it does not detect a scrape that ran and came back with nothing. The
+# plan's failure-mode table read this rule as the answer to "bank site
+# changes break the scraper"; it is not, and the gap is written up in
+# ../../../../docs/observability.md under "Deliberately not monitored"
+# rather than papered over with a rule that would read as proof somebody
+# checked. The honest cross-check is the one the runbook gives: transactions
+# actually appearing in Actual.
+#
+# NO BESPOKE FAILED-JOB RULE, because two of the chart's own already cover
+# that half and ../../../../docs/observability.md's "What the chart already
+# covers" forbids restating them. Both are live in the rendered chart:
+# `KubeJobFailed` (kube_job_failed > 0, for 15m, `namespace=~".*"`, so
+# `finance` is in scope) and `KubeJobNotCompleted` (an active Job past 12 h,
+# which ../../apps/moneyman.yaml's `activeDeadlineSeconds` keeps out of
+# reach). Neither auto-resolves: `failedJobsHistory: 3` keeps the failed Job
+# object around, so KubeJobFailed clears only when the operator deletes it or
+# three newer failures rotate it out. MoneymanStale is the one in this pair
+# that clears itself the moment a run succeeds, which is why it is worth
+# having alongside them rather than instead of them.
+#
+# ../../apps/moneyman.yaml IS ADDED BY A SIBLING PR AND MAY NOT EXIST YET.
+# Every reference to it above is forward-looking and this file is inert until
+# it lands: with no CronJob there is no series, and an empty vector on the
+# left of the `unless` is an empty result. That is the same absence that
+# keeps the rule quiet before the first success, so there is nothing extra to
+# do about the rule.
+#
+# THE DOCS HALF OF THIS CHANGE IS NOT ORDER-FREE, THOUGH, and an earlier
+# draft of this paragraph claimed it was. The same sibling PR adds
+# docs/runbooks/finance.md, which the description below names and which
+# ../../../../docs/observability.md links twice in this change. Merged ahead
+# of that PR they are two rendered 404s and a paged operator sent to a file
+# that is not there. So: the moneyman PR first, this one second. Nothing
+# enforces that beyond this sentence and the pull request body.
+#
+# `cronjob="moneyman"` and `namespace="finance"` are hand-copied from that
+# Application's release name and destination, and nothing checks the two
+# agree — the same trap ./rules-pve-host.yaml records for its textfile
+# metrics. Rename it and this rule keeps evaluating, keeps matching nothing,
+# and reports no error of any kind.
+#
+# There is no homepage entry for any of this and moneyman's own Telegram
+# notifier stays off. Alerting rides the existing
+# Prometheus-Alertmanager-Telegram path that every other rule in this
+# directory uses, so the bot token keeps exactly two SOPS homes
+# (./alertmanager-config.sops.yaml and ../../apps/media-common/telegram.sops.yaml)
+# instead of a third inside an encrypted blob nobody can diff.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: finance
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: finance
+spec:
+  groups:
+    - name: finance
+      rules:
+        # 36 h, not 24 h, so a single missed or skipped night is not an
+        # alert; and `for: 1h` on top of it means the first notification
+        # lands about 37 h after the last success, by which time the run
+        # after next has also been missed. Both are intentional - the thing
+        # this watches runs once a day against two bank websites, and a
+        # scrape that is a few hours late is not a fault worth waking
+        # anyone for. The `[36h]` on the suppression is the same number for
+        # the same reason: a CronJob just resumed from a suspension gets the
+        # grace a CronJob that has never run gets, and no more.
+        - alert: MoneymanStale
+          expr: |-
+            (
+              time() - kube_cronjob_status_last_successful_time{namespace="finance", cronjob="moneyman"} > 36 * 3600
+            )
+            unless on (namespace, cronjob)
+            max_over_time(kube_cronjob_spec_suspend{namespace="finance", cronjob="moneyman"}[36h]) == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: The nightly finance scrape has not completed a run in over 36 hours
+            description: >-
+              The moneyman CronJob in the finance namespace last recorded a
+              successful run more than 36 hours ago and has not been
+              suspended at any point in those 36 hours, so at least the last
+              two nightly runs either never started or never finished. Start
+              with "kubectl -n finance get cronjob
+              moneyman" and "kubectl -n finance get jobs,pods" - the usual
+              causes are a Pod that cannot start and a run skipped because
+              the previous one was still going. Note what this does NOT mean:
+              moneyman exits 0 whether or not it managed to log in to the
+              banks, so a broken scrape still records a successful run and
+              this alert stays silent for it. The only way to know the data
+              is current is to look at Actual. See
+              docs/runbooks/finance.md.
