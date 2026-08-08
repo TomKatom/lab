@@ -60,6 +60,37 @@ resource "proxmox_virtual_environment_firewall_ipset" "mgmt" {
       name = cidr.value
     }
   }
+
+  lifecycle {
+    # The tripwire on the wg1 guest exit VPN. Unlike the preconditions on the
+    # cluster policy at the bottom of this file, this one guards against
+    # *exposure* rather than lockout, and it takes no part in the ordering
+    # invariant the header describes.
+    #
+    # It lives on THIS resource, not on the cluster policy, because this
+    # resource is the write it guards. The block below is what materialises
+    # local.management_sources into the '+mgmt' ipset, and nothing downstream
+    # re-checks it: the node rules already reference '+mgmt' by name and the
+    # cluster firewall is already enabled from an earlier apply, so the
+    # instant those CIDRs land in the ipset the exposure is live. A
+    # precondition on the cluster policy would evaluate strictly after this
+    # apply had succeeded, abort the run without rolling the ipset back, and
+    # leave every holder of an exit-tunnel config with host SSH, the Proxmox
+    # API and PBS until somebody noticed the failed apply. A precondition is
+    # only prevention if it sits on the resource that does the damage.
+    #
+    # What it does not do. It is exact string equality over the list, not
+    # CIDR containment (OpenTofu has no containment function and
+    # cidrsubnet/cidrhost cannot express one), so it catches the realistic
+    # mistake — someone appending network.wireguard_exit_subnet itself — and
+    # not a supernet like 10.0.0.0/8. And it reads local.lab directly, so a
+    # missing config/lab.yml key hard-errors here rather than silently
+    # passing on a typo; that is deliberate, it pins the key's existence.
+    precondition {
+      condition     = !contains(local.management_sources, local.lab.network.wireguard_exit_subnet)
+      error_message = "network.wireguard_exit_subnet is in local.management_sources: the wg1 guest exit VPN would be stamped into the '+mgmt' ipset, and every guest holding an exit-tunnel config would reach host SSH, the Proxmox API and Proxmox Backup Server. Remove it from local.management_sources in locals.tf — the exit subnet must never be a management source."
+    }
+  }
 }
 
 # --- Node (host) firewall ---------------------------------------------------
@@ -96,6 +127,26 @@ resource "proxmox_virtual_environment_firewall_rules" "node" {
     action  = "ACCEPT"
     comment = "WireGuard"
     dport   = local.lab.ports.wireguard
+    proto   = "udp"
+  }
+
+  # Always-public: the guest exit-VPN endpoint (wg1). A second listener
+  # rather than a second peer subnet inside the rule above, so the host-side
+  # isolation can match on `iifname "wg1"` (ansible/roles/network_nat) and
+  # a leaked guest config reveals nothing about the admin tunnel. This port
+  # grants no lab access by itself — network.wireguard_exit_subnet is
+  # deliberately absent from local.management_sources, which the precondition
+  # on the "+mgmt" ipset above asserts.
+  #
+  # Not folded together with the "WireGuard" rule via a dynamic block: a
+  # two-element list would hide two very different exposure stories behind a
+  # for_each. (local.public_service_rules earns its dynamic block by being
+  # *derived* from nat_ingress_rules; this is not derived from anything.)
+  rule {
+    type    = "in"
+    action  = "ACCEPT"
+    comment = "WireGuard (guest exit)"
+    dport   = local.lab.ports.wireguard_exit
     proto   = "udp"
   }
 
@@ -155,6 +206,7 @@ resource "proxmox_virtual_environment_cluster_firewall" "this" {
       condition     = !var.restrict_management || length(local.management_sources) > 0
       error_message = "restrict_management=true narrows SSH/Proxmox API to the '+mgmt' ipset, but local.management_sources is empty — the ipset would match nothing and lock the host out. Populate network.internal_subnet / network.wireguard_subnet in config/lab.yml."
     }
+
   }
 }
 

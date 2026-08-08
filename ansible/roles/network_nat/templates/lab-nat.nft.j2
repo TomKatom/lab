@@ -1,10 +1,34 @@
 # Managed by Ansible (roles/network_nat) — do not edit by hand.
 #
-# Dedicated `ip`-family table, deliberately not `inet`/`bridge`: keeps this
-# ruleset from ever colliding with PVE's own proxmox-firewall* tables (see
-# infra/tofu/firewall.tf) or anything in /etc/nftables.conf. Both directions
-# of the single-IP NAT model live here: ingress DNAT (prerouting) and egress
-# masquerade (postrouting).
+# Two same-named tables in two families, deliberately not one `inet` table:
+# per-family keeps this ruleset from ever colliding with PVE's own
+# proxmox-firewall* tables (see infra/tofu/firewall.tf) or anything in
+# /etc/nftables.conf, and the two halves have nothing in common anyway. The
+# `ip` table carries both directions of the single-IP NAT model — ingress
+# DNAT (prerouting) and egress masquerade (postrouting) — plus the forward
+# chain that isolates the guest exit tunnel. The `ip6` table carries one
+# thing: the IPv6 half of that isolation.
+#
+# Declaring a table and immediately deleting it makes this file an atomic
+# replace under a single `nft -f`, whether or not the table already exists:
+# the bare `table` line creates it, `delete` empties it, the definition below
+# rebuilds it, and the whole file is one transaction. The alternative —
+# stop-then-start via the systemd unit — leaves a gap with no forward chain
+# at all, during which PVE's forward_policy = ACCEPT governs and a guest on
+# the exit tunnel reaches the entire lab. That gap would open on every
+# converge. See handlers/main.yml, which applies this file directly rather
+# than restarting the unit for exactly this reason.
+#
+# Both families get that treatment unconditionally — `ip6` too, even in the
+# configuration where nothing below re-creates it. That is the point: the
+# idiom only cleans up tables this file names, so naming `ip6` always is what
+# makes *removing* the exit tunnel remove its IPv6 rules, instead of leaving
+# the previous converge's ip6 table loaded forever.
+table ip {{ network_nat_table }}
+delete table ip {{ network_nat_table }}
+table ip6 {{ network_nat_table }}
+delete table ip6 {{ network_nat_table }}
+
 table ip {{ network_nat_table }} {
 {% if network_nat_ingress_rules %}
 	chain prerouting {
@@ -16,9 +40,41 @@ table ip {{ network_nat_table }} {
 		# entry (comment/proto/port/destination) — a generic list, not
 		# hardcoded services, so adding a forward or splitting services
 		# across guests never touches this template.
+		#
+		# Two match terms beyond the port, doing two different jobs.
+		#
+		# `ip daddr` is the load-bearing one, and it is not optional. A DNAT
+		# keyed on destination *port* alone rewrites every packet carrying
+		# that port, whatever it was addressed to. On the uplink that was
+		# invisible rather than safe: a packet arriving on the uplink is
+		# addressed to this host's public IP by definition, so "arrived on
+		# the uplink" and "addressed to us" were the same statement and the
+		# missing qualifier never showed. On the exit tunnel they are
+		# opposites. A guest's client config takes `AllowedIPs = 0.0.0.0/0`,
+		# so ALL of its traffic arrives on that interface — an unqualified
+		# rule would DNAT the guest's connection to every HTTPS site on the
+		# internet into the k3s VM, handing it Traefik's certificate and a
+		# 404 instead of the site it asked for, and doing the same to
+		# 32400/tcp and 51413/tcp+udp. Qualifying on the host's own public
+		# address makes the rule say what it always meant — traffic
+		# addressed to this server's published services — and it is strictly
+		# more correct on the uplink too.
+		#
+		# The interface set is a scoping term, not the safety one. A peer on
+		# the exit tunnel resolves a published hostname to the public IP like
+		# everyone else, so its packet needs this same DNAT; without the
+		# interface in this set the kernel delivers that packet locally,
+		# where nothing listens and the connection is refused rather than
+		# timing out — a symptom that reads as a broken service rather than a
+		# routing decision. Keeping the set explicit rather than dropping the
+		# iifname term altogether also keeps these rules off vmbr1, so the
+		# k3s VM's own connections are excluded twice over: once because they
+		# do not arrive on a listed interface, and once because their
+		# destination is not this host.
 		type nat hook prerouting priority dstnat; policy accept;
+{% set network_nat_ingress_iifnames = [ansible_default_ipv4.interface] + ([network_nat_exit_interface] if network_nat_exit_interface else []) %}
 {% for rule in network_nat_ingress_rules %}
-		iifname "{{ ansible_default_ipv4.interface }}" {{ rule.proto }} dport {{ rule.port }} dnat to {{ rule.destination }}
+		iifname { {{ network_nat_ingress_iifnames | map('to_json') | join(', ') }} } ip daddr {{ network_nat_public_ip }} {{ rule.proto }} dport {{ rule.port }} dnat to {{ rule.destination }}
 {% endfor %}
 	}
 
@@ -31,16 +87,191 @@ table ip {{ network_nat_table }} {
 		# priority and win the race, leaving VM egress un-masqueraded. Running
 		# first makes this masquerade authoritative for internal_subnet
 		# traffic regardless of what else registers at that hook.
+		#
+		# `masquerade` takes its source from the outgoing interface's
+		# address, which is right while the host has exactly one public IP;
+		# if OVH failover IPs ever appear these become `snat to <ip>`.
 		type nat hook postrouting priority srcnat - 5; policy accept;
 		ip saddr {{ network.internal_subnet }} oifname "{{ ansible_default_ipv4.interface }}" masquerade
+{% if network_nat_exit_subnet %}
+		# The exit tunnel's own masquerade, kept as its own rule rather than
+		# folded into a two-element saddr set with the line above: the two
+		# subnets are here for unrelated reasons (VM egress vs. giving a
+		# guest this server's country) and separate rules also mean separate
+		# counters, so `nft list ruleset -a` tells them apart.
+		#
+		# Note which subnet is absent: the management tunnel's. wg0 is
+		# split-tunnel — a peer routes only the lab subnets into it and
+		# keeps its own default route — so it has no egress to masquerade,
+		# and adding it here would silently change what the management plane
+		# does.
+		ip saddr {{ network_nat_exit_subnet }} oifname "{{ ansible_default_ipv4.interface }}" masquerade
+{% endif %}
 	}
 
 	chain forward {
-		# Belt-and-suspenders: the Tofu-owned PVE firewall already sets
-		# forward_policy = ACCEPT, but this role shouldn't depend on that
-		# staying true to keep vmbr1 <-> uplink traffic flowing.
+		# Two jobs, and only one of them is optional. The vmbr1 <-> uplink
+		# accepts at the bottom are belt-and-suspenders: the Tofu-owned PVE
+		# firewall already sets forward_policy = ACCEPT, this role just
+		# shouldn't depend on that staying true. The exit-tunnel block above
+		# them is not belt-and-suspenders — it is the only thing between a
+		# guest on that tunnel and every internal address in the lab.
+		#
+		# Ordering is the enforcement, because nftables is first-match-wins.
+		# The exit-tunnel rules go first so that the otherwise-harmless
+		# tidy-up of `iifname "vmbr1" oifname "vmbr0" accept` into
+		# `iifname "vmbr1" accept` cannot short-circuit an isolation rule
+		# sitting below it. The MSS clamps go first within that block for a
+		# different reason: `tcp option ... set` is a non-terminal statement,
+		# so a packet that has already been accepted never reaches one.
+		#
+		# `policy accept` stays — the two bridge accepts below rely on it for
+		# return traffic — but it means this chain has no default-deny
+		# backstop, so the exit-tunnel block supplies its own: it allows by
+		# exception and ends in a `drop` for each direction across the
+		# tunnel. A blocklist of internal ranges would instead turn every
+		# subnet added in future into a hole nobody notices.
+		#
+		# What this chain does NOT cover: packets addressed to the host's own
+		# addresses never reach the forward hook. A guest on the exit tunnel
+		# can therefore still *reach* the host on its always-public ports —
+		# nothing listens on them, so that is noise, not exposure — while SSH,
+		# the Proxmox API, PBS and node_exporter are closed to it because the
+		# exit subnet is deliberately not in Tofu's "+mgmt" ipset.
+		#
+		# This is the ip family, so none of it sees IPv6. The exit tunnel
+		# carries a ULA purely so its clients can take `::/0` and stop
+		# leaking IPv6-capable destinations around the tunnel; the IPv6 half
+		# of the isolation is the ip6 table at the bottom of this file, and
+		# the sysctl tasks/main.yml pins ahead of it.
 		type filter hook forward priority filter; policy accept;
+{% if network_nat_exit_interface %}
+		# MSS clamping, and it may only ever clamp *down*. nftables'
+		# `tcp option maxseg size set` is an unconditional write with no
+		# clamp semantics of its own, so on its own it happily rewrites a
+		# correct, smaller MSS upward — which is worse than not clamping at
+		# all: the far end then sends segments the tunnel cannot carry, and
+		# against any origin that drops ICMP frag-needed the transfer
+		# PMTU-blackholes with no error anywhere. Each rule therefore matches
+		# the current value first and fires only when it is too large.
+		#
+		# The bound is a literal because nftables cannot express the
+		# comparison any other way: the right-hand side of a relational must
+		# be a constant or a set, and `rt mtu` is neither, so
+		# `tcp option maxseg size > rt mtu` does not parse. The only form
+		# `rt mtu` fits in is the unconditional `... set rt mtu`, and `rt`
+		# resolves the *output* route — for a packet arriving on the tunnel
+		# that is the 1500-byte uplink, i.e. exactly the upward rewrite this
+		# must not do. See network_nat_exit_mss in defaults/main.yml for
+		# where the number comes from and what a stale one costs.
+		#
+		# A SYN carrying no MSS option at all does not match, and is left
+		# alone rather than having one inserted. That is correct: no option
+		# means the 536-byte default, already far below anything this clamp
+		# would impose.
+		#
+		# Both directions, because each direction's SYN sets the limit for
+		# the other side's sending: the client's SYN governs what the origin
+		# sends back down the tunnel, the origin's SYN-ACK governs what the
+		# client sends up it, and both packets cross wg1. The masked flags
+		# comparison matches SYN and SYN-ACK while excluding RST — a bare
+		# `tcp flags syn` is an equality test against the whole flags byte
+		# and would match a pure SYN only, missing the SYN-ACK entirely.
+		iifname "{{ network_nat_exit_interface }}" tcp flags & (syn|rst) == syn tcp option maxseg size > {{ network_nat_exit_mss }} tcp option maxseg size set {{ network_nat_exit_mss }}
+		oifname "{{ network_nat_exit_interface }}" tcp flags & (syn|rst) == syn tcp option maxseg size > {{ network_nat_exit_mss }} tcp option maxseg size set {{ network_nat_exit_mss }}
+		# Published services stay reachable from inside the tunnel. These
+		# connections were DNAT'd in prerouting above and are world-reachable
+		# on the public IP regardless, so allowing them grants nothing new —
+		# and without this rule the operator's own phone, while on the
+		# tunnel, could not open Plex or any other published hostname.
+		# Scoped to the bridge so it can never accept some unrelated future
+		# DNAT.
+		iifname "{{ network_nat_exit_interface }}" oifname "{{ network_nat_bridge }}" ct status dnat accept
+		# Guest-to-guest. Redundant against the catch-all drop at the end of
+		# this block, and kept anyway so `nft list ruleset -a` gives peers
+		# probing each other a counter of their own.
+		iifname "{{ network_nat_exit_interface }}" oifname "{{ network_nat_exit_interface }}" drop
+		# The one thing this tunnel is for: the internet, and specifically
+		# not the address ranges that are not the internet — see
+		# network_nat_exit_denied_destinations in defaults/main.yml.
+		iifname "{{ network_nat_exit_interface }}" oifname "{{ ansible_default_ipv4.interface }}" ip daddr != { {{ network_nat_exit_denied_destinations | join(', ') }} } accept
+		iifname "{{ network_nat_exit_interface }}" drop
+		# The other direction, which nothing above covers: every rule so far
+		# matches `iifname`, so a packet travelling *toward* the tunnel
+		# matched none of them and fell through to this chain's
+		# `policy accept`. Two consequences, and only one of them looks
+		# wrong at a glance. The k3s VM could open a new connection to a
+		# guest's tunnel address — isolation that holds in one direction is
+		# not isolation. And the traffic that legitimately does reach a
+		# guest (internet return packets, the VM's half of a hairpinned
+		# service) was permitted by the *absence* of a rule rather than by
+		# anything checking that a flow exists to return to.
+		#
+		# Scoped to `oifname` rather than written as a bare
+		# `ct state established,related accept` + `drop` pair, which would
+		# read as the more idiomatic stateful firewall: unscoped, those two
+		# would govern the whole chain, and the first new connection they
+		# broke would be a wg0 peer's into vmbr1 — the management path into
+		# a host with no IPMI. This chain must never state-gate that.
+		#
+		# `related` is load-bearing. An ICMP fragmentation-needed or
+		# destination-unreachable from an origin is RELATED, never
+		# ESTABLISHED, so omitting it would blackhole path-MTU discovery for
+		# every guest — the exact failure the clamp above exists to prevent.
+		#
+		# Position is pinned on both sides. Below `iifname ... drop`, so
+		# guest-to-guest keeps its own counter rule instead of being
+		# absorbed here. Below the MSS clamps, because an accept reached
+		# first would skip the non-terminal `oifname` clamp and leave every
+		# SYN-ACK coming back down the tunnel unclamped — to conntrack the
+		# first reply packet of a connection is already ESTABLISHED.
+		#
+		# What this still does not reach: the host's own packets. Locally
+		# generated traffic leaves via the output hook and never enters
+		# forward, so the machine that loads this file can still open a
+		# connection to a guest. Only routed sources — the k3s VM, anything
+		# else behind vmbr1 — are covered, which is the whole population
+		# this chain was ever able to speak for.
+		oifname "{{ network_nat_exit_interface }}" ct state established,related accept
+		oifname "{{ network_nat_exit_interface }}" drop
+{% endif %}
 		iifname "{{ network_nat_bridge }}" oifname "{{ ansible_default_ipv4.interface }}" accept
 		iifname "{{ ansible_default_ipv4.interface }}" oifname "{{ network_nat_bridge }}" accept
 	}
 }
+{% if network_nat_exit_interface %}
+
+# The IPv6 half of the exit tunnel's isolation, and the reason it exists at
+# all. A guest's client config takes `::/0` alongside `0.0.0.0/0`, because an
+# IPv4-only full tunnel does not fail loudly — a client on an IPv6-capable
+# carrier keeps routing every IPv6-capable destination out over its own local
+# address, so geolocation still reads the client's own country and the
+# feature looks like it works while doing nothing. Capturing that traffic is
+# the whole job; carrying it is deliberately NOT in scope, so what the guest
+# needs from this host is a *deterministic* blackhole: every IPv6 attempt
+# must die here, so Happy Eyeballs falls back to IPv4 through this server's
+# country rather than the client silently going direct.
+#
+# tasks/main.yml pins net.ipv6.conf.all.forwarding to 0, which already makes
+# that true — the drop then happens in ip6_forward(), before any nftables
+# hook, and these rules never see a packet. They are here because a sysctl is
+# a host-wide knob any package drop-in, kernel-cmdline edit or future
+# experiment can flip, and the failure that follows is silent: with the knob
+# at 1 the ip table above stops seeing half the guest's traffic, PVE's
+# forward_policy is ACCEPT, and every isolation rule this role wrote would be
+# bypassed by the v6 flow. Two independent mechanisms, so the guarantee does
+# not rest on either alone.
+#
+# Both directions, and `drop` rather than `reject`: a guest must experience
+# IPv6 as a black hole rather than as a working stack with no routes, and a
+# reject would also be a service this tunnel does not offer. Policy stays
+# accept because this table has no business filtering the host's own IPv6
+# should it ever gain some — it names the tunnel interface and nothing else.
+table ip6 {{ network_nat_table }} {
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		iifname "{{ network_nat_exit_interface }}" drop
+		oifname "{{ network_nat_exit_interface }}" drop
+	}
+}
+{% endif %}

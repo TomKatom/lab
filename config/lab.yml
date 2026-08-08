@@ -8,6 +8,47 @@ network:
   vmbr1_host_address: 10.10.10.1/24  # host side of vmbr1 = the VM's gateway
   wireguard_subnet: 10.10.20.0/24  # WG peer subnet (Tofu fw mgmt, Ansible wireguard)
   wireguard_host_address: 10.10.20.1/24  # host side of wg0 (Ansible wireguard role)
+  # --- wg1, the guest exit VPN --------------------------------------------
+  # A second WireGuard tunnel whose clients take 0.0.0.0/0, ::/0 — a full
+  # tunnel, so a guest's traffic egresses from this server's German IP.
+  # Deliberately its own interface rather than a second subnet carved out of
+  # wireguard_subnet above, for two things a subnet split cannot give: the
+  # isolation rules (ansible/roles/network_nat) match on `iifname "wg1"`,
+  # which stays correct even if a peer address is assigned wrongly, and wg1
+  # carries its own server keypair, so a leaked guest config reveals nothing
+  # about the management tunnel.
+  #
+  # THE EXIT SUBNET MUST NEVER ENTER THE MANAGEMENT PATH. It is absent from
+  # infra/tofu/locals.tf's `management_sources` by construction, and
+  # infra/tofu/firewall.tf carries a lifecycle precondition that fails the
+  # apply if it ever appears there: inside the `+mgmt` ipset it would hand
+  # every guest host SSH, the Proxmox API and PBS — the exact opposite of
+  # what this tunnel is for. It is left out of hardening_fail2ban_ignoreip
+  # (ansible/roles/hardening) for the same reason.
+  wireguard_exit_subnet: 10.10.30.0/24  # wg1 peer subnet (Ansible wireguard + egress masquerade; Tofu asserts it is never a mgmt source)
+  wireguard_exit_host_address: 10.10.30.1/24  # host side of wg1 (Ansible wireguard role)
+  # The ULA half of wg1 closes a failure mode that is silent rather than
+  # loud: on an IPv4-only tunnel a client whose carrier has IPv6 (Israeli
+  # carriers increasingly do) keeps routing every IPv6-capable destination —
+  # Google, Cloudflare, Netflix — outside the tunnel over its local address,
+  # so geolocation still reads the client's own country and the feature
+  # looks like it works while doing nothing. Giving wg1 a v6 address is what
+  # lets a peer put `::/0` in AllowedIPs and capture that traffic. The host
+  # masquerades IPv4 only and forwards no IPv6, so `::/0` is a deterministic
+  # blackhole and every connection falls back to IPv4 through Germany. That
+  # blackhole is enforced twice by ansible/roles/network_nat, not inherited
+  # from a kernel default: it pins net.ipv6.conf.all.forwarding to 0, and its
+  # ruleset carries an ip6 table dropping both directions across wg1 in case
+  # anything ever flips that knob. Real IPv6 egress is out of scope here —
+  # see docs/networking.md for what it would cost.
+  #
+  # RFC 4193 asks for a random 40-bit global ID; this uses the all-zero one,
+  # as Docker and a lot of CPEs do. That is a collision risk only for a
+  # destination reachable *outside* the tunnel, and with `::/0` in AllowedIPs
+  # there is none — but renumber to a random prefix before wg1 ever carries
+  # real IPv6 egress.
+  wireguard_exit_subnet_v6: fd00:10:30::/64  # wg1 ULA peer prefix — peers take a /128 out of it (Ansible wireguard)
+  wireguard_exit_host_address_v6: fd00:10:30::1/64  # host side of wg1's ULA (Ansible wireguard role)
   vm_ip_address: 10.10.10.10  # k3s-node static internal IP (Tofu cloud-init, Ansible DNAT)
   runner_address: 10.10.10.20  # self-hosted GitHub Actions runner VM static internal IP (Tofu cloud-init)
 # Management endpoints addressable by name instead of by hardcoded internal
@@ -36,6 +77,13 @@ ports:  # Tofu filter fw · Ansible nftables NAT/DNAT · Helm svc ports
   torrent: 51413
   ssh: 22
   wireguard: 51820
+  # wg1's endpoint (network.wireguard_exit_subnet above). Public for the
+  # same reason `wireguard` is — a tunnel endpoint has to be reachable to be
+  # useful — and public on its own port rather than sharing 51820, because
+  # one UDP port serves exactly one WireGuard interface. Opening it grants no
+  # lab access by itself: without a peer key nothing connects, and a
+  # connected guest is firewalled away from every internal address.
+  wireguard_exit: 51821
   pve_api: 8006
   k8s_api: 6443
   # PVE host metrics (ansible/roles/node_exporter). Management-only: it

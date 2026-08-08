@@ -27,6 +27,26 @@ argocd_namespace: argocd
 # below.
 wireguard_interface: wg0
 
+# The guest exit tunnel's interface. Shared three ways — roles/wireguard
+# renders it, roles/network_nat matches its isolation rules on this exact
+# name (playbooks/proxmox-host.yml passes it in), and
+# playbooks/verify-wireguard.yml asserts both of those actually took — so it
+# is a name here rather than a default in either role. Kept in its own
+# variable rather than folded into wireguard_interface above: that one names
+# the management tunnel specifically and several places rely on it meaning
+# exactly that.
+wireguard_exit_interface: wg1
+
+# Shared between roles/network_nat, which renders this nftables table, and
+# playbooks/verify-wireguard.yml, which reads it back to assert the exit
+# tunnel's isolation rules are actually loaded. Same reasoning as
+# wireguard_interface above — the verify playbook is the only automated test
+# of that segmentation, and a name it had to redeclare would be a name that
+# could drift out from under it. This is an override, not the definition:
+# roles/network_nat still carries its own default, because a role that
+# cannot render outside this one inventory is not a role.
+network_nat_table: lab-nat
+
 # Operator WireGuard peers: public key + the address that peer owns inside
 # network.wireguard_subnet, never private key material (each peer generates
 # and holds its own private key — see docs/ssh-keys.md's custody model for
@@ -75,28 +95,76 @@ wireguard_peers:
     public_key: "AZ9c31nOcvfx01grp7AMnczZHoCDCqdcSnuWThgiPXw="
     address: 10.10.20.3/32
 
+# Guest peers on the wg1 exit tunnel — a different kind of peer from
+# wireguard_peers above, not more of them. These get the internet through
+# the server's German IP and reach nothing in the lab.
+#
+# CLIENT SIDE (the half this file does not configure): a guest's own config
+# takes `AllowedIPs = 0.0.0.0/0, ::/0` and `DNS = 1.1.1.1`. That is the
+# opposite of the split tunnel wireguard_peers uses, and it is the point —
+# a default route through the tunnel is what makes the guest's traffic
+# appear to originate in Germany. `::/0` is not optional: without it a
+# client on an IPv6-capable carrier keeps sending IPv6-capable destinations
+# out over its own local address, which silently defeats the whole feature
+# (config/lab.yml's network.wireguard_exit_subnet_v6 comment has the long
+# version). A public resolver rather than a lab one, because a lab resolver
+# would be an internal address these peers are firewalled away from — and
+# 1.1.1.1's anycast POP and EDNS client subnet both read as German from
+# here, which is what makes CDN-level geolocation follow the tunnel.
+#
+# SERVER SIDE (this file): unchanged from wireguard_peers' rule — `address`
+# stays the peer's own single /32, and `address_v6` its own single /128.
+# Server-side AllowedIPs is cryptokey routing plus the anti-spoof source
+# filter, never the client's route list, so `0.0.0.0/0` here would let any
+# guest forge a source inside internal_subnet and would make a second guest
+# impossible (a prefix belongs to exactly one peer). roles/wireguard asserts
+# both shapes, asserts that each sits inside wg1's own
+# network.wireguard_exit_subnet / _subnet_v6 — a guest addressed into
+# network.wireguard_subnet by a typo would otherwise be inside the `+mgmt`
+# ipset, which matches by source CIDR alone and would hand it SSH and the
+# PVE API on a path wg1's isolation rules never see — and asserts that no
+# address or name is shared with wireguard_peers.
+#
+# `address_v6` pairs 1:1 with `address` — one peer, one v4 /32 and one v6
+# /128 out of network.wireguard_exit_subnet_v6. The v6 address exists so
+# the client can take `::/0`; the host forwards no IPv6 — roles/network_nat
+# pins the sysctl and carries an ip6 drop pair for wg1 — so it is a
+# blackhole by design and every connection falls back to IPv4.
+#
+# ISOLATION: these peers are firewalled out of the lab in the host's
+# nftables forward chain (roles/network_nat), which allows exactly two
+# things from wg1 — the internet, and connections that were DNAT'd to a
+# published service — and drops everything else, including guest-to-guest.
+# Nothing here grants access; adding a peer only issues a key.
+#
+# Empty: this repo ships wg1 with no guests. Adding one is
+#   wireguard_exit_peers:
+#     - name: a-guest
+#       public_key: "<contents of their publickey>"
+#       address: 10.10.30.2/32
+#       address_v6: fd00:10:30::2/128
+wireguard_exit_peers: []
+
 # The interfaces roles/wireguard renders — one config file, one key pair
-# and one wg-quick unit per entry. Exactly one today, the management
+# and one wg-quick unit per entry: the management tunnel and the guest exit
 # tunnel. The list exists so that a second interface is a data change
 # rather than a rewrite of the role, and so every task in the role is
 # already scoped to the instance it is working on instead of to an
 # implicit single global (which is what made the old restart handler
 # unsafe — see roles/wireguard/tasks/main.yml's last task).
 #
-# "Data change" is meant literally, so the role already carries the shape a
-# second interface needs and does not yet use: its own subnet to validate
-# peers against, and an optional IPv6 leg on both the interface and its
-# peers. Those were built in here rather than left to the commit that adds
-# the interface, because discovering mid-change that the role's peer assert
-# cannot express the new interface's addresses is how a "just add data" step
-# turns into reopening a role that renders the only way into the box.
+# "Data change" was meant literally and held: wg1 needed a per-instance
+# subnet to validate its peers against and an IPv6 leg on both the interface
+# and its peers, and the role already carried both — so adding it is the
+# entry below plus roles/network_nat, with no edit to the role that renders
+# the only way into the box.
 #
 # wg0 keeps its `name` and `peers` by reference rather than inlining them:
 # wireguard_interface and wireguard_peers are read under those names by
 # playbooks/verify-wireguard.yml, and docs/runbooks/wireguard-peer.md tells
-# the operator to add peers to wireguard_peers. A future second interface
-# is not the management tunnel and would declare its own name and peer list
-# here directly.
+# the operator to add peers to wireguard_peers. wg1 does the same with
+# wireguard_exit_interface, which roles/network_nat also keys its isolation
+# rules on.
 #
 # `address`, `subnet` and `listen_port` name keys in config/lab.yml rather
 # than repeating the values. They resolve lazily — Jinja in a group_vars
@@ -105,21 +173,31 @@ wireguard_peers:
 # file's header calls out ovh_public_ip as the one exception to.
 #
 # `subnet` is the CIDR every peer of this interface must sit inside, and
-# roles/wireguard asserts that rather than deriving it from `address`: it is
-# the same config/lab.yml key infra/tofu/locals.tf builds the `+mgmt` ipset
-# from, so the assert and the firewall cannot come to disagree about what
-# "the management subnet" is. `address` is asserted to be inside it too, so
-# the two keys can't drift apart either.
+# roles/wireguard asserts that rather than deriving it from `address`: for
+# wg0 it is the same config/lab.yml key infra/tofu/locals.tf builds the
+# `+mgmt` ipset from, so the assert and the firewall cannot come to disagree
+# about what "the management subnet" is — which is what stops a wg1 guest
+# addressed into it by mistake from landing inside `+mgmt` and reaching SSH
+# and the PVE API on the host's INPUT path, where wg1's forward-chain
+# isolation never sees it. `address` is asserted to be inside `subnet` too,
+# so the two keys can't drift apart either.
 #
-# An instance may also carry `subnet_v6` and `address_v6` for a dual-stack
-# interface, and its peers a matching `address_v6`. Both are optional and wg0
-# declares neither: the management tunnel has no IPv6 story, and adding one
-# would change a live interface's config, which restarts it — on a host whose
-# only route in is that interface. An instance that omits them renders
-# exactly the single-address config it rendered before, byte for byte.
+# `subnet_v6` and `address_v6` are the same pair one family up, optional per
+# instance, and wg0 deliberately declares neither: the management tunnel has
+# no IPv6 story and adding one would change a live interface's config, which
+# restarts it, on a host whose only route in is that interface. An instance
+# that omits them renders exactly the single-address config it rendered
+# before dual-stack support existed, byte for byte.
 wireguard_instances:
   - name: "{{ wireguard_interface }}"
     address: "{{ network.wireguard_host_address }}"
     subnet: "{{ network.wireguard_subnet }}"
     listen_port: "{{ ports.wireguard }}"
     peers: "{{ wireguard_peers }}"
+  - name: "{{ wireguard_exit_interface }}"
+    address: "{{ network.wireguard_exit_host_address }}"
+    address_v6: "{{ network.wireguard_exit_host_address_v6 }}"
+    subnet: "{{ network.wireguard_exit_subnet }}"
+    subnet_v6: "{{ network.wireguard_exit_subnet_v6 }}"
+    listen_port: "{{ ports.wireguard_exit }}"
+    peers: "{{ wireguard_exit_peers }}"

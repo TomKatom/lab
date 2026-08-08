@@ -5,9 +5,18 @@
 locals {
   lab = yamldecode(file("${path.module}/../../config/lab.yml"))
 
-  vm_gateway         = split("/", local.lab.network.vmbr1_host_address)[0]
-  vm_ip_cidr         = "${local.lab.network.vm_ip_address}/${split("/", local.lab.network.internal_subnet)[1]}"
-  runner_ip_cidr     = "${local.lab.network.runner_address}/${split("/", local.lab.network.internal_subnet)[1]}"
+  vm_gateway     = split("/", local.lab.network.vmbr1_host_address)[0]
+  vm_ip_cidr     = "${local.lab.network.vm_ip_address}/${split("/", local.lab.network.internal_subnet)[1]}"
+  runner_ip_cidr = "${local.lab.network.runner_address}/${split("/", local.lab.network.internal_subnet)[1]}"
+  # The CIDRs stamped into the "+mgmt" ipset, i.e. everything that may reach
+  # host SSH / the Proxmox API / PBS once restrict_management is true.
+  # network.wireguard_exit_subnet (the wg1 guest exit VPN) is missing from
+  # this list on purpose and must stay missing — those peers are meant to get
+  # the internet and nothing else. That omission is the whole of the guest
+  # tunnel's access control at this layer, so it is backed by a
+  # lifecycle.precondition on proxmox_virtual_environment_firewall_ipset.mgmt
+  # (firewall.tf) — on the resource that stamps this list into the ipset, so
+  # the apply fails before the exposure exists rather than after.
   management_sources = [local.lab.network.internal_subnet, local.lab.network.wireguard_subnet]
 
   # Firewall rule sets (firewall.tf). public_service_rules is derived from

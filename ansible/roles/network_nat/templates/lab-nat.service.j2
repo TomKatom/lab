@@ -9,6 +9,12 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f {{ network_nat_ruleset_path }}
 ExecStop=/usr/sbin/nft delete table ip {{ network_nat_table }}
+# The ruleset defines an ip6 table of the same name whenever the guest exit
+# tunnel exists, so stopping the unit has to tear that one down too. Prefixed
+# `-` because unlike the ip table this one is conditional: with no exit
+# tunnel configured it is never created, and a stop must not fail over a
+# table the ruleset deliberately did not define.
+ExecStop=-/usr/sbin/nft delete table ip6 {{ network_nat_table }}
 
 [Install]
 WantedBy=multi-user.target

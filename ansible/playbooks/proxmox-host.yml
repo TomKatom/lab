@@ -56,11 +56,33 @@
       loop: "{{ nat_ingress_rules }}"
       loop_control:
         loop_var: rule
+
+    - name: Resolve the public address those DNAT rules are qualified on
+      # Every rule above matches `ip daddr <this>` as well as the port, which
+      # is what keeps a DNAT from firing on traffic merely passing through the
+      # host on a published port — see roles/network_nat's template. Resolved
+      # here for the same reason the rules themselves are: the address is an
+      # inventory fact (ovh_public_ip, the one value group_vars/all.yml holds
+      # rather than config/lab.yml, because it is needed before vars_files
+      # load), and network_nat stays a generic renderer that knows neither
+      # schema.
+      ansible.builtin.set_fact:
+        network_nat_public_ip: "{{ ovh_public_ip }}"
   roles:
     - pve_repos
     - pve_firewall
     - wireguard
-    - network_nat
+    # The guest exit tunnel's two facts, passed at invocation rather than
+    # resolved in pre_tasks the way nat_ingress_rules is: that indirection
+    # exists because those entries store *keys* into config/lab.yml's
+    # `ports`/`network` maps, and an interface name and a subnet are already
+    # concrete. A set_fact here would imply a resolution step that isn't
+    # happening. network_nat keeps both empty by default, so this invocation
+    # is what turns the isolation rules and the second masquerade on.
+    - role: network_nat
+      vars:
+        network_nat_exit_interface: "{{ wireguard_exit_interface }}"
+        network_nat_exit_subnet: "{{ network.wireguard_exit_subnet }}"
     - role: hardening
       vars:
         hardening_is_pve_host: true
