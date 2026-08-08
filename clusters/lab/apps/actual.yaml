@@ -1,0 +1,221 @@
+# Actual Budget — the envelope-budgeting server behind budget.tomkatom.com.
+# One pod, one Service, one Ingress, one PVC holding the whole budget. Wave 1,
+# after finance-common (wave 0) has created the `finance` namespace — that is
+# the only thing this Application takes from wave 0. It consumes none of the
+# namespace's Secrets: the bank credentials in `moneyman-config` are
+# moneyman's, and Actual's own server password is set interactively on first
+# visit and lives only in the PVC (see docs/runbooks/finance.md).
+#
+# Two layers of authentication, deliberately, not by oversight. Authelia's
+# forwardAuth middleware on the Ingress gates the public hostname, and Actual
+# still asks for its own server password behind it. They are not redundant
+# because they cover different paths: the middleware is a Traefik router
+# concern and says nothing about the in-cluster Service, which moneyman
+# reaches directly at http://actual.finance.svc.cluster.local:5006 and which
+# any other pod in the cluster could reach too — namespaces are not a firewall
+# (./README.md "The `share` namespace"). Actual's password is what stands
+# between a compromised pod and the budget. `ACTUAL_LOGIN_METHOD` defaults to
+# `password` at this tag and needs no env var; the `header` method — let
+# Authelia's Remote-User stand in, the pattern Grafana uses here — was
+# considered and rejected precisely because it collapses the two layers into
+# one.
+#
+# Not on the homepage, on purpose. ./homepage/configmap-homepage.yaml's header
+# states the rule: "those are admin UIs behind Authelia on their own
+# hostnames, and listing them here would advertise them to the internet for
+# nobody's benefit." A budget app is the strongest case of that rule in this
+# repo. Bookmark it.
+#
+# Image verifications done at authoring time, not taken from upstream docs:
+# one docker/build-push-action run in .github/workflows/docker-release.yml at
+# tag v26.8.1 pushes three names off one build — `actualbudget/actual-server`,
+# `ghcr.io/actualbudget/actual-server` and `ghcr.io/actualbudget/actual` — so
+# they are three tags on one artifact and none is deprecated. The unsuffixed
+# GHCR name below is the one upstream's install docs name, and it is what the
+# renovate depName has to match exactly. `docker.io/actualbudget/actual` does
+# not exist at all, so the Docker Hub alternative is only ever
+# `actualbudget/actual-server`. The tag pinned below is the OCI image index;
+# its linux/amd64 child (sha256:505d4422...) was fetched and its config blob
+# read, which is where the identity finding in the next paragraph comes from.
+# The release also publishes an `-alpine` flavour of every tag; the unsuffixed
+# tag is the Debian/node:22-bookworm-slim build and is the right default.
+#
+# ⚠ The values schema below is strict at every nested level but NOT at the
+# root: `helm template` and kubeconform both accept a misspelled top-level key
+# and silently render the feature away. A `persistance:` typo here would
+# produce a CI-green Actual with no PVC at all.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: actual
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://bjw-s-labs.github.io/helm-charts
+    chart: app-template
+    targetRevision: 5.0.1
+    helm:
+      valuesObject:
+        # app-template 5.x splits identity across two levels: the pod-level
+        # PodSecurityContext (no `capabilities` field) here, and the
+        # container-level SecurityContext (has `capabilities`, no `fsGroup`)
+        # under controllers.app.containers.app below. See ./README.md
+        # "Identity: everything runs as 1000:1000".
+        #
+        # Unlike the home-operations images the media stack runs, this one has
+        # no USER directive — the amd64 config blob at the pinned digest
+        # reports `"User": null` (read out of the registry at authoring time),
+        # so absent `runAsUser` it would start as root. The conclusion is the
+        # house default anyway, and for a stronger reason than sonarr's:
+        # nothing in the image wants root. The entrypoint is a bare tini, there
+        # is no chown/gosu init script, and 5006 is unprivileged. So the
+        # baseline applies with no per-app exception, and it is `runAsUser`
+        # here rather than anything in the image that makes this non-root.
+        #
+        # The Dockerfile does create an `actual` user at uid/gid 1001 and
+        # chowns the baked-in /data to it. That is irrelevant once the PVC is
+        # mounted: the mount shadows the image directory entirely, and the
+        # kubelet applies `fsGroup: 1000` to the volume root instead, which is
+        # what makes a freshly provisioned local-path volume writable here.
+        # `fsGroupChangePolicy: OnRootMismatch` keeps that recursive chown from
+        # re-running on every restart once ownership matches. uid 1000 has no
+        # /etc/passwd entry in this image and HOME is unset; harmless, because
+        # the sync-server calls neither os.userInfo nor os.homedir.
+        defaultPodOptions:
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            runAsNonRoot: true
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        controllers:
+          app:
+            containers:
+              app:
+                image:
+                  repository: ghcr.io/actualbudget/actual
+                  # renovate: datasource=docker depName=ghcr.io/actualbudget/actual
+                  tag: "26.8.1@sha256:6478d9ddfc0924479c09e6699c205e354c6f2216dfe7de3c0fb7b590d6edcdc5"
+                securityContext:
+                  capabilities:
+                    drop: ["ALL"]
+                env:
+                  TZ: Asia/Jerusalem
+                  # Documentation, not behaviour: `packages/sync-server/src/
+                  # load-config.js` already defaults `port` to 5006 at this tag
+                  # and the image EXPOSEs 5006. Written out because 5006 is
+                  # repeated by the probes, the Service and — unreviewably —
+                  # inside moneyman's SOPS-encrypted serverUrl, and one of the
+                  # four should say where the number comes from.
+                  #
+                  # ACTUAL_DATA_DIR is deliberately absent. Its default is
+                  # `process.env.ACTUAL_DATA_DIR ? ... : fs.existsSync('/data')
+                  # ? '/data' : projectRoot`, and /data exists both in the image
+                  # and as the mount below, so setting it would change nothing.
+                  ACTUAL_PORT: "5006"
+                probes:
+                  # GET /health is registered on the root express app at this
+                  # exact pinned tag (packages/sync-server/src/app.ts:120,
+                  # returns 200 {"status":"UP"}) with no auth middleware ahead
+                  # of it — only cors, the 500 req/min rate limiter and the
+                  # body parsers, so a 10s probe interval is nowhere near the
+                  # limit. Read from upstream's source at v26.8.1, which is
+                  # what rules out the TCP fallback the plan allowed for.
+                  # Migrations run before the listener opens, so there is a
+                  # pre-listen window on a cold start. The chart's startup
+                  # defaults are thinner than they look — the rendered probe is
+                  # failureThreshold 3 at periodSeconds 10, i.e. ~30s of grace,
+                  # not the minutes the phrase "startup probe" suggests. That
+                  # is ample for this migration set (table creation against an
+                  # empty or already-migrated sqlite file, sub-second), but if
+                  # a future release ever adds a slow data migration the knob
+                  # is probes.startup.spec.failureThreshold, not a sibling key
+                  # here — the schema rejects siblings.
+                  liveness:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 5006
+                  readiness:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 5006
+                  startup:
+                    enabled: true
+                    type: HTTP
+                    path: /health
+                    port: 5006
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+        # Renders as a Service literally named `actual`, which is the name
+        # moneyman's encrypted MONEYMAN_CONFIG hardcodes as
+        # http://actual.finance.svc.cluster.local:5006 (confirmed from a local
+        # helm template of this file). That holds only while there is exactly
+        # one entry under `service:` — a second identifier renames both to
+        # `actual-app` and `actual-<other>`, and nothing in CI compares the
+        # rendered name against the ciphertext. Adding a second Service here
+        # means a `sops` edit in the same PR.
+        service:
+          app:
+            controller: app
+            type: ClusterIP
+            ports:
+              http:
+                port: 5006
+        # No ingressClassName and no tls: block — Traefik is the default
+        # IngressClass and its default TLSStore already serves the wildcard
+        # certificate for this host (../platform/README.md "Exposing a
+        # service"). Authelia needs no change either: its
+        # `*.tomkatom.com -> two_factor` catch-all in ../platform/authelia.yaml
+        # covers a new hostname under the zone the moment the middleware
+        # annotation is present.
+        ingress:
+          app:
+            annotations:
+              traefik.ingress.kubernetes.io/router.middlewares: authelia-forwardauth@kubernetescrd
+            hosts:
+              - host: budget.tomkatom.com
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    service:
+                      identifier: app
+                      port: http
+        persistence:
+          # The entire budget: /data/server-files/account.sqlite holds the
+          # server password and the sync metadata, /data/user-files holds the
+          # budget blobs. No storageClassName, so the cluster default
+          # local-path applies and this lands on the VM disk that the nightly
+          # vzdump of guest 9000 already captures — per docs/backups.md
+          # "Adding a backup target", nothing to do.
+          #
+          # That default class reclaims with Delete, so once real data lives
+          # here the operator owes the PV the Retain patch from ./README.md
+          # "local-path reclaim is `Delete`" (line 425); `persistence.retain`
+          # is not a substitute — it only annotates the PVC, never the PV.
+          # The PVC renders as `actual` under the same single-entry rule the
+          # Service does.
+          data:
+            type: persistentVolumeClaim
+            accessMode: ReadWriteOnce
+            size: 5Gi
+            globalMounts:
+              - path: /data
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: finance
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
