@@ -2,9 +2,10 @@
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
 Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
-`media-common` config — plus `filebrowser`, which is here but deliberately
-not in the `media` namespace (see [The `share` namespace](#the-share-namespace)) —
-discovered the same way `platform/` is —
+`media-common` config — plus the Applications that live here but deliberately
+not in the `media` namespace: `filebrowser` in `share`
+(see [The `share` namespace](#the-share-namespace)) and the personal-finance
+stack in `finance` — discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
 Authelia, cert-manager and external-dns already exist) whose `source.path`
@@ -48,10 +49,10 @@ don't trust each other — doesn't buy anything here.
 
 ## The `share` namespace
 
-`filebrowser` is the one Application in this directory whose
+`filebrowser` was the first Application in this directory whose
 `destination.namespace` is not `media`, and the argument above is exactly why:
-it is the one app here that consumes none of `media-common`'s Secrets, so the
-re-encryption cost that keeps the media stack together simply isn't charged.
+it consumes none of `media-common`'s Secrets, so the re-encryption cost that
+keeps the media stack together simply isn't charged.
 What it does have is the property that argument assumes away — it is not part
 of the same trust domain. Its `/public` routes are reachable from the open
 internet with no session, which makes it the one service here where "a bug in

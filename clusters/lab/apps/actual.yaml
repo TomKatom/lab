@@ -4,7 +4,10 @@
 # the only thing this Application takes from wave 0. It consumes none of the
 # namespace's Secrets: the bank credentials in `moneyman-config` are
 # moneyman's, and Actual's own server password is set interactively on first
-# visit and lives only in the PVC (see docs/runbooks/finance.md).
+# visit and lives only in the PVC. The procedure for setting it is
+# docs/runbooks/finance.md, which is delivered by the moneyman PR rather than
+# this one — if that path does not resolve yet, that is why, and step 2 of
+# this PR's post-merge checklist is the short version of it.
 #
 # Two layers of authentication, deliberately, not by oversight. Authelia's
 # forwardAuth middleware on the Ingress gates the public hostname, and Actual
@@ -81,9 +84,19 @@ spec:
         # kubelet applies `fsGroup: 1000` to the volume root instead, which is
         # what makes a freshly provisioned local-path volume writable here.
         # `fsGroupChangePolicy: OnRootMismatch` keeps that recursive chown from
-        # re-running on every restart once ownership matches. uid 1000 has no
-        # /etc/passwd entry in this image and HOME is unset; harmless, because
-        # the sync-server calls neither os.userInfo nor os.homedir.
+        # re-running on every restart once ownership matches.
+        #
+        # uid/gid 1000 themselves resolve to a real account, which is worth
+        # recording because it is what makes running as 1000:1000 free of any
+        # further env plumbing here. Layer 1 of the pinned amd64 config's
+        # history is `groupadd --gid 1000 node && useradd --uid 1000 --gid node
+        # --shell /bin/bash --create-home node` — the node:22-bookworm-slim
+        # base's own user — and none of the 22 history entries after it removes
+        # that account; the Dockerfile's own `useradd` is the separate 1001
+        # `actual` user described above. So 1000:1000 is `node:node` with a
+        # created home at /home/node, and since the image config carries no
+        # HOME of its own the runtime fills it in from that passwd entry. That
+        # is why there is no HOME override in the env block below.
         defaultPodOptions:
           securityContext:
             runAsUser: 1000
