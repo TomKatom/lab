@@ -33,7 +33,17 @@
 # Tofu has already created those VMs, which layer 1 does before Ansible runs
 # at all (docs/runbooks/provision-new-server.md). Being after pbs is
 # convenient rather than required: rpool/pbs-cache is on that role's
-# forbidden list whether or not the dataset exists yet.
+# forbidden list whether or not the dataset exists yet; wireguard_exporter
+# appends last and is the first role in this list with TWO hard ordering
+# constraints, both of which happen to be satisfied by appending — it must
+# run after wireguard, because it parses the peer-name comments out of the
+# interface configs that role renders and would otherwise publish metrics
+# labelled by public key only, and after node_exporter, because it
+# writes its exposition into that role's textfile directory and reads its
+# node_exporter_textfile_dir default. Neither is a meta/ dependency, for the
+# reason roles/pbs gives for the same coupling; the role asserts the
+# directory exists and stops the play rather than writing into a path nothing
+# reads.
 #
 # Bootstrap ordering: this brings up WireGuard over the host's still-public
 # SSH. Do NOT flip infra/tofu's restrict_management to true until
@@ -92,3 +102,4 @@
     - node_exporter
     - pbs
     - zfs_snapshots
+    - wireguard_exporter

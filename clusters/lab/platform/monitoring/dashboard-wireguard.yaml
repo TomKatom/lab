@@ -1,0 +1,630 @@
+# "WireGuard" — the drill-down surface for the two tunnels on the hypervisor,
+# and the answer to the question this whole feature raised: handing tunnels to
+# other people without being able to see, BY NAME, what each of them is doing.
+#
+# Every series comes from ansible/roles/wireguard_exporter's textfile collector
+# (templates/lab-wireguard-metrics.sh.j2) through the hypervisor's
+# node_exporter, scraped as job="pve-node" by ./scrapeconfig-pve-node.yaml.
+# There is no WireGuard exporter process and no second scrape target; that
+# role's defaults/main.yml explains why the obvious upstream one cannot be
+# installed here.
+#
+# THREE THINGS ON THIS BOARD ARE COUNTERINTUITIVE AND ARE THE MOST LIKELY TO
+# BE "FIXED" INTO A BUG LATER. Each is restated in the description of the
+# panel it applies to, which is where an operator will actually meet it:
+#
+#   "sent" IS THE GUEST'S DOWNLOAD. The metric names are written from the
+#     host's point of view, which is upstream's convention — the host sends,
+#     the peer receives. Renaming the panels to match the metric would put
+#     "sent" on the axis an operator reads as the guest's upload.
+#   THE HANDSHAKE METRIC IS A TIMESTAMP, not an age, despite its `_seconds`
+#     suffix, and 0 means "never handshaked" rather than "just now". Panel 7
+#     therefore subtracts it from time() AND filters `> 0`; drop that filter
+#     and every never-used peer plots fifty-odd years.
+#   AN EMPTY BOARD IS A CORRECT BOARD. This repo ships wg1 with zero guest
+#     peers, so panels 2 and 4 through 6 legitimately show nothing until
+#     someone is onboarded. Panels 1 and 3 are the ones that still say
+#     something in that state, which is why they are not timeseries.
+#
+# Only panel 1 and panel 4 carry thresholds, and both are deliberately the
+# threshold of the alert covering the same condition — any interface missing
+# from WireguardInterfaceDown, and 500 GiB from WireguardExitPeerTransferHigh
+# — so a colour here and a Telegram message are the same event rather than two
+# opinions. Changing one without the other in ./rules-wireguard.yaml is how a
+# dashboard starts disagreeing with the alerts. Nothing else here has a
+# threshold on purpose: a peer being disconnected, or transferring a lot over
+# the management tunnel, is normal operation and colouring it would make the
+# board cry wolf.
+#
+# Panel 1's green step is 2, hard-coded from the length of
+# group_vars/all.yml's `wireguard_instances`. A third tunnel means bumping it,
+# exactly as adding an *arr means bumping the Lab overview backup tile.
+#
+# The datasource is pinned by uid rather than left to default resolution, like
+# ./dashboard-media.yaml and for the same reason: `uid: prometheus` is what
+# ../kube-prometheus-stack.yaml provisions, and a second default datasource
+# would quietly re-point anything relying on resolution.
+#
+# `grafana_dashboard: "1"` is what makes Grafana notice this at all and the
+# VALUE matters as much as the key — the chart renders its sidecar with
+# LABEL_VALUE=1. The data key `wireguard.json` must stay unique across every
+# dashboard ConfigMap in the cluster: the sidecar writes all of them into one
+# flat directory, so two ConfigMaps sharing a key overwrite each other's file.
+# It must NOT be `lab-overview.json`, which ../kube-prometheus-stack.yaml names
+# as the home dashboard path.
+#
+# `editable: false` and a pinned `uid`: edits made in the Grafana UI live only
+# until the sidecar reloads this ConfigMap, so making the panels look editable
+# is a way to lose work. Change it here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-wireguard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: dashboard-wireguard
+data:
+  wireguard.json: |
+    {
+      "annotations": {
+        "list": []
+      },
+      "editable": false,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Counts the WireGuard interfaces the kernel actually reports, out of the two roles/wireguard renders (wg0, the management tunnel; wg1, the guest exit VPN). Amber at one, red at none, matching WireguardInterfaceDown - which is critical for either, because after the restrict_management flip wg0 is the only route to SSH and the Proxmox API on a machine with no console.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 1
+                  },
+                  {
+                    "color": "green",
+                    "value": 2
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(lab_wireguard_interface_up{job=\"pve-node\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "up",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Tunnels up",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Peers on wg1 whose last handshake is under three minutes old - WireGuard rekeys roughly every two minutes while traffic flows, so this is \"is someone using the tunnel right now\". ZERO IS NORMAL and is not coloured as a fault: nobody is obliged to be connected. The \"> 0\" clause drops peers that have never handshaken at all, for which wg reports a literal 0 rather than no series.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "colorMode": "none",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "count(\n  time() - wireguard_latest_handshake_seconds{job=\"pve-node\", interface=\"wg1\"} < 180\n  and\n  wireguard_latest_handshake_seconds{job=\"pve-node\", interface=\"wg1\"} > 0\n) or vector(0)",
+              "instant": true,
+              "legendFormat": "connected",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Guest peers connected",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Peers in the rendered wg1 config, connected or not - i.e. how many guest configs are out there. This repo ships wg1 with zero, so zero here means nobody has been onboarded rather than anything being wrong. It is the denominator for the tile to its left, and the number to check against docs/runbooks/wireguard-exit-peer.md after revoking someone.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 12,
+            "y": 0
+          },
+          "id": 3,
+          "options": {
+            "colorMode": "none",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum(lab_wireguard_peers_configured{job=\"pve-node\", interface=\"wg1\"}) or vector(0)",
+              "instant": true,
+              "legendFormat": "issued",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Guest peers issued",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "The largest 24-hour download by any single wg1 peer. Red at 500 GiB, which is WireguardExitPeerTransferHigh's threshold, so amber-to-red here and a Telegram message are the same event. \"sent\" is server to peer, so it is the guest's DOWNLOAD - the metric is named from the host's point of view. Note WireGuard's counters live in the interface, so a host reboot restarts this window rather than carrying it over.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 536870912000
+                  }
+                ]
+              },
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "max(\n  sum by (friendly_name) (\n    increase(wireguard_sent_bytes_total{job=\"pve-node\", interface=\"wg1\"}[24h])\n  )\n) or vector(0)",
+              "instant": true,
+              "legendFormat": "busiest",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Busiest guest peer, 24 h down",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Rate of bytes the host sends to each wg1 peer, which is that guest's download and the direction that costs OVH bandwidth. Peers are named from the comment roles/wireguard renders above each [Peer] block in the interface config; a series labelled only by a blank name is a peer present in the kernel but not in that file, i.e. added by hand.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 5
+          },
+          "id": 5,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (friendly_name) (\n  rate(wireguard_sent_bytes_total{job=\"pve-node\", interface=\"wg1\"}[5m])\n)",
+              "instant": false,
+              "legendFormat": "{{friendly_name}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Guest download through wg1, per peer",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "Rate of bytes the host receives from each wg1 peer - the guest's upload. Usually a small fraction of the panel to its left; a peer whose upload approaches its download is seeding something through the exit tunnel, which shares an IP with Deluge and is the case worth noticing.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 5
+          },
+          "id": 6,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (friendly_name) (\n  rate(wireguard_received_bytes_total{job=\"pve-node\", interface=\"wg1\"}[5m])\n)",
+              "instant": false,
+              "legendFormat": "{{friendly_name}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Guest upload through wg1, per peer",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "How long ago each peer on either tunnel last completed a handshake. THE UNDERLYING METRIC IS A UNIX TIMESTAMP DESPITE ITS _seconds SUFFIX, so this subtracts it from time(); the \"> 0\" clause drops peers that have never handshaken, for which wg reports a literal 0 and the subtraction would otherwise plot fifty-odd years. A sawtooth around two minutes is a connected peer rekeying; a line climbing without limit is a device that has gone to sleep, which is normal and deliberately has no alert - see rules-wireguard.yaml's header.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 13
+          },
+          "id": 7,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "(\n  time() - wireguard_latest_handshake_seconds{job=\"pve-node\"}\n)\nand\nwireguard_latest_handshake_seconds{job=\"pve-node\"} > 0",
+              "instant": false,
+              "legendFormat": "{{interface}} {{friendly_name}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Handshake age, per peer",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "description": "wg0, the split tunnel that carries the operator's own traffic to SSH, the Proxmox API, PBS and the k8s API. Here for contrast rather than for alerting: nothing on this panel has a threshold, because a large transfer over wg0 is the operator moving their own files and is the point of the tunnel. What it is good for is confirming which admin peer is active during an incident.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "auto",
+                "spanNulls": false
+              },
+              "min": 0,
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 13
+          },
+          "id": 8,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (friendly_name) (\n  rate(wireguard_sent_bytes_total{job=\"pve-node\", interface=\"wg0\"}[5m])\n)",
+              "instant": false,
+              "legendFormat": "{{friendly_name}} down",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              },
+              "editorMode": "code",
+              "expr": "sum by (friendly_name) (\n  rate(wireguard_received_bytes_total{job=\"pve-node\", interface=\"wg0\"}[5m])\n)",
+              "instant": false,
+              "legendFormat": "{{friendly_name}} up",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Management tunnel transfer, per peer",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "tags": [
+        "lab",
+        "wireguard"
+      ],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "WireGuard",
+      "uid": "lab-wireguard",
+      "version": 1,
+      "weekStart": ""
+    }

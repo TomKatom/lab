@@ -1,0 +1,140 @@
+---
+# Role-private vars, prefixed wireguard_exporter_* so they can't collide with
+# another role's defaults. Nothing here restates a fact that lives in
+# config/lab.yml or group_vars/all.yml — the interface list comes from
+# wireguard_instances, which roles/wireguard also renders from.
+#
+# WHY THIS IS A TEXTFILE COLLECTOR AND NOT MindFlavor/prometheus_wireguard_exporter
+#
+# That exporter is what everyone reaches for, and this role deliberately does
+# not install it. It cannot be installed the way this repo installs binaries:
+#
+#   * Its newest release is 3.6.6, published 2022-11-21, and EVERY ONE of its
+#     15 GitHub releases carries an empty `assets` array — source tarball
+#     only. Verified against the releases API at authoring time (2026-08-06):
+#     https://api.github.com/repos/MindFlavor/prometheus_wireguard_exporter/releases/latest
+#     returns "assets": [].
+#   * crates.io agrees the newest published version is 3.6.6 (2022-11-21).
+#   * Debian ships no such package in any suite, bullseye through
+#     experimental.
+#
+# So there is no artifact to `get_url` and no upstream-published checksum to
+# pin it against, which is the entire convention roles/github_runner and
+# roles/argocd follow (a `get_url` + `checksum: "sha256:…"` whose value was
+# derived twice, locally and from an upstream digest — see
+# roles/github_runner/defaults/main.yml for the long version of why bumping
+# one without the other fails closed). The three ways to have it anyway are
+# all worse than not having it:
+#
+#   * `cargo install` — a Rust toolchain on the hypervisor, building an
+#     unpinnable binary from a moving dependency tree, with no checksum
+#     possible. That is the exact opposite of roles/node_exporter's "Debian
+#     packages, not an upstream tarball, so unattended-upgrades keeps them
+#     patched".
+#   * self-host a binary we built — checksumming our own artifact verifies
+#     nothing; it proves the file did not change in transit from ourselves.
+#   * the Docker image — wrong layer. It needs the host's network namespace
+#     and the host's `wg` binary, on a machine that runs no container engine.
+#
+# The exporter's whole job is to reformat `wg show all dump` into exposition,
+# which is ~40 lines of shell. This role does that instead, writing into
+# roles/node_exporter's textfile directory — the same arrangement roles/pbs
+# already uses for the backup metrics, and for the same reason: the host
+# already has a scraped node_exporter, so a lab-owned metric needs no second
+# listener, no second port, no firewall rule and no Renovate pin.
+#
+# THE DECISION IS REVERSIBLE ON PURPOSE, ON THE SIDE THAT IS FREE TO MOVE.
+# The three per-peer series below are emitted under the upstream exporter's
+# exact names (wireguard_sent_bytes_total, wireguard_received_bytes_total,
+# wireguard_latest_handshake_seconds) with its `interface`, `public_key` and
+# `friendly_name` labels, so if a maintained packaged exporter ever appears,
+# the rules and dashboards do not move.
+#
+# What is NOT pre-adapted to it is roles/wireguard's rendered config. Upstream
+# reads peer names from a `# friendly_name = <name>` comment; this repo
+# renders a bare `# <name>` and the collector parses that instead. Rendering
+# upstream's form today would rewrite wg0.conf, and rewriting wg0.conf
+# restarts wg-quick@wg0 — the only route to SSH and the Proxmox API on a host
+# with no IPMI once restrict_management is true. Metric names are free to
+# anticipate a swap; the file that gates the management tunnel is not. Making
+# that swap therefore costs one extra line: reformat the comment in
+# templates/wg.conf.j2 and drop the matching case arm into the collector, both
+# of them deliberate and neither of them urgent.
+#
+# WHERE IT DIVERGES FROM UPSTREAM, all in the same direction — fewer labels:
+#   * no `allowed_ips`. It is a config fact, not a measurement, and it is a
+#     label that CHANGES when a peer's addressing is edited, which starts a
+#     fresh counter series and makes increase() read zero across the edit.
+#   * no `remote_ip` / `remote_port` (upstream's `-r`). Those are the guest's
+#     home address. Putting a residential IP into a metric label writes it
+#     into 15 days of Prometheus TSDB and every dashboard screenshot, for a
+#     value that answers no question this lab asks.
+#   * two extra `lab_wireguard_*` gauges that upstream has no equivalent of —
+#     see below for why the "tunnel is down" alert cannot be written without
+#     them.
+#
+# FIREWALL: NOTHING IS NEEDED, and that is worth stating explicitly rather
+# than leaving as an absence. There is no new listener, so there is no new
+# port to open or close. The metrics leave this host only through the
+# node_exporter that roles/node_exporter already binds to
+# network.vmbr1_host_address (10.10.10.1) on ports.node_exporter, which is
+# already the one entry in infra/tofu/locals.tf `node_mgmt_rules` covering it.
+# Prometheus reaches it from the k3s VM inside internal_subnet, which is in
+# the "+mgmt" ipset.
+#
+# A wg1 guest is kept out by exactly ONE control, and it is worth being
+# precise about which, because the obvious second one does not apply.
+# node_exporter binds network.vmbr1_host_address, a HOST address, so a packet
+# a guest sends to it is delivered locally and hits the input hook —
+# roles/network_nat's forward chain, RFC1918 drop and all, never sees it.
+# (That role's own template says so: "packets addressed to the host's own
+# addresses never reach the forward hook".) The whole of the control is
+# therefore network.wireguard_exit_subnet's absence from
+# local.management_sources, which is why that absence carries a
+# lifecycle.precondition on the resource that stamps the ipset rather than a
+# comment asking future edits to be careful. Adding the exit subnet to
+# management_sources would hand every guest node_exporter, host SSH, the PVE
+# API and PBS in one edit, with nothing else in the way.
+#
+# config/lab.yml gains no `ports` entry here on purpose — a port number in
+# that file that nothing listens on is a lie in the single source of truth.
+
+# The interfaces to expect. Read from wireguard_instances
+# (group_vars/all.yml), the same list roles/wireguard renders, so a third
+# tunnel is picked up with no edit here. This is what makes
+# lab_wireguard_interface_up able to emit a hard 0: `wg show` reports nothing
+# at all for an interface that is down, and absence cannot be told apart from
+# "the collector never ran" without a list of what should be there.
+wireguard_exporter_interfaces: "{{ wireguard_instances | map(attribute='name') | list }}"
+
+# Where roles/wireguard writes <interface>.conf. The peer names are parsed
+# back out of those files rather than templated in from wireguard_instances,
+# because the config is what the KERNEL was given: a name templated in from
+# the inventory would label a public key the running interface may not have
+# yet, on any converge whose render succeeded and whose restart did not.
+# Reading the file joins name to key through the same artefact `wg setconf`
+# read. The script reads only the first comment of each [Peer] block and the
+# `PublicKey` lines; it never touches the `PrivateKey` or `PresharedKey`
+# lines those same files carry.
+wireguard_exporter_config_dir: "{{ wireguard_key_dir | default('/etc/wireguard') }}"
+
+wireguard_exporter_name: lab-wireguard-metrics
+wireguard_exporter_script_path: /usr/local/bin/lab-wireguard-metrics
+
+# Written into roles/node_exporter's textfile directory, which that role
+# creates and asserts. It runs earlier in playbooks/proxmox-host.yml, so its
+# default is in scope here; the literal is the standalone-run fallback, not a
+# second source of truth. A SEPARATE FILE from that role's lab.prom and from
+# roles/pbs' lab-backup.prom, for the reason roles/pbs states — one file per
+# collector means one collector's bad run cannot take the others' metrics
+# with it.
+wireguard_exporter_textfile_dir: "{{ node_exporter_textfile_dir | default('/var/lib/prometheus/node-exporter') }}"
+wireguard_exporter_textfile_path: "{{ wireguard_exporter_textfile_dir }}/lab-wireguard.prom"
+
+# 1 minute, much tighter than the 5 and 15 minutes the other two collectors
+# use. WireGuard rekeys roughly every two minutes while traffic flows, so a
+# handshake age sampled every 5 minutes cannot distinguish "connected" from
+# "gone" at the resolution an operator reads it at. The run costs one
+# `wg show all dump` — a netlink call, no I/O — plus reading two small files,
+# so the frequency is free in a way the ZFS collector's `zpool list` is not.
+wireguard_exporter_interval: 1min

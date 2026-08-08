@@ -1,0 +1,75 @@
+---
+# Per-peer WireGuard telemetry, as a textfile collector feeding the
+# node_exporter roles/node_exporter already runs and Prometheus already
+# scrapes as job="pve-node". Nothing here installs a daemon, opens a port or
+# needs a firewall rule — see defaults/main.yml for why that is a decision
+# rather than a shortcut, and for the evidence that the upstream exporter
+# cannot be installed the way this repo installs binaries.
+#
+# ORDERING: this role must run after roles/wireguard (it reads the configs
+# that role renders, and needs the wireguard-tools it installs) and after
+# roles/node_exporter (it writes into the textfile directory that role
+# creates, and reads its node_exporter_textfile_dir default). Both hold by
+# position in playbooks/proxmox-host.yml rather than by a meta/ dependency,
+# the same arrangement roles/pbs uses for the second of those two.
+
+- name: Assert the textfile collector directory exists
+  # Created and asserted by roles/node_exporter, which runs earlier in the
+  # same play. Checked rather than created, because creating it here would
+  # make this role silently "work" on a host where node_exporter never ran —
+  # writing exposition into a directory nothing reads, with no error and no
+  # metrics.
+  ansible.builtin.stat:
+    path: "{{ wireguard_exporter_textfile_dir }}"
+  register: wireguard_exporter_textfile_dir_stat
+
+- name: Fail early if node_exporter has not run on this host
+  ansible.builtin.assert:
+    that:
+      - wireguard_exporter_textfile_dir_stat.stat.exists
+      - wireguard_exporter_textfile_dir_stat.stat.isdir
+    fail_msg: >-
+      {{ wireguard_exporter_textfile_dir }} does not exist, so nothing would
+      ever read the metrics this role publishes. roles/node_exporter owns
+      that directory and must run before this role — check the role order in
+      playbooks/proxmox-host.yml.
+    success_msg: node_exporter's textfile directory is present.
+
+- name: Install the lab-wireguard-metrics collector script
+  ansible.builtin.template:
+    src: lab-wireguard-metrics.sh.j2
+    dest: "{{ wireguard_exporter_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Refresh lab-wireguard-metrics
+
+- name: Install the lab-wireguard-metrics systemd unit
+  ansible.builtin.template:
+    src: lab-wireguard-metrics.service.j2
+    dest: "/etc/systemd/system/{{ wireguard_exporter_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-wireguard-metrics
+
+- name: Install the lab-wireguard-metrics systemd timer
+  ansible.builtin.template:
+    src: lab-wireguard-metrics.timer.j2
+    dest: "/etc/systemd/system/{{ wireguard_exporter_name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload lab-wireguard-metrics
+
+- name: Enable and start the lab-wireguard-metrics timer
+  # The timer, never the .service: enabling a oneshot's service unit would
+  # make systemd try to "start" it at boot as a dependency and report it
+  # active-exited forever. OnBootSec has long since elapsed on a running
+  # host, so starting the timer fires the first run immediately and the
+  # .prom file exists before the next scrape.
+  ansible.builtin.systemd:
+    name: "{{ wireguard_exporter_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

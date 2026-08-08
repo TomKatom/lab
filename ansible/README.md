@@ -50,6 +50,7 @@ Layout:
 | `node_exporter` | the hypervisor's own node_exporter plus a textfile collector for ZFS capacity, SMART and the \*arr backup ages — [`docs/observability.md`](../docs/observability.md) | `proxmox-host.yml` |
 | `pbs` | Proxmox Backup Server, the B2-backed `lab` datastore, the PVE storage entry, the host's own file-level backup, and the backup metrics collector — [`docs/backups.md`](../docs/backups.md) | `proxmox-host.yml` |
 | `zfs_snapshots` | sanoid: the local ZFS rollback tier on `rpool`, derived from PVE's own `backup=` flags | `proxmox-host.yml` |
+| `wireguard_exporter` | per-peer WireGuard transfer and last-handshake, by peer *name*, as a third textfile collector into `node_exporter`'s directory — no daemon, no port, no firewall rule ([why not the upstream exporter](roles/wireguard_exporter/defaults/main.yml)) | `proxmox-host.yml` |
 | `github_runner` | registers the self-hosted Actions runner on VM 9001 | `runner.yml` |
 | `virtiofs` | mounts the host's `tank/data` share inside the k3s VM | `virtiofs.yml` |
 | `k3s` | formats and mounts the VM's data disks, then installs single-node k3s (bundled Traefik off) | `k3s-vm.yml` |

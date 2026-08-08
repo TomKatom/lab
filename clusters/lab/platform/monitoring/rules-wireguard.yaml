@@ -1,0 +1,198 @@
+# Alert rules for the two WireGuard tunnels on the hypervisor: wg0, the
+# management tunnel that is the only route to SSH and the Proxmox API once
+# restrict_management is true, and wg1, the guest exit VPN.
+#
+# Every series here comes from `ansible/roles/wireguard_exporter`' textfile
+# collector (`templates/lab-wireguard-metrics.sh.j2`) through the hypervisor's
+# node_exporter, scraped by ./scrapeconfig-pve-node.yaml as `job="pve-node"`.
+# There is no separate WireGuard exporter and no second scrape target — the
+# obvious one, MindFlavor/prometheus_wireguard_exporter, has published no
+# release artifact in any of its fifteen releases and cannot be checksum-
+# pinned the way this repo pins every other binary; that role's
+# `defaults/main.yml` carries the evidence. The metric NAMES below are
+# upstream's exactly, so if a packaged exporter ever appears these rules do
+# not change.
+#
+# READ ./rules-pve-host.yaml's HEADER FIRST. The same four properties hold and
+# are not restated: the `job="pve-node"` matcher is load-bearing rather than
+# tidy, there is no `release:` label, there are no angle brackets in
+# annotations (the Telegram receiver runs parse_mode HTML and a stray "<"
+# makes the whole notification fail to send, silently), and the metric and
+# label names are hand-copied from that collector with nothing checking the
+# two agree.
+#
+# THE HANDSHAKE METRIC IS A TIMESTAMP DESPITE ITS `_seconds` SUFFIX, and 0 is
+# a real value meaning "this peer has never completed a handshake". That is
+# `wg`'s own encoding, preserved rather than converted. It is the exact
+# opposite of the absence rule the backup metrics follow, so anything written
+# as `time() - wireguard_latest_handshake_seconds` MUST carry a `> 0` guard or
+# it reports an age of fifty-odd years, forever, for every peer whose config
+# was generated and never used.
+#
+# WHY THERE IS NO "PEER HAS STOPPED HANDSHAKING" ALERT. It is the first rule
+# anyone writes against these metrics and it is wrong here. Both tunnels
+# terminate on laptops and phones: WireGuard rekeys every two minutes while
+# traffic flows and goes silent the moment the device sleeps, so a stale
+# handshake is the NORMAL state of a correct peer, not a fault. An alert on it
+# would fire every night for every peer and train the operator to ignore the
+# group. Handshake age is a dashboard question — ./dashboard-wireguard.yaml
+# shows it per peer — and the thing that genuinely is a fault, the interface
+# itself being gone, has its own rule below.
+#
+# WHY `lab_wireguard_interface_up` EXISTS AT ALL rather than an absent() over
+# the peer series. `wg show` reports nothing whatsoever for an interface that
+# is down — no line, no error — so absence cannot distinguish "wg1 is gone"
+# from "no guest has ever been issued a key", and this repo ships wg1 with
+# ZERO peers. An absent()-based rule would therefore have fired from the day
+# it merged, on a completely healthy host. The collector emits a hard 0 for
+# every interface in `wireguard_instances` instead, which is a fact about the
+# interface rather than about who is using it.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: wireguard
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: wireguard
+spec:
+  groups:
+    - name: wireguard
+      rules:
+        # Deliberately not scoped to wg1. wg0 going down is the more serious
+        # of the two — after the restrict_management flip it is the only way
+        # to reach SSH and the Proxmox API on a machine with no IPMI and no
+        # console, so the window in which it can be fixed from a still-open
+        # session is the window this alert exists to open. wg1 going down is
+        # a dead feature rather than a dead machine, but the check, the
+        # threshold and the first response are identical, and one rule
+        # labelled by interface is clearer than two.
+        #
+        # No `and on() up{job="pve-node"} == 1` guard, unlike the backup
+        # rules: during a node_exporter outage this series is ABSENT rather
+        # than 0, so the expression is already empty and PveNodeExporterDown
+        # is already saying so.
+        #
+        # THE REMEDIATION BELOW IS THE PART TO GET RIGHT, because a wg0 alert
+        # fires in the one state where the operator's usual route is the
+        # thing that is broken. Once restrict_management is true, host SSH,
+        # the Proxmox API and PBS carry `source = "+mgmt"` (firewall.tf), and
+        # local.management_sources is internal_subnet + wireguard_subnet —
+        # so from outside the lab, wg0 IS the only source address that gets
+        # in, and nothing about the public IP helps. What still works is CI:
+        # the self-hosted runner is a VM on vmbr1, so its SSH to the host
+        # carries a source inside internal_subnet, and it needs no inbound
+        # connectivity of its own (it polls GitHub outbound). Naming it here
+        # rather than "reach the host" in the abstract is the difference
+        # between a five-minute fix and reaching for OVH rescue mode, which
+        # reboots the whole machine.
+        - alert: WireguardInterfaceDown
+          expr: lab_wireguard_interface_up{job="pve-node"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: WireGuard interface {{ $labels.interface }} is not up on the Proxmox host
+            description: >-
+              The host has a rendered config for {{ $labels.interface }} but
+              the kernel reports no such interface, so every peer on it is
+              failing to connect. If you still have a session on the host, do
+              not close it - "systemctl status
+              wg-quick@{{ $labels.interface }}" and "journalctl -u
+              wg-quick@{{ $labels.interface }}" from there.
+              If this is wg0 you cannot open a new one: host SSH and the
+              Proxmox API accept the "+mgmt" ipset only, which is the
+              internal and WireGuard subnets, and wg0 is how you get a source
+              address in the second. The public IP is not a way back in.
+              What does work is CI - run the ansible-apply workflow by
+              workflow_dispatch with playbook "proxmox-host". It executes on
+              the self-hosted runner, a VM on vmbr1 whose source address is
+              already inside "+mgmt", and roles/wireguard starts a stopped
+              interface. That this alert reached you is itself evidence the
+              path is open, since producing it took a Prometheus scrape of
+              the host. If CI cannot reach it either, the host itself is
+              gone, not just wg0, and the only remaining way in is OVH
+              rescue mode - which reboots the whole lab. See
+              docs/runbooks/lockout-recovery.md.
+
+        # 500 GiB of DOWNLOAD in 24 hours, per guest peer. This is a
+        # tripwire for a leaked or shared config, not a quota: the exit
+        # tunnel's whole purpose is streaming, and every byte crosses the
+        # German uplink twice (in from the origin, out to the guest), so a
+        # number this size means either a torrent client pointed through the
+        # tunnel or a config in more hands than were intended. Confirm which
+        # before raising it.
+        #
+        # `sent` is server to peer, so it IS the guest's download - the
+        # metric is named from the host's point of view, upstream's
+        # convention. `sum by` collapses public_key so a peer that is
+        # re-keyed under the same name does not split into two series
+        # mid-window, and it is written to survive the extra labels
+        # (allowed_ips, endpoint) the upstream exporter would add if it were
+        # ever swapped in.
+        #
+        # increase() reads a counter reset correctly, but note that
+        # WireGuard's byte counters live in the interface: a host reboot or a
+        # wg-quick restart zeroes them, so the 24 h window restarts rather
+        # than carrying over. The failure direction is a missed alert, not a
+        # false one.
+        #
+        # wg1 only. wg0 is a split tunnel carrying the operator's own
+        # management traffic to the lab's own services; a large transfer
+        # there is someone pulling their own files, which is the point of it.
+        - alert: WireguardExitPeerTransferHigh
+          expr: |-
+            sum by (interface, friendly_name) (
+              increase(wireguard_sent_bytes_total{job="pve-node", interface="wg1"}[24h])
+            ) > 500 * 1024 * 1024 * 1024
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: Guest peer {{ $labels.friendly_name }} has pulled an unusual volume through wg1
+            description: >-
+              {{ $labels.friendly_name }} has downloaded
+              {{ $value | humanize1024 }}B through the guest exit tunnel in
+              the last 24 hours. Every byte of that crosses the OVH uplink
+              twice. Check the peer is still in the hands you issued it to;
+              revoking one is a PR removing it from wireguard_exit_peers plus
+              a converge - see docs/runbooks/wireguard-exit-peer.md.
+
+        # Everything above is read out of one file that one timer writes, and
+        # a frozen file does not look broken: lab_wireguard_interface_up
+        # keeps reporting 1 for an interface that went down an hour ago.
+        # Ten minutes is ten missed runs at the collector's one-minute
+        # interval.
+        #
+        # The `file` label is node_exporter's FULL PATH to the .prom file, not
+        # its basename - the same trap ./rules-backups.yaml records. The
+        # chart's own NodeTextFileCollectorScrapeError does not cover this
+        # host: like every upstream node-exporter rule it is scoped
+        # job="node-exporter", and the hypervisor is job="pve-node".
+        - alert: WireguardMetricsStale
+          expr: |-
+            (
+              time() - node_textfile_mtime_seconds{job="pve-node", file="/var/lib/prometheus/node-exporter/lab-wireguard.prom"} > 600
+              or
+              absent(node_textfile_mtime_seconds{job="pve-node", file="/var/lib/prometheus/node-exporter/lab-wireguard.prom"})
+            )
+            and on() up{job="pve-node"} == 1
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: The WireGuard metrics collector has stopped publishing
+            description: >-
+              lab-wireguard.prom has not been rewritten in over ten minutes,
+              so WireguardInterfaceDown is reading frozen numbers and cannot
+              fire. Check "systemctl status lab-wireguard-metrics.service
+              lab-wireguard-metrics.timer" on the host. The collector checks
+              its own output against the exposition grammar before the rename
+              that publishes it, so a run that produced something unparseable
+              leaves the previous file in place and shows up here rather than
+              as a parse error taking out the host's other textfile metrics.
+              That is the case worth ruling out first, and it is cheap to:
+              the refused output is kept, root-only, beside the live file as
+              lab-wireguard.prom.rejected, and the journal names the line
+              number that failed. If that file is absent the collector never
+              got as far as writing one, and the timer or the unit is the
+              problem rather than the metrics.
