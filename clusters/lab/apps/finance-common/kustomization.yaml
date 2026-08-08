@@ -1,0 +1,16 @@
+# Rendered by the ksops-patched Argo repo-server (Phase 4) — `kustomize build`
+# here needs `--enable-alpha-plugins --enable-exec` plus the age key, which is
+# why CI skips this directory (see ../../platform/README.md "Pre-merge review").
+# It and ../media-common are the two directories under apps/ that CI skips; the
+# skip is automatic, from grepping the directory for `kind: ksops`.
+#
+# Generators only, no `resources:` — the namespace comes from
+# ../finance-common.yaml's CreateNamespace and the Secret is the only object
+# this overlay has to produce, the same shape ../../platform/external-dns/ has
+# for the same reason. And no `namespace:` transformer: the Secret carries its
+# own, exactly as ../media-common/ does.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators:
+  - secret-generator.yaml

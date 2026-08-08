@@ -1,0 +1,40 @@
+# finance-common — the `finance` namespace and the one Secret anything in it
+# needs before it starts: `moneyman-config`, which carries moneyman's entire
+# configuration, bank logins included, as a single JSON document.
+#
+# Wave 0 within apps/, so CreateNamespace lives here rather than on
+# ./actual.yaml or ./moneyman.yaml — the same first-syncer rule
+# media-common.yaml follows for `media` and filebrowser-config.yaml follows
+# for `share`. Exactly one Application per namespace may carry it (see
+# ./README.md "Sync waves").
+#
+# This is the third namespace this directory owns, and the argument for it is
+# ./README.md "One `media` namespace, not one per app" read in reverse:
+# nothing in `finance` consumes a media-common Secret, so the re-encryption
+# cost that keeps the media stack in one namespace is never charged here,
+# while the Secret this overlay does decrypt is the one credential in the repo
+# that no *arr has any business being able to read. As with `share`, that is a
+# Secret boundary and nothing more — see ./README.md "The `finance`
+# namespace".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: finance-common
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:TomKatom/lab.git
+    targetRevision: master
+    path: clusters/lab/apps/finance-common
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: finance
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

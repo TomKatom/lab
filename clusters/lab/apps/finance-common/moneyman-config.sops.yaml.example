@@ -1,0 +1,105 @@
+# TEMPLATE — not applied, not encrypted, not read by anything. It exists so the
+# shape of the real file is reviewable in git while the real file is opaque
+# ciphertext. ./moneyman-config.sops.yaml already exists next to it with these
+# same placeholders encrypted, so the operator's job is `sops` on that file
+# rather than a copy — this one stays, as the diffable reference for what each
+# placeholder means.
+#
+# Every key below was checked field by field against moneyman's own zod schema
+# at the pinned release `v2026.07.18.1` (`src/config.schema.ts`), not against
+# upstream's README, because the README is looser than the schema. The
+# top-level object accepts exactly three keys — `accounts`, `storage`,
+# `options` — and silently drops anything else, so a typo here costs a setting
+# with no error anywhere.
+#
+# `accounts` entries are a loose object: `companyId` and `password` are typed,
+# and everything else passes straight through to israeli-bank-scrapers (v6.8.0
+# at this release), which is where the per-bank field names come from. Its
+# `src/definitions.ts` gives hapoalim `userCode` + `password` and isracard
+# `id` + `card6Digits` + `password`; `id` is the national ID number.
+#
+# `storage.actual` is `serverUrl` / `password` / `budgetId` / `accounts`.
+# `password` is Actual's *server* password, the one set interactively on first
+# visit to budget.tomkatom.com, not an Actual user account. `budgetId` is the
+# Sync ID from Settings then Advanced. `accounts` maps scraper-side account id
+# to Actual account UUID, and the key is specifically israeli-bank-scrapers'
+# `account.accountNumber` — the UUID is the one in the account page's URL.
+#
+# `serverUrl` is the in-cluster Service DNS of the Actual server and is
+# deliberately not budget.tomkatom.com. See the header of
+# ./moneyman-config.sops.yaml for why the public hostname is the wrong address
+# here and what a rename of Actual's Service costs; the coupling is recorded
+# in that file, so the argument for it lives there too.
+#
+# `options.scraping.transactionHashType: "moneyman"` is load-bearing and is
+# the one value here that must be right *before the first import*. See the
+# header of ./moneyman-config.sops.yaml for the full argument; the short
+# version is that it is what makes `daysBack: 14` overlap free, and that
+# changing it later re-imports the whole window as duplicates.
+#
+# `options.logging.getIpInfoUrl: false` suppresses an outbound call to
+# ipinfo.io that moneyman otherwise makes on every run. It is not a security
+# control, just an egress the lab has no use for; the schema accepts the
+# literal `false` or a URL.
+#
+# `options.notifications.telegram` exists upstream (`apiKey`, `chatId`,
+# `enableOtp`, `otpTimeoutSeconds`, `sendLogFileToTelegram`) and is left out on
+# purpose. Alerting in this lab rides one path — Prometheus to Alertmanager to
+# the Telegram group — and adding moneyman's own notifier would put the bot
+# token in a third encrypted home to rotate. Note that `storage.telegram` is a
+# different thing again: it ships the scraped transactions themselves to a
+# chat, and is not wanted here at all.
+#
+# ⚠ Placeholders read `FILL_ME` rather than this repo's usual
+# `<paste-something-here>` because they sit inside a JSON document, where the
+# angle-bracket form reads like markup rather than like a blank. They are still
+# just strings; nothing parses them.
+#
+# ⚠ In the real file, the value under `MONEYMAN_CONFIG` must stay a block
+# scalar (`|`). A block scalar is a string, and `stringData` is
+# map[string]string — retyped as a flow scalar the Secret can still encrypt and
+# then fails only at Argo sync time, with every other resource in the overlay
+# applied and this one Secret missing. CI greps for the `type:str` tag so that
+# lands at PR time instead.
+#
+# ⚠ This file's name matters twice over. ../../../../.sops.yaml matches
+# `clusters/.*\.sops\.ya?ml$` with `encrypted_regex: ^(data|stringData)$`, so
+# only the payload of the real file is encrypted and its metadata stays
+# diffable. And ./secret-generator.yaml lists `moneyman-config.sops.yaml` by
+# that exact name: until the encrypted file exists at that path the ksops
+# generator cannot resolve it and the whole finance-common overlay fails to
+# render in the repo-server. The `.example` suffix is what keeps *this* file
+# out of both CI's sops type check (`find clusters -name '*.sops.yaml'`) and
+# its direct-CR kubeconform lint (`find clusters -name '*.yaml'`); neither
+# pattern matches it, and yamllint skips it too.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: moneyman-config
+  namespace: finance
+type: Opaque
+stringData:
+  MONEYMAN_CONFIG: |
+    {
+      "accounts": [
+        { "companyId": "hapoalim", "userCode": "FILL_ME", "password": "FILL_ME" },
+        { "companyId": "isracard", "id": "FILL_ME_TZ", "card6Digits": "FILL_ME", "password": "FILL_ME" }
+      ],
+      "storage": {
+        "actual": {
+          "serverUrl": "http://actual.finance.svc.cluster.local:5006",
+          "password": "FILL_ME_ACTUAL_SERVER_PASSWORD",
+          "budgetId": "FILL_ME_SYNC_ID",
+          "accounts": { "FILL_ME_SCRAPED_ACCOUNT_NUMBER": "FILL_ME_ACTUAL_ACCOUNT_UUID" }
+        }
+      },
+      "options": {
+        "scraping": {
+          "daysBack": 14,
+          "futureMonths": 1,
+          "maxParallelScrapers": 1,
+          "transactionHashType": "moneyman"
+        },
+        "logging": { "getIpInfoUrl": false }
+      }
+    }

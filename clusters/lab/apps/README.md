@@ -2,8 +2,10 @@
 
 The media stack: Deluge, Prowlarr, Sonarr, Radarr, Bazarr, Unpackerr, Plex,
 Seerr, Tautulli, Maintainerr, Recyclarr, Homepage, and the shared
-`media-common` config — plus `filebrowser`, which is here but deliberately
-not in the `media` namespace (see [The `share` namespace](#the-share-namespace)) —
+`media-common` config — plus `filebrowser` and `finance-common`, both here but
+deliberately not in the `media` namespace (see
+[The `share` namespace](#the-share-namespace) and
+[The `finance` namespace](#the-finance-namespace)) —
 discovered the same way `platform/` is —
 `clusters/lab/platform/apps.yaml` is a chart-free Application at sync-wave
 `"3"` (after every platform wave 0-2, since every app here assumes Traefik,
@@ -48,10 +50,11 @@ don't trust each other — doesn't buy anything here.
 
 ## The `share` namespace
 
-`filebrowser` is the one Application in this directory whose
-`destination.namespace` is not `media`, and the argument above is exactly why:
-it is the one app here that consumes none of `media-common`'s Secrets, so the
-re-encryption cost that keeps the media stack together simply isn't charged.
+`filebrowser` was the first Application in this directory to carry a
+`destination.namespace` other than `media` — `finance` below is the second
+namespace to follow it out — and the argument above is exactly why: it
+consumes none of `media-common`'s Secrets, so the re-encryption cost that
+keeps the media stack together simply isn't charged against it.
 What it does have is the property that argument assumes away — it is not part
 of the same trust domain. Its `/public` routes are reachable from the open
 internet with no session, which makes it the one service here where "a bug in
@@ -67,6 +70,31 @@ actually confines this pod is
 from the `traefik` namespace only, egress to DNS only. Read its comment block
 before changing anything about how that app authenticates, because the app
 trusts a header and the policy is the only reason that is safe.
+
+## The `finance` namespace
+
+`finance` is the third namespace this directory owns, and so far the only
+Application in it is [`finance-common.yaml`](finance-common.yaml) — the wave
+`"0"` first-syncer that creates the namespace and decrypts `moneyman-config`,
+under the same rule `filebrowser-config` follows for `share`. The two
+workloads that Secret exists for, `actual` and `moneyman`, land later in
+Phase 11; the namespace and the credentials go in first because everything
+else in the phase depends on them.
+
+The first half of the argument for a namespace of its own is the same as
+`share`'s: nothing here consumes a `media-common` Secret, so the re-encryption
+cost that keeps the media stack in one namespace is never charged against it.
+The second half runs the other way round. `filebrowser` got its own namespace
+because of what it *is* — a process reachable with no session, which must not
+also be able to read the media Secrets. `finance` gets one because of what it
+*holds*: `moneyman-config` carries two real bank logins and the Actual server
+password, and a namespace is the cheapest way to say that a compromised *arr
+has no path to them.
+
+The same caveat applies as above — this is a Secret boundary and nothing more.
+There is no NetworkPolicy here, because the thing that made one necessary next
+door was FileBrowser's unauthenticated `/public` routes, and nothing in
+`finance` serves a route Authelia does not gate.
 
 ## Identity: everything runs as 1000:1000
 
@@ -233,7 +261,8 @@ key) — one file per app holds host, Service and port together, and the
 widened CI render step (see below) renders and validates it exactly like
 the rest of the values. A `-config` dir only exists where there's
 multi-file plain config with nothing to do with a chart's own resources
-(`recyclarr`, `homepage`) or a ksops Secret to decrypt (`media-common`) —
+(`recyclarr`, `homepage`) or a ksops Secret to decrypt (`media-common`,
+`finance-common`) —
 see "Sync waves" and "Kustomize `-config` dirs" below.
 
 House Ingress style is unchanged from `platform/` (see
@@ -438,13 +467,18 @@ deferred to Phase 8.
   carries `syncOptions: [CreateNamespace=true]` — the same first-syncer
   rule `authelia-config.yaml` follows for the `authelia` namespace. Every
   other app's Secret/ConfigMap consumption assumes it already exists.
-- **`filebrowser-config` — wave `"0"`.** The same rule for the *other*
+- **`filebrowser-config` — wave `"0"`.** The same rule for the second
   namespace this directory owns: it is the only Application carrying
   `CreateNamespace=true` for `share`, and its NetworkPolicy has to exist
   before the pod it constrains starts listening.
+- **`finance-common` — wave `"0"`.** And again for the third: the only
+  Application carrying `CreateNamespace=true` for `finance`, and the one that
+  decrypts `moneyman-config`, which `moneyman` reads in full and cannot start
+  without.
 - **App charts — wave `"1"`** (`deluge`, `unpackerr`, `prowlarr`,
   `flaresolverr`, `sonarr`, `radarr`, `bazarr`, `plex`, `tautulli`,
-  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`, `filebrowser`),
+  `seerr`, `maintainerr`, `exportarr`, `plex-exporter`, `filebrowser`,
+  `actual`, `moneyman`),
   together with `recyclarr-config`'s and `homepage-config`'s own
   kustomize-source Applications. The two exporters share the wave with the apps they scrape
   rather than trailing them: neither probes its target at startup, so a
@@ -488,10 +522,11 @@ only exists where there's:
   the namespace anyway, so the overlay is the only home for it. Note what is
   *not* in there: FileBrowser's `config.yaml` stays in the chart Application's
   `configMaps:` precisely because of the drift window below.
-- **A ksops Secret to decrypt** — `media-common`, the one directory in
-  this stack that CI's kustomize step deliberately skips building (no
-  `SOPS_AGE_KEY` in that job), the same way every platform `-config`
-  overlay with a `.sops.yaml` file is skipped.
+- **A ksops Secret to decrypt** — `media-common` and `finance-common`, the
+  two directories in this stack that CI's kustomize step deliberately skips
+  building (no `SOPS_AGE_KEY` in that job), the same way every platform
+  `-config` overlay with a `.sops.yaml` file is skipped. `finance-common` is
+  the pure case: it has no `resources:` at all, only the generator.
 
 What splitting the config out costs, in both cases: app-template only
 stamps its `checksum/configMaps` pod annotation — the thing that rolls a

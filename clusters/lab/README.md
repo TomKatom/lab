@@ -16,10 +16,11 @@ everything here is reconciled from git; nothing is applied by hand.
   and Homepage, each an `Application` against the shared `bjw-s/app-template`
   chart with inline values, all in one `media` namespace (Phase 6, live —
   see [`apps/README.md`](apps/README.md)). Homepage holds the apex,
-  `tomkatom.com`; everything else lives on a subdomain of it. `filebrowser`
-  (Phase 9) is the one app here outside `media` — it sits in its own `share`
-  namespace, for the reason recorded in
-  [`apps/README.md`](apps/README.md#the-share-namespace).
+  `tomkatom.com`; everything else lives on a subdomain of it. Two
+  namespaces here are not `media`: `filebrowser` (Phase 9) sits in `share`
+  and the personal-finance stack (Phase 11) in `finance`, each for the
+  reason recorded in [`apps/README.md`](apps/README.md#the-share-namespace)
+  and [`apps/README.md`](apps/README.md#the-finance-namespace).
 
 `root-app` does not watch `apps/` itself. `platform/apps.yaml` — an
 ordinary top-level `platform/*.yaml` manifest, so `root-app` picks it up
