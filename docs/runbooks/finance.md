@@ -127,6 +127,7 @@ kubectl -n finance run moneyman-discover --rm -it --restart=Never \
   --image=ghcr.io/daniel-hauser/moneyman:v2026.07.18.1 \
   --overrides='{"spec":{"containers":[{"name":"moneyman-discover",
     "image":"ghcr.io/daniel-hauser/moneyman:v2026.07.18.1",
+    "stdin":true,"tty":true,
     "env":[{"name":"MONEYMAN_UNSAFE_STDOUT","value":"true"},
            {"name":"DEBUG","value":"moneyman:*"},
            {"name":"MONEYMAN_CONFIG","valueFrom":{"secretKeyRef":
@@ -148,11 +149,17 @@ each colon are the keys for `storage.actual.accounts`.
 Three things about that Pod. Use the same digest-pinned image reference the
 CronJob uses — copy it out of `moneyman.yaml` rather than the tag written
 above, which is only there to keep the command readable. `--overrides`
-replaces the container wholesale, so the image has to appear inside it as well
-and any `--env` flags on the command line are ignored. And it prints real
-transaction descriptions and amounts to stdout,
-which this cluster ships to Loki like any other pod — a fair trade for one run,
-not something to leave switched on.
+replaces the container wholesale — kubectl's default override type is a JSON
+merge patch, which swaps out the whole `containers` array rather than merging
+into it — so everything the generated container carried has to be restated
+inside the override: the image, and also `"stdin"` and `"tty"`, which is where
+`-it` put them. Omitting those two is the easy mistake and a quiet one: the
+run still happens, but without an allocated TTY, and the account ids this
+whole step exists to collect are the thing you then do not get to read. Any
+`--env` flags on the command line are dropped the same way. And it prints real
+transaction descriptions and amounts to stdout, which this cluster ships to
+Loki like any other pod — a fair trade for one run, not something to leave
+switched on.
 
 ### 2.5 Fill the config
 

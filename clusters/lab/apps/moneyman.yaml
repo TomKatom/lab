@@ -35,7 +35,15 @@
 #     "bank scrapers are flaky, retries are cheap"; that is false at this
 #     tag. It is kept at 2 for the failures that *do* produce a non-zero pod
 #     — image pull, OOM kill, eviction, DeadlineExceeded — and nothing else.
-#   - the chart's own `KubeJobFailed` will never fire for a broken scrape.
+#   - `KubeJobFailed` will never fire for a broken scrape. That rule is not
+#     this chart's — app-template renders no PrometheusRule at all, only a
+#     ServiceAccount and the CronJob below. It is one of
+#     kube-prometheus-stack's defaults (group `kubernetes-apps`), live here
+#     only because ../platform/kube-prometheus-stack.yaml trims
+#     `defaultRules.rules` down to etcd, kubeControllerManager, kubeProxy
+#     and the two kubeScheduler entries and leaves `kubernetesApps`
+#     enabled. Its expression is `kube_job_failed > 0`, and a Job that
+#     exits 0 never produces that series.
 #   - the sibling monitoring PR's `MoneymanStale` watches
 #     `kube_cronjob_status_last_successful_time`, which advances on Job
 #     completion, so it detects "this CronJob stopped running at all" and
@@ -151,8 +159,9 @@ spec:
               # jobTemplate.spec.activeDeadlineSeconds — so an hour is the
               # budget for the whole Job including all backoffLimit
               # attempts, not per attempt. Blowing it fails the Job as
-              # DeadlineExceeded, which is one of the few states the chart's
-              # own KubeJobFailed can actually see.
+              # DeadlineExceeded, which is one of the few states
+              # kube-prometheus-stack's KubeJobFailed can actually see (see
+              # the header for why that rule reaches this namespace at all).
               activeDeadlineSeconds: 3600
               # Not set here but rendered anyway: app-template defaults
               # startingDeadlineSeconds to 30 (Kubernetes' own default is

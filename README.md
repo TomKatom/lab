@@ -69,6 +69,17 @@ It ships with no peers; issuing one is
 which is also honest about what it is not — the big streamers block
 datacenter ASNs regardless of country.
 
+**Phase 11 — Personal finance** adds a `finance` namespace holding Actual
+Budget on `budget.tomkatom.com` — behind Authelia and its own server password,
+deliberately not linked from the public homepage — and a nightly CronJob that
+drives headless Chromium through Bank Hapoalim and Isracard and imports the
+month into the budget. It ships inert: the credentials are a template and the
+CronJob is merged suspended, so nothing scrapes until the operator bootstrap in
+[`docs/runbooks/finance.md`](docs/runbooks/finance.md), which is also honest
+about the trap that shapes the whole design — the scraper exits `0` whatever
+happens, so a Succeeded Job is not a successful scrape and the only evidence
+either way is new rows in the budget.
+
 The DNS cutover has since run: external-dns writes for real, and every
 hostname above resolves publicly to `145.239.3.55`. One thing is
 deliberately still pending:
