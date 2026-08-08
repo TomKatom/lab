@@ -29,9 +29,11 @@ NVMe + 2×2 TB HDD), single public IP. Proxmox host is already installed;
 `rpool` (NVMe ZFS mirror) serves as its root. Everything else — VM,
 networking, cluster, apps — is built as code from this repo.
 
-Domain: `tomkatom.com` (Cloudflare DNS). Access is WireGuard-only; there is
-no public SSH and no IPMI/console, so the management plane must never be
-self-strandable — see [Management plane](#management-plane).
+Domain: `tomkatom.com` (Cloudflare DNS). Management access is `wg0`-only;
+there is no public SSH and no IPMI/console, so the management plane must
+never be self-strandable — see [Management plane](#management-plane). A
+second tunnel, `wg1`, exists for the opposite purpose — giving a guest the
+internet from this server's IP — and reaches no management surface at all.
 
 ## Configuration single source of truth
 
@@ -78,16 +80,17 @@ image checksum) stay declared in that layer, alongside its secrets.
 
 ```
 OVH dedicated (Proxmox 9.2) — SINGLE public IP
-│  Public inbound: 443 · 32400 · torrent-port  (DNAT → VM)  ·  51820/udp (WireGuard, host)
-│  Management (SSH/8006/6443/9100): WireGuard-only, never public
-│  Egress: VM → internet via host masquerade (appears as the OVH IP)
+│  Public inbound: 443 · 32400 · torrent-port  (DNAT → VM)  ·  51820/udp (wg0, host) · 51821/udp (wg1, host)
+│  Management (SSH/8006/6443/9100): wg0-only, never public — wg1 reaches none of it
+│  Egress: VM → internet via host masquerade (appears as the OVH IP); wg1 guests likewise
 │
 ├─ rpool (ZFS mirror, 2×500GB NVMe)  ── Proxmox root + VM system disks + app CONFIG (fast)
 ├─ tank  (ZFS stripe, 2×2TB HDD)     ── media library + downloads (bulk, non-redundant)
 │
 ├─ Proxmox firewall (filtering)      ←── OpenTofu (bpg): datacenter/node/VM rules
 ├─ WireGuard + NAT/DNAT + OS hardening + ZFS + virtiofs  ←── Ansible
-│      └─ WG peers routed into vmbr1 (10.10.10.0/24)
+│      ├─ wg0 peers routed into vmbr1 (10.10.10.0/24) — management
+│      └─ wg1 guests routed to the internet only (10.10.30.0/24) — exit VPN, firewalled off the lab
 │
 └─ VM: k3s-node  (vmbr1 internal IP, behind host NAT)
      ├─ virtiofs mount /data  ← host tank/data (hardlink-friendly single tree)
@@ -114,7 +117,8 @@ OVH dedicated (Proxmox 9.2) — SINGLE public IP
 | Provisioning | **OpenTofu** + `bpg/proxmox`, `cloudflare` | Open-source; bpg is the maintained Proxmox provider (also manages the PVE filter firewall) |
 | Tofu state | **local + native state encryption** (OpenTofu ≥1.7), committed to git | No external vendor; git stays source of truth |
 | Config mgmt | **Ansible** (+ `community.sops`) | WireGuard, NAT/DNAT, OS hardening, ZFS, k3s bootstrap |
-| Mgmt access | **WireGuard** (on host) | SSH/PVE/k8s APIs private; no public SSH |
+| Mgmt access | **WireGuard `wg0`** (on host) | SSH/PVE/k8s APIs private; no public SSH |
+| Guest exit VPN | **WireGuard `wg1`** (on host, separate keypair) | Full tunnel out of the German IP; isolated from the lab in the `lab-nat` forward chain, never in the `+mgmt` ipset |
 | Single-IP sharing | **nftables NAT/DNAT** (Ansible `network-nat`) | Forwards 443/32400/torrent to VM; masquerades egress |
 | Cluster | **k3s** (single node, bundled Traefik disabled) | Lightweight k8s; Traefik managed via Argo, bound to `:443` by Pod `hostPort` so it sees real client IPs (klipper servicelb masqueraded them; no MetalLB), with a per-source-IP `rateLimit` on the entrypoint covering every router |
 | GitOps | **Argo CD** (app-of-apps) | UI + drift/sync visibility |
@@ -154,15 +158,28 @@ dependency.
 
 ### Management plane
 
-WireGuard listens on public `51820/udp`. SSH(22), Proxmox UI/API(8006), the
-k8s API(6443), and the host node_exporter(9100) are **not** in the public
-accept list — reachable only over the WG interface or from the internal
-subnet, which is what lets Prometheus in the k3s VM scrape the host. WG peers are routed into `vmbr1`, so a laptop peer
-reaches both host and VM management over the tunnel. Each peer is scoped to
-its own `/32` on the host side (that field is the anti-spoof source filter,
-not the peer's route list — see
+WireGuard's management tunnel `wg0` listens on public `51820/udp`. SSH(22),
+Proxmox UI/API(8006), the k8s API(6443), and the host node_exporter(9100) are
+**not** in the public accept list — reachable only from the `+mgmt` ipset,
+which is the internal subnet plus `wg0`'s peer subnet, and that second half
+is what lets Prometheus in the k3s VM scrape the host. `wg0` peers are routed
+into `vmbr1`, so a laptop peer reaches both host and VM management over the
+tunnel. Each peer is scoped to its own `/32` on the host side (that field is
+the anti-spoof source filter, not the peer's route list — see
 [`docs/networking.md`](networking.md#wireguard-management-plane)), with an
 optional preshared key on top of the handshake.
+
+"Reachable over WireGuard" is *not* the rule, and the distinction is
+load-bearing now that a second tunnel exists. The host also runs `wg1`, a
+guest exit VPN on public `51821/udp` whose peer subnet is deliberately absent
+from `management_sources` and therefore from the `+mgmt` ipset — so a guest
+holding a valid `wg1` key reaches none of the ports above, and is firewalled
+out of the lab entirely in the `lab-nat` forward chain. That omission is the
+access control, so `infra/tofu/firewall.tf` carries a
+`lifecycle.precondition` that fails the apply if the exit subnet is ever
+added to that list. Design:
+[`docs/networking.md`](networking.md#wireguard-guest-exit-plane); procedure:
+[`docs/runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md).
 
 Those endpoints are addressable by name — `pve.lab.tomkatom.com`,
 `k3s.lab.tomkatom.com` — via grey-cloud Cloudflare records whose targets are
@@ -189,8 +206,9 @@ rules gate their `source` on a single `restrict_management` variable. Phase
 those rules accept from *any* source, so public SSH survives even though
 the firewall is live. Phase 3 flips it to `true` only after WireGuard is
 verified end-to-end; at that point only the `source` on those rules narrows
-to the `mgmt` ipset (`management_sources`). 443/32400/torrent/51820-udp
-stay public throughout. `enable_firewall` is a separate master kill-switch.
+to the `mgmt` ipset (`management_sources`). 443/32400/torrent and the two
+WireGuard endpoints (51820-udp, 51821-udp) stay public throughout.
+`enable_firewall` is a separate master kill-switch.
 
 *Half two — when the DROP policy is allowed to exist.* The default-DROP
 policy and the accept rules are **separate API objects**, so having correct
@@ -209,8 +227,9 @@ empty management-rule set, or `restrict_management = true` with an empty
 `management_sources`.
 
 **Exposed public ports:** `443` (Traefik/DNAT) · `32400` (Plex direct/DNAT)
-· torrent port (Deluge/DNAT) · `51820/udp` (WireGuard/host). Everything
-else default-drop.
+· torrent port (Deluge/DNAT) · `51820/udp` (WireGuard `wg0`/host) ·
+`51821/udp` (WireGuard `wg1`, guest exit/host). Everything else
+default-drop.
 
 ### Storage split
 
@@ -310,8 +329,12 @@ which hangs `tofu plan`/`apply` on every run.
 
 ## Security / hardening
 
-- **No public management surface** — SSH/PVE/k8s APIs are WireGuard-only;
-  the only public ports are 443/32400/torrent/51820-udp.
+- **No public management surface** — SSH/PVE/k8s APIs accept only from the
+  `+mgmt` ipset, i.e. the internal subnet and `wg0`'s peers; the only public
+  ports are 443/32400/torrent/51820-udp/51821-udp. The `wg1` guest exit VPN
+  on that last port is not a management path and cannot become one by
+  accident: its subnet's absence from `management_sources` is asserted by a
+  Tofu `lifecycle.precondition`.
 - OS: SSH key-only + non-root, `fail2ban`, `unattended-upgrades`, sysctl +
   `auditd`, minimal packages (Ansible `hardening` role, host + VM).
 - **Firewall in code** — Proxmox filter firewall via Tofu/bpg (default-drop
@@ -396,6 +419,18 @@ Each phase is its own PR. Full detail and current status in
    ingress to the `traefik` namespace, which is what makes trusting
    `Remote-User` safe. Procedure and sharing policy:
    [`docs/runbooks/sharing.md`](runbooks/sharing.md).
+10. **Guest exit VPN** — `wg1`, a second WireGuard interface on the host
+    (`51821/udp`, its own keypair, its own peer list) giving a guest a full
+    tunnel out of the German uplink and nothing else. Isolation is a block at
+    the top of the `lab-nat` forward chain that allows by exception and ends
+    in a `drop`; the exit subnet is deliberately absent from the `+mgmt`
+    ipset, backed by a `lifecycle.precondition`. Peers take `0.0.0.0/0, ::/0`
+    — the `::/0` half so that an IPv6-capable client cannot silently route
+    half its traffic around the tunnel, since the host forwards no IPv6 and
+    that address family is a deterministic blackhole. Ships with zero peers.
+    Design: [`docs/networking.md`](networking.md#wireguard-guest-exit-plane).
+    Procedure:
+    [`docs/runbooks/wireguard-exit-peer.md`](runbooks/wireguard-exit-peer.md).
 
 ## Verification
 

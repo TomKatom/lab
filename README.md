@@ -59,6 +59,16 @@ FileBrowser Quantum browses `/data/torrents` in place behind Authelia on
 separate public hostname `share.tomkatom.com`. Recipients need no account.
 See [`docs/runbooks/sharing.md`](docs/runbooks/sharing.md).
 
+**Phase 10 — Guest exit VPN** adds `wg1`, a second WireGuard interface on
+the host (`51821/udp`) that hands a guest a full tunnel out of the server's
+German IP and nothing else — it reaches no lab address, by firewall, and its
+subnet can never enter the management ipset without failing the Tofu apply.
+It ships with no peers; issuing one is
+[`scripts/wg-exit-peer.sh`](scripts/wg-exit-peer.sh) plus a PR. See
+[`docs/runbooks/wireguard-exit-peer.md`](docs/runbooks/wireguard-exit-peer.md),
+which is also honest about what it is not — the big streamers block
+datacenter ASNs regardless of country.
+
 The DNS cutover has since run: external-dns writes for real, and every
 hostname above resolves publicly to `145.239.3.55`. One thing is
 deliberately still pending:

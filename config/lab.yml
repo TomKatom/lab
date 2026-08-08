@@ -3,6 +3,21 @@
 # Non-secret. Secrets live in SOPS; tool-specific/operator facts (Proxmox
 # endpoint, storage pools, VM sizing, ...) stay declared in each tool.
 domain: tomkatom.com
+# The label of the one public A record both WireGuard tunnels are reached at
+# — `<vpn_subdomain>.<domain>`, told apart by port and not by name. It is
+# here rather than in either consumer because it genuinely crosses layers:
+# infra/tofu/locals.tf creates the record from it, and
+# scripts/wg-exit-peer.sh writes it into the `Endpoint =` line of every guest
+# config it generates. It was a literal in both until that script existed,
+# and this repo has already retired one tunnel-endpoint record (`vpn.lab.`,
+# at the DNS cutover) — nothing in CI or in the role asserts references the
+# script, so a rename would have shipped guest configs pointing at NXDOMAIN
+# with "no handshake" as the only symptom.
+#
+# The KEY `vpn` in locals.tf's dns_a_records map stays a literal on purpose:
+# that key is the Tofu resource address, so changing it destroys and
+# recreates the record instead of renaming it.
+vpn_subdomain: vpn
 network:
   internal_subnet: 10.10.10.0/24  # vmbr1 subnet (Tofu bridge/VM, Ansible NAT + WG route)
   vmbr1_host_address: 10.10.10.1/24  # host side of vmbr1 = the VM's gateway

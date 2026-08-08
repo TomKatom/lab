@@ -142,12 +142,15 @@ execute it against the live server itself).
    `address`) and the PSK to `wireguard_peer_psks` in the SOPS-encrypted
    `inventory/group_vars/proxmox_host.sops.yml`, then re-run step 1 so the
    host picks up the new peer.
-3. Bring up your own local WireGuard interface using the host's public key
+3. Bring up your own local WireGuard interface using the **`wg0`** public key
    from step 1 and an endpoint of `<ovh_public_ip>:<ports.wireguard>`. Your
    *client* `AllowedIPs` is the two lab subnets (split tunnel), which is not
    the same field as the peer's server-side `/32` — see
    [`docs/runbooks/wireguard-peer.md`](../docs/runbooks/wireguard-peer.md)
-   for the full client config and why the two differ.
+   for the full client config and why the two differ. (A `wg1` guest takes
+   `0.0.0.0/0, ::/0` instead. That is a different tunnel with a different
+   key, it takes no part in this gate, and it has its own procedure:
+   [`docs/runbooks/wireguard-exit-peer.md`](../docs/runbooks/wireguard-exit-peer.md).)
 4. `./run.sh playbooks/verify-wireguard.yml` — **must pass** before anyone
    flips `restrict_management` in `infra/tofu/terraform.tfvars`. It checks a
    live peer handshake, that the host is reachable over the tunnel itself,

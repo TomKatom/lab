@@ -1,9 +1,9 @@
 # Runbook: adding or reconfiguring a WireGuard peer
 
 How an operator machine (laptop, phone) gets a working tunnel into the lab.
-WireGuard is the *only* path to SSH(22), the Proxmox UI/API(8006) and the
-k8s API(6443) — there is no public SSH and no IPMI/console — so this is also
-the procedure whose output the anti-lockout gate
+The `wg0` tunnel is the *only* path to SSH(22), the Proxmox UI/API(8006) and
+the k8s API(6443) — there is no public SSH and no IPMI/console — so this is
+also the procedure whose output the anti-lockout gate
 ([`verify-wireguard.yml`](../../ansible/playbooks/verify-wireguard.yml))
 depends on.
 
@@ -12,6 +12,13 @@ wg0.conf` from `wireguard_peers` (`ansible/inventory/group_vars/all.yml`).
 The client half is a file on your own machine — deliberately *not* generated
 from this repo, because a peer's private key must never leave the device it
 belongs to.
+
+**This runbook is `wg0` only.** The host also runs `wg1`, a full-tunnel exit
+VPN for guests that reaches nothing in the lab; it has its own peer list, its
+own port, its own server key and its own runbook
+([`wireguard-exit-peer.md`](wireguard-exit-peer.md)). Everything below —
+including the anti-lockout gate and the `AllowedIPs` advice in §0 — is about
+the management tunnel.
 
 ---
 
@@ -34,10 +41,17 @@ wider than the peer's own address also lets that peer forge a source inside
 `roles/wireguard` asserts the `/32`-and-unique shape before rendering.
 
 Client side stays a **split tunnel**: only the two lab subnets go through
-WireGuard, everything else keeps using your local link. Do not use
-`0.0.0.0/0` — it would push all your traffic through the lab, breaking Plex
-direct-play from that machine and putting your general browsing behind the
-lab's single public IP for no benefit.
+`wg0`, everything else keeps using your local link. Do not use `0.0.0.0/0`
+*here* — on this tunnel it would push all your traffic through the lab,
+breaking Plex direct-play from that machine and putting your general
+browsing behind the lab's single public IP, in exchange for nothing `wg0`
+offers.
+
+A full tunnel is a real thing to want — traffic that egresses from the
+server's German IP — and it has a dedicated interface, `wg1`, precisely so
+that wanting it never means widening `wg0`. There, `0.0.0.0/0, ::/0` is the
+correct and required client value, and a peer gets the internet and no lab
+access at all: [`wireguard-exit-peer.md`](wireguard-exit-peer.md).
 
 ---
 
@@ -126,10 +140,11 @@ PersistentKeepalive = 25
   handed over — see `docs/runbooks/dns-cutover.md`.)
 
 - **Host public key** — printed by the converge ("Show each instance's
-  WireGuard public key"), one line per interface in `wireguard_instances`;
-  take the `wg0` line. Each interface's private key is generated in place on
-  the server and never leaves it, so the public half is the only one you
-  ever handle.
+  WireGuard public key"), one line per interface in `wireguard_instances`.
+  Take the `wg0` line; `wg1` is the guest exit tunnel and has a deliberately
+  different key. Each interface's private key is generated in place on the
+  server and never leaves it, so the public half is the only one you ever
+  handle.
 - **`Address`** — the same `/32` you declared in §3. `/32`, not `/24`: your
   machine owns exactly one tunnel address, and a `/24` would make it claim
   the whole peer subnet as directly connected.

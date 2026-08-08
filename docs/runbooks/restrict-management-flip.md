@@ -7,8 +7,11 @@ IPMI/console**, without stranding yourself. This is the forward procedure;
 goes wrong. The flip itself is the single-line diff
 `restrict_management = false → true` in `infra/tofu/terraform.tfvars`.
 
-443 / 32400 / 51413 (torrent) / 51820-udp (WireGuard) stay public throughout —
-only the management ports change.
+443 / 32400 / 51413 (torrent) / 51820-udp (WireGuard `wg0`) / 51821-udp
+(WireGuard `wg1`, the guest exit VPN) stay public throughout — only the
+management ports change. `wg1`'s peer subnet is deliberately not in the
+`+mgmt` ipset this flip narrows to, so the flip changes nothing for a guest:
+they could not reach SSH or the Proxmox API before it either.
 
 Use this runbook any time `restrict_management` needs to go from `false` to
 `true` — the initial flip, or a re-flip after a rollback (§9).
@@ -214,7 +217,8 @@ tunnel, i.e. not the dead-man-switch session:
 nc -vz <host-public-ip> 22      # SSH        → refused / timeout
 nc -vz <host-public-ip> 8006    # Proxmox API→ refused / timeout
 nc -vz <host-public-ip> 443     # HTTPS      → still OPEN (public)
-nc -vzu <host-public-ip> 51820  # WireGuard  → still OPEN (public)
+nc -vzu <host-public-ip> 51820  # wg0        → still OPEN (public)
+nc -vzu <host-public-ip> 51821  # wg1 (exit) → still OPEN (public)
 ```
 
 `22` and `8006` open-off-tunnel = the flip did **not** take — treat as a
